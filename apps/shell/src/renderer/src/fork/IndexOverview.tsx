@@ -119,7 +119,12 @@ export function IndexOverview({
           )}
         </div>
       ) : unknown ? (
-        <div className="idx-status is-loading" role="status" aria-busy="true" aria-label={o.loading}>
+        <div
+          className="idx-status is-loading"
+          role="status"
+          aria-busy="true"
+          aria-label={o.loading}
+        >
           <span className="idx-skel idx-skel-line" />
           <span className="idx-skel idx-skel-bar" />
           <span className="idx-skel idx-skel-facts" />
@@ -150,9 +155,7 @@ export function IndexOverview({
               <dt>{o.searchable}</dt>
               <dd>
                 {num(searchable)}
-                {totalFiles !== null && (
-                  <span className="idx-facts-of"> / {num(totalFiles)}</span>
-                )}
+                {totalFiles !== null && <span className="idx-facts-of"> / {num(totalFiles)}</span>}
               </dd>
             </div>
             <div>
@@ -199,7 +202,11 @@ export function IndexOverview({
         </section>
       )}
 
-      <RecentFiles api={api} onOpened={onOpened} {...(onViewRecent ? { onViewAll: onViewRecent } : {})} />
+      <RecentFiles
+        api={api}
+        onOpened={onOpened}
+        {...(onViewRecent ? { onViewAll: onViewRecent } : {})}
+      />
     </div>
   )
 }

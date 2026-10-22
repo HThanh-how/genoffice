@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import type { HomeApi } from '../../../shared/home-api'
 import { useI18n } from '../locale'
 import { TodoTab } from './TodoTab'
@@ -18,7 +18,6 @@ export function IndexDashboard({ api, onClose }: { api: HomeApi; onClose: () => 
   const { lang } = useI18n()
   const d = TEXT[lang] ?? EN
   const [tab, setTab] = useState<IndexTabId>('overview')
-  const [settingsFocus, _setSettingsFocus] = useState<'ocr' | undefined>()
   const [focus, setFocus] = useState<IndexIssueReason | null>(null)
   const [actionBusy, setActionBusy] = useState(false)
   const [actionNote, setActionNote] = useState('')
@@ -50,7 +49,7 @@ export function IndexDashboard({ api, onClose }: { api: HomeApi; onClose: () => 
     return () => window.removeEventListener('keydown', handleKeyDown)
   }, [onClose])
 
-  const runAction = useCallback(async (work: () => Promise<void>) => {
+  const runAction = async (work: () => Promise<unknown>) => {
     if (actionInFlight.current) return
     actionInFlight.current = true
     setActionBusy(true)
@@ -64,15 +63,17 @@ export function IndexDashboard({ api, onClose }: { api: HomeApi; onClose: () => 
       setActionBusy(false)
       kick()
     }
-  }, [d.actionFailed, kick])
+  }
 
-  const togglePause = () => runAction(async () => { await api.setDocumentMemoryEnabled(!(memory?.enabled ?? true)) })
-  const addFolder = () => runAction(async () => { await api.scanDocumentFolder() })
-  const stopScan = () => runAction(async () => { await api.stopDocumentFolderScan() })
-  const rescanAll = () => runAction(async () => {
-    const list = await api.listIndexedFolders()
-    for (const f of list) if (!f.unavailable) await api.rescanIndexedFolder(f.root)
-  })
+  const togglePause = () =>
+    runAction(() => api.setDocumentMemoryEnabled(!(memory?.enabled ?? true)))
+  const addFolder = () => runAction(() => api.scanDocumentFolder())
+  const stopScan = () => runAction(() => api.stopDocumentFolderScan())
+  const rescanAll = () =>
+    runAction(async () => {
+      const list = await api.listIndexedFolders()
+      for (const f of list) if (!f.unavailable) await api.rescanIndexedFolder(f.root)
+    })
 
   const effective = mode?.effective
   const tierText = effective
@@ -88,7 +89,13 @@ export function IndexDashboard({ api, onClose }: { api: HomeApi; onClose: () => 
       <header className="idx-head">
         <button type="button" className="idx-back" onClick={onClose} aria-label={d.back}>
           <svg width="16" height="16" viewBox="0 0 16 16" fill="none" aria-hidden="true">
-            <path d="M10 3 5 8l5 5" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
+            <path
+              d="M10 3 5 8l5 5"
+              stroke="currentColor"
+              strokeWidth="1.5"
+              strokeLinecap="round"
+              strokeLinejoin="round"
+            />
           </svg>
         </button>
         <div className="idx-title">
@@ -96,7 +103,14 @@ export function IndexDashboard({ api, onClose }: { api: HomeApi; onClose: () => 
           <p>{d.subtitle}</p>
         </div>
         <div className="idx-actions">
-          <button type="button" disabled={actionBusy} className="idx-btn" onClick={() => void addFolder()}>{d.addFolder}</button>
+          <button
+            type="button"
+            disabled={actionBusy}
+            className="idx-btn"
+            onClick={() => void addFolder()}
+          >
+            {d.addFolder}
+          </button>
           <button
             type="button"
             disabled={actionBusy || !memory}
@@ -108,16 +122,42 @@ export function IndexDashboard({ api, onClose }: { api: HomeApi; onClose: () => 
           </button>
           <details className="idx-more" ref={moreRef}>
             <summary className="idx-btn idx-more-btn" aria-label={d.more} title={d.more}>
-              <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true">
+              <svg
+                width="16"
+                height="16"
+                viewBox="0 0 16 16"
+                fill="currentColor"
+                aria-hidden="true"
+              >
                 <circle cx="3.5" cy="8" r="1.3" />
                 <circle cx="8" cy="8" r="1.3" />
                 <circle cx="12.5" cy="8" r="1.3" />
               </svg>
             </summary>
             <div className="idx-more-menu" role="menu">
-              <button type="button" role="menuitem" disabled={actionBusy} onClick={() => { closeMore(); void rescanAll() }}>{d.scanNow}</button>
+              <button
+                type="button"
+                role="menuitem"
+                disabled={actionBusy}
+                onClick={() => {
+                  closeMore()
+                  void rescanAll()
+                }}
+              >
+                {d.scanNow}
+              </button>
               {folder?.running && (
-                <button type="button" role="menuitem" disabled={actionBusy} onClick={() => { closeMore(); void stopScan() }}>{d.stopScan}</button>
+                <button
+                  type="button"
+                  role="menuitem"
+                  disabled={actionBusy}
+                  onClick={() => {
+                    closeMore()
+                    void stopScan()
+                  }}
+                >
+                  {d.stopScan}
+                </button>
               )}
             </div>
           </details>
@@ -127,40 +167,57 @@ export function IndexDashboard({ api, onClose }: { api: HomeApi; onClose: () => 
       {statusFailed && loaded && (snap.activity || snap.memory) && (
         <div className="todo-status" role="status">
           <span>{d.statusFailed}</span>
-          <button type="button" className="idx-btn" onClick={kick}>{d.refresh}</button>
+          <button type="button" className="idx-btn" onClick={kick}>
+            {d.refresh}
+          </button>
         </div>
       )}
       {actionNote && (
         <div className="todo-status" role="status">
           <span>{actionNote}</span>
-          <button type="button" className="ixp-icon" aria-label={d.dismissNote} onClick={() => setActionNote('')}>×</button>
+          <button
+            type="button"
+            className="ixp-icon"
+            aria-label={d.dismissNote}
+            onClick={() => setActionNote('')}
+          >
+            ×
+          </button>
         </div>
       )}
       {storageBudget?.limitState === 'warning' && (
         <div className="todo-status is-warning" role="status">
-          <span>
-            {fill(d.storageWarn, { p: Math.round(storageBudget.usageRatio * 100) })}
-          </span>
+          <span>{fill(d.storageWarn, { p: Math.round(storageBudget.usageRatio * 100) })}</span>
         </div>
       )}
       {storageBudget?.limitState === 'full' && (
         <div className="todo-status is-full" role="status">
-          <span>
-            {d.storageFull}
-          </span>
+          <span>{d.storageFull}</span>
         </div>
       )}
 
       <IndexNav activeTab={tab} onChangeTab={setTab} issuesCount={todo} />
-      <div id="index-tab-panel" className="idx-panel" role="tabpanel" aria-labelledby={`index-tab-${tab}`}>
+      <div
+        id="index-tab-panel"
+        className="idx-panel"
+        role="tabpanel"
+        aria-labelledby={`index-tab-${tab}`}
+      >
         {tab === 'overview' && (
           <IndexOverview
-            api={api} memory={memory} activity={activity} mode={mode} now={now}
+            api={api}
+            memory={memory}
+            activity={activity}
+            mode={mode}
+            now={now}
             attention={attention}
             loading={!loaded}
             failed={statusFailed}
             onRetry={kick}
-            onNavigateTab={(nextTab, reason) => { if (reason) setFocus(reason); setTab(nextTab) }}
+            onNavigateTab={(nextTab, reason) => {
+              if (reason) setFocus(reason)
+              setTab(nextTab)
+            }}
             onOpened={onClose}
             onViewRecent={onClose}
           />
@@ -168,15 +225,21 @@ export function IndexDashboard({ api, onClose }: { api: HomeApi; onClose: () => 
         {tab === 'sources' && <IndexedFolders api={api} onOpenIssues={() => setTab('issues')} />}
         {tab === 'issues' && (
           <TodoTab
-            api={api} ready={progress?.readyFiles ?? memory?.documents ?? 0}
-            pending={pending} switchedOff={memory?.enabled === false}
-            held={paused && memory?.enabled !== false} heldWhy={tierText}
-            scanning={!!folder?.running} focus={focus}
-            onAddFolder={() => void addFolder()} onRescan={() => void rescanAll()}
-            onResume={() => void togglePause()} onChanged={kick}
+            api={api}
+            ready={progress?.readyFiles ?? memory?.documents ?? 0}
+            pending={pending}
+            switchedOff={memory?.enabled === false}
+            held={paused && memory?.enabled !== false}
+            heldWhy={tierText}
+            scanning={!!folder?.running}
+            focus={focus}
+            onAddFolder={() => void addFolder()}
+            onRescan={() => void rescanAll()}
+            onResume={() => void togglePause()}
+            onChanged={kick}
           />
         )}
-        {tab === 'settings' && <IndexSettingsTab api={api} focus={settingsFocus} />}
+        {tab === 'settings' && <IndexSettingsTab api={api} />}
       </div>
     </main>
   )

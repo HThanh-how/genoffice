@@ -63,7 +63,8 @@ export function useIndexSnapshot(api: HomeApi) {
               now: snapData.now,
               storageBudget: snapData.storageBudget ?? null,
             })
-            const isPaused = !!snapData.mode?.effective?.paused || snapData.memory?.enabled === false
+            const isPaused =
+              !!snapData.mode?.effective?.paused || snapData.memory?.enabled === false
             const pendingCount = snapData.memory?.pending ?? snapData.activity?.memory?.pending ?? 0
             pollIntervalMs = isPaused || pendingCount === 0 ? IDLE_POLL_MS : ACTIVE_POLL_MS
           } catch {
@@ -75,7 +76,8 @@ export function useIndexSnapshot(api: HomeApi) {
           const [memory, activity, mode, issues, now] = await Promise.allSettled([
             readIndexRequest(
               () => api.getDocumentMemoryStatus(),
-              (v): v is DocumentMemoryStatus => !!v && typeof v === 'object' && typeof (v as any).enabled === 'boolean',
+              (v): v is DocumentMemoryStatus =>
+                !!v && typeof v === 'object' && typeof (v as any).enabled === 'boolean',
             ),
             readIndexRequest(
               () => api.getIndexingActivity(),
@@ -83,13 +85,19 @@ export function useIndexSnapshot(api: HomeApi) {
             ),
             readIndexRequest(
               () => api.getIndexingModeState?.() ?? Promise.resolve(null),
-              (v): v is IndexingModeState | null => v === null || (!!v && typeof v === 'object' && INDEXING_MODES.includes((v as any).mode)),
+              (v): v is IndexingModeState | null =>
+                v === null ||
+                (!!v && typeof v === 'object' && INDEXING_MODES.includes((v as any).mode)),
             ),
             readIndexRequest(() => api.getDocumentIndexIssueSummary('*'), isIndexIssueSummary),
             readIndexRequest(() => api.getIndexingNow(), isIndexingNow),
           ])
           if (!alive) return
-          setStatusFailed(memory.status === 'rejected' || activity.status === 'rejected' || issues.status === 'rejected')
+          setStatusFailed(
+            memory.status === 'rejected' ||
+              activity.status === 'rejected' ||
+              issues.status === 'rejected',
+          )
           if (issues.status === 'fulfilled') setAttention(issues.value)
           const next: Snapshot = {
             memory: memory.status === 'fulfilled' ? memory.value : null,

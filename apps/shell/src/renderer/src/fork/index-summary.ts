@@ -51,7 +51,10 @@ export function deriveIndexSummary({
   attention,
 }: IndexSummaryInput): IndexSummary {
   const progress = activity?.folderProgress ?? null
-  const waiting = Math.max(0, memoryPending ?? progress?.pendingFiles ?? activity?.memory.pending ?? 0)
+  const waiting = Math.max(
+    0,
+    memoryPending ?? progress?.pendingFiles ?? activity?.memory.pending ?? 0,
+  )
   const readyFiles = progress?.readyFiles ?? 0
   const totalFiles = progress?.totalFiles ?? readyFiles + waiting
   let percent: number | null = progress?.percent ?? null

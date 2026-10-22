@@ -87,6 +87,8 @@ describe('inline Ask AI hint', () => {
     expect(showAskHint(dockSearchQuery('', false))).toBe(false)
     expect(showAskHint(dockSearchQuery('budget?', false))).toBe(false)
     expect(showAskHint(dockSearchQuery('pause indexing', true))).toBe(false)
-    expect(showAskHint(dockSearchQuery('summarise all of the contracts I signed last year', false))).toBe(false)
+    expect(
+      showAskHint(dockSearchQuery('summarise all of the contracts I signed last year', false)),
+    ).toBe(false)
   })
 })

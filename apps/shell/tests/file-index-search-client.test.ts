@@ -50,7 +50,9 @@ describe('FileIndexSearchClient', () => {
     thread.answer(0, page('/busy'))
     await busy
     await vi.waitFor(() => expect(thread.posted.map((p) => p.q)).toEqual(['busy', 'gi']))
-    expect((thread.posted[1] as unknown as { options: { nameOnly?: boolean } }).options.nameOnly).toBe(true)
+    expect(
+      (thread.posted[1] as unknown as { options: { nameOnly?: boolean } }).options.nameOnly,
+    ).toBe(true)
     thread.answer(1, page('/names'))
     expect((await names).hits[0]!.path).toBe('/names')
     await vi.waitFor(() => expect(thread.posted).toHaveLength(3))

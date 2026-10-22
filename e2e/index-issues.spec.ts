@@ -131,27 +131,32 @@ test('file warnings preserve ongoing progress and expose localized retry actions
       .click()
     await expect(home.locator('.idx-page')).toBeVisible()
 
-    const statusCard = home.locator('.idx-status-card.is-indexing')
+    const statusCard = home.locator('.idx-status.is-working')
     await expect(statusCard).toBeVisible()
-    await expect(statusCard.locator('.idx-progress-percent')).toHaveText('30%')
-    await expect(statusCard).toContainText('12')
+    await expect(statusCard.getByRole('progressbar')).toHaveAttribute('aria-valuenow', '30')
+    await expect(statusCard.locator('.idx-facts > div').nth(1).locator('dd')).toHaveText('12')
 
     await home.getByRole('tab', { name: 'Cần xử lý' }).click()
-    await home.getByRole('button', { name: 'Mở tất cả' }).click()
-    await expect(home.locator('.ixp-group').first()).toContainText('OCR')
-    await expect(home.locator('.ixp-group').last()).toContainText(/mật khẩu/i)
-
-    const rows = home.locator('.ixp-row')
-    await expect(rows).toHaveCount(2)
-    await expect(rows.first()).toContainText('Hồ sơ scan.pdf')
-    await expect(rows.last()).toContainText('Có mật khẩu.docx')
-
-    await rows.last().getByRole('button', { name: 'Thử lại', exact: true }).click()
+    const damaged = home.locator('.idx-issue[data-section="damaged"]')
+    const scans = home.locator('.idx-issue[data-section="ocr"]')
+    await expect(damaged).toContainText(/mật khẩu/i)
+    await expect(scans).toContainText('OCR')
+    await damaged.locator('.idx-issue-main').click()
+    await damaged.getByRole('button', { name: 'Mở tất cả' }).click()
+    const lockedRow = damaged.locator('.ixp-row')
+    await expect(lockedRow).toHaveCount(1)
+    await expect(lockedRow).toContainText('Có mật khẩu.docx')
+    await lockedRow.getByRole('button', { name: 'Thử lại', exact: true }).click()
     await expect
       .poll(() => launched.app.evaluate(() => (globalThis as any).__issuesFixture.retryCount))
       .toBeGreaterThan(0)
 
-    await rows.first().getByRole('button', { name: 'Mở thư mục chứa tệp', exact: true }).click()
+    await scans.locator('.idx-issue-main').click()
+    await scans.getByRole('button', { name: 'Mở tất cả' }).click()
+    const scannedRow = scans.locator('.ixp-row')
+    await expect(scannedRow).toHaveCount(1)
+    await expect(scannedRow).toContainText('Hồ sơ scan.pdf')
+    await scannedRow.getByRole('button', { name: 'Mở thư mục chứa tệp', exact: true }).click()
     await expect
       .poll(() => launched.app.evaluate(() => (globalThis as any).__issuesFixture.revealCount))
       .toBe(1)
@@ -167,7 +172,7 @@ test('file warnings preserve ongoing progress and expose localized retry actions
     })
 
     await home.getByRole('tab', { name: 'Tổng quan' }).click()
-    await expect(home.locator('.idx-status-card.is-idle')).toBeVisible()
+    await expect(home.locator('.idx-status.is-attention')).toBeVisible()
 
     await home.locator('.idx-back').click()
     await expect(home.locator('.idx-page')).toHaveCount(0)

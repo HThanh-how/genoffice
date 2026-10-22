@@ -658,7 +658,10 @@ function evaluationRootDetails(root: string): RootIgnoreDetails {
     return { rules: known?.rules ?? [], mode: known?.mode }
   }
   const cached = evaluationRootCache.get(root)
-  if (cached && (rootSnapshotDepth === 0 || performance.now() - cached.at <= ROOT_SNAPSHOT_TTL_MS)) {
+  if (
+    cached &&
+    (rootSnapshotDepth === 0 || performance.now() - cached.at <= ROOT_SNAPSHOT_TTL_MS)
+  ) {
     return cached.details
   }
   const details = readGenOfficeIgnoreDetailed(root)
@@ -2056,7 +2059,8 @@ export function registerIgnoreIpcHandlers(
   // Fork-only: single-tick read-modify-write so the Home tree cannot clobber
   // concurrent edits from the indexing rules Studio (which replaces the list).
   ipcMain.handle(DOCUMENT_INDEX_CHANNELS.addFolderIgnore, (_event, path: unknown) => {
-    if (typeof path !== 'string' || path.trim().length === 0) return { ok: false, error: 'invalid-path' }
+    if (typeof path !== 'string' || path.trim().length === 0)
+      return { ok: false, error: 'invalid-path' }
     // never ignore a drive/system folder, a root, or a folder that holds a root (symlinks resolved)
     const real = (p: string): string[] => {
       try {
@@ -2081,7 +2085,8 @@ export function registerIgnoreIpcHandlers(
   })
 
   ipcMain.handle(DOCUMENT_INDEX_CHANNELS.removeFolderIgnore, (_event, path: unknown) => {
-    if (typeof path !== 'string' || path.trim().length === 0) return { ok: false, error: 'invalid-path' }
+    if (typeof path !== 'string' || path.trim().length === 0)
+      return { ok: false, error: 'invalid-path' }
     const next = removeFolderIgnoreFromRules(
       getActiveIgnoreRules(),
       path,

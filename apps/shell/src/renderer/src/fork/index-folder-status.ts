@@ -21,5 +21,11 @@ export function folderDone(
   folder: Pick<IndexedFolder, 'readyFiles' | 'errorFiles' | 'totalFiles' | 'releasedFiles'>,
 ): { done: number; total: number } {
   const total = Math.max(0, folder.totalFiles)
-  return { done: Math.min(total, Math.max(0, folder.readyFiles + folder.errorFiles + (folder.releasedFiles ?? 0))), total }
+  return {
+    done: Math.min(
+      total,
+      Math.max(0, folder.readyFiles + folder.errorFiles + (folder.releasedFiles ?? 0)),
+    ),
+    total,
+  }
 }

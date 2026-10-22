@@ -37,9 +37,9 @@ test('Ask workspace shares persisted history and exports the visible answer from
     })
     await home.reload()
     await home.locator('.nav-item').filter({ hasText: 'Ask AI' }).click()
-    const panel = home.locator('.home-chat-panel')
+    const panel = home.locator('#home-ask-workspace .home-chat-panel')
     await expect(panel).toHaveCount(1)
-    await expect(panel).toHaveClass(/is-workspace/)
+    await expect(panel).toBeVisible()
     await expect(panel).toContainText('Answer 29: persisted content')
     await expect(panel.locator('textarea')).toBeEnabled()
     await expect(home.getByText('Sign in to Genspark to use AI chat', { exact: true })).toHaveCount(
@@ -119,7 +119,7 @@ test('a deferred export cannot update another conversation at the same message i
     })
     await home.reload()
     await home.locator('.nav-item').filter({ hasText: 'Ask AI' }).click()
-    const panel = home.locator('.home-chat-panel')
+    const panel = home.locator('#home-ask-workspace .home-chat-panel')
     await expect(panel).toContainText('Answer A')
     await launched.app.evaluate(({ ipcMain }) => {
       ipcMain.removeHandler('kb:create-document')

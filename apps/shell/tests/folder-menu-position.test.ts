@@ -31,8 +31,8 @@ describe('placeFolderMenu', () => {
   })
 
   it('never goes negative when the menu is wider than the viewport', () => {
-    expect(placeFolderMenu({ x: 50, y: 10, above: 0 }, { width: 2000, height: 10 }, viewport).left).toBe(
-      8,
-    )
+    expect(
+      placeFolderMenu({ x: 50, y: 10, above: 0 }, { width: 2000, height: 10 }, viewport).left,
+    ).toBe(8)
   })
 })

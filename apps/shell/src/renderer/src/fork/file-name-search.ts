@@ -35,7 +35,12 @@ function oneEditApart(a: string, b: string): boolean {
   return edits + Number(i < a.length || j < b.length) <= 1
 }
 
-export function nameScore(name: string, path: string, words: readonly string[], minimum: number): number {
+export function nameScore(
+  name: string,
+  path: string,
+  words: readonly string[],
+  minimum: number,
+): number {
   const scoreWords = [...words]
   // `nameWords` appends the equivalent form when it sees "ra viện" / "xuất viện".
   if (scoreWords.includes('ra') && scoreWords.includes('xuat')) {

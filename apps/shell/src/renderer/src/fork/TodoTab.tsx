@@ -123,7 +123,6 @@ export interface TodoTabProps {
   onChanged(): void
 }
 
-
 function IssueRow({
   row,
   title,
@@ -438,7 +437,12 @@ export function TodoTab(props: TodoTabProps) {
             <div className="todo-search">
               <svg width="16" height="16" viewBox="0 0 16 16" fill="none" aria-hidden="true">
                 <circle cx="6.8" cy="6.8" r="4.3" stroke="currentColor" strokeWidth="1.4" />
-                <path d="m10 10 3.5 3.5" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" />
+                <path
+                  d="m10 10 3.5 3.5"
+                  stroke="currentColor"
+                  strokeWidth="1.4"
+                  strokeLinecap="round"
+                />
               </svg>
               <input
                 type="search"
@@ -449,7 +453,12 @@ export function TodoTab(props: TodoTabProps) {
                 onKeyDown={(event) => event.key === 'Escape' && setQuery('')}
               />
               {query && (
-                <button type="button" className="ixp-icon" aria-label={d.clear} onClick={() => setQuery('')}>
+                <button
+                  type="button"
+                  className="ixp-icon"
+                  aria-label={d.clear}
+                  onClick={() => setQuery('')}
+                >
                   ×
                 </button>
               )}
@@ -466,7 +475,9 @@ export function TodoTab(props: TodoTabProps) {
                 <option value="type">{lang === 'vi' ? 'Loại tệp' : 'File type'}</option>
                 <option value="progress">{lang === 'vi' ? 'Tiến độ' : 'Progress'}</option>
                 <option value="status">{lang === 'vi' ? 'Trạng thái' : 'Status'}</option>
-                <option value="connection">{lang === 'vi' ? 'Kết nối ổ' : 'Source connection'}</option>
+                <option value="connection">
+                  {lang === 'vi' ? 'Kết nối ổ' : 'Source connection'}
+                </option>
               </select>
               <button
                 type="button"
@@ -491,9 +502,15 @@ export function TodoTab(props: TodoTabProps) {
                 aria-label={lang === 'vi' ? 'Gom nhóm tệp' : 'Group files'}
                 onChange={(event) => setGrouping(event.target.value as IndexViewGroup)}
               >
-                <option value="reason">{lang === 'vi' ? 'Nhóm theo vấn đề' : 'Group by issue'}</option>
-                <option value="folder">{lang === 'vi' ? 'Nhóm theo thư mục' : 'Group by folder'}</option>
-                <option value="type">{lang === 'vi' ? 'Nhóm theo loại tệp' : 'Group by file type'}</option>
+                <option value="reason">
+                  {lang === 'vi' ? 'Nhóm theo vấn đề' : 'Group by issue'}
+                </option>
+                <option value="folder">
+                  {lang === 'vi' ? 'Nhóm theo thư mục' : 'Group by folder'}
+                </option>
+                <option value="type">
+                  {lang === 'vi' ? 'Nhóm theo loại tệp' : 'Group by file type'}
+                </option>
                 <option value="none">{lang === 'vi' ? 'Không gom nhóm' : 'No grouping'}</option>
               </select>
             </div>

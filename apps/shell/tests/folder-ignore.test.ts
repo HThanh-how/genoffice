@@ -89,7 +89,9 @@ describe('decideFolderIgnoreMenu', () => {
     expect(decide({ ...own, scope: 'D:/WORK/old' })).toBe('stop')
   })
   it('blocks when another rule ignores the folder', () => {
-    expect(decide({ ignored: true, source: 'preset', scope: 'global', pattern: 'node_modules' })).toBe('blocked')
+    expect(
+      decide({ ignored: true, source: 'preset', scope: 'global', pattern: 'node_modules' }),
+    ).toBe('blocked')
     expect(decide({ ...own, scope: 'D:/Work' })).toBe('blocked')
     expect(decide({ ...own, source: '.genofficeignore' })).toBe('blocked')
   })
@@ -117,12 +119,21 @@ describe('folder ignore handlers (main)', () => {
       )
       const call = (ch: string, ...a: unknown[]) => handlers.get(ch)!({}, ...a) as any
       expect(policy.evaluateIgnore(sub, root).ignored).toBe(false)
-      expect(call(DOCUMENT_INDEX_CHANNELS.addFolderIgnore, sub)).toEqual({ ok: true, changed: true })
+      expect(call(DOCUMENT_INDEX_CHANNELS.addFolderIgnore, sub)).toEqual({
+        ok: true,
+        changed: true,
+      })
       expect(policy.evaluateIgnore(sub, root).ignored).toBe(true)
       expect(policy.evaluateIgnore(join(sub, 'a.docx'), root).ignored).toBe(true)
       expect(policy.evaluateIgnore(join(root, 'keep.docx'), root).ignored).toBe(false)
-      expect(call(DOCUMENT_INDEX_CHANNELS.addFolderIgnore, sub)).toEqual({ ok: true, changed: false })
-      expect(call(DOCUMENT_INDEX_CHANNELS.removeFolderIgnore, sub)).toEqual({ ok: true, changed: true })
+      expect(call(DOCUMENT_INDEX_CHANNELS.addFolderIgnore, sub)).toEqual({
+        ok: true,
+        changed: false,
+      })
+      expect(call(DOCUMENT_INDEX_CHANNELS.removeFolderIgnore, sub)).toEqual({
+        ok: true,
+        changed: true,
+      })
       expect(policy.evaluateIgnore(sub, root).ignored).toBe(false)
       expect(invalidated).toBe(2)
       expect(call(DOCUMENT_INDEX_CHANNELS.addFolderIgnore, 5).ok).toBe(false)
@@ -134,10 +145,22 @@ describe('folder ignore handlers (main)', () => {
 
 describe('folder ignore safety and inheritance', () => {
   const roots = ['D:/Work', 'E:\\Archive\\2024']
-  const unsafe = (p: string | string[]) => folderIgnoreUnsafe(Array.isArray(p) ? p : [p], roots, true)
+  const unsafe = (p: string | string[]) =>
+    folderIgnoreUnsafe(Array.isArray(p) ? p : [p], roots, true)
 
   it('refuses drive roots, system folders, UNC shares and the filesystem root', () => {
-    for (const p of ['D:\\', 'D:', 'C:/Windows', 'c:\\program files', 'C:/ProgramData', '\\\\srv\\share', '\\\\srv', '/', '/usr', '/Users'])
+    for (const p of [
+      'D:\\',
+      'D:',
+      'C:/Windows',
+      'c:\\program files',
+      'C:/ProgramData',
+      '\\\\srv\\share',
+      '\\\\srv',
+      '/',
+      '/usr',
+      '/Users',
+    ])
       expect(unsafe(p), p).toBe('protected')
     expect(unsafe('C:/Windows/Temp/x')).toBeNull()
     expect(unsafe('\\\\srv\\share\\docs')).toBeNull()
@@ -168,9 +191,14 @@ describe('folder ignore safety and inheritance', () => {
   })
   it('instant Home matches skip files inside ignored folders', () => {
     const keys = new Set([folderIgnoreKey('D:/Work/Old', true)])
-    const mk = (path: string) => ({ path, name: path.split('/').pop()!, mtimeMs: 1, size: 1, ext: 'docx' }) as never
+    const mk = (path: string) =>
+      ({ path, name: path.split('/').pop()!, mtimeMs: 1, size: 1, ext: 'docx' }) as never
     const files = [mk('D:/Work/Old/bao cao.docx'), mk('D:/Work/New/bao cao.docx')]
-    const hits = instantNameMatches(files, 'bao cao', (e) => !isUnderIgnoredFolder(e.path, keys, true))
+    const hits = instantNameMatches(
+      files,
+      'bao cao',
+      (e) => !isUnderIgnoredFolder(e.path, keys, true),
+    )
     expect(hits.map((h) => h.path)).toEqual(['D:/Work/New/bao cao.docx'])
   })
 })
@@ -196,15 +224,33 @@ describe('folder ignore handlers: safety (main)', () => {
         () => [root],
       )
       const call = (ch: string, ...a: unknown[]) => handlers.get(ch)!({}, ...a) as any
-      expect(call(DOCUMENT_INDEX_CHANNELS.addFolderIgnore, root)).toEqual({ ok: false, error: 'is-root' })
-      expect(call(DOCUMENT_INDEX_CHANNELS.addFolderIgnore, dir)).toEqual({ ok: false, error: 'contains-root' })
-      expect(call(DOCUMENT_INDEX_CHANNELS.addFolderIgnore, parseDriveRoot(dir))).toEqual({ ok: false, error: 'protected' })
-      expect(call(DOCUMENT_INDEX_CHANNELS.addFolderIgnore, sub)).toEqual({ ok: true, changed: true })
+      expect(call(DOCUMENT_INDEX_CHANNELS.addFolderIgnore, root)).toEqual({
+        ok: false,
+        error: 'is-root',
+      })
+      expect(call(DOCUMENT_INDEX_CHANNELS.addFolderIgnore, dir)).toEqual({
+        ok: false,
+        error: 'contains-root',
+      })
+      expect(call(DOCUMENT_INDEX_CHANNELS.addFolderIgnore, parseDriveRoot(dir))).toEqual({
+        ok: false,
+        error: 'protected',
+      })
+      expect(call(DOCUMENT_INDEX_CHANNELS.addFolderIgnore, sub)).toEqual({
+        ok: true,
+        changed: true,
+      })
       expect(policy.evaluateIgnore(join(sub, 'a b.docx'), root).ignored).toBe(true)
       // a folder deleted from disk can still get and lose its rule
       const gone = join(root, 'Đã xóa khỏi đĩa')
-      expect(call(DOCUMENT_INDEX_CHANNELS.addFolderIgnore, gone)).toEqual({ ok: true, changed: true })
-      expect(call(DOCUMENT_INDEX_CHANNELS.removeFolderIgnore, gone)).toEqual({ ok: true, changed: true })
+      expect(call(DOCUMENT_INDEX_CHANNELS.addFolderIgnore, gone)).toEqual({
+        ok: true,
+        changed: true,
+      })
+      expect(call(DOCUMENT_INDEX_CHANNELS.removeFolderIgnore, gone)).toEqual({
+        ok: true,
+        changed: true,
+      })
       expect(policy.evaluateIgnore(sub, root).ignored).toBe(true)
     } finally {
       rmSync(dir, { recursive: true, force: true })

@@ -104,18 +104,18 @@ test.describe('AI Document Creation, Idempotency, and Tab Management', () => {
 
       // 1. Initial State: Zero launcher and zero floating panel
       await expect(home.locator('.home-chat-launcher')).toHaveCount(0)
-      await expect(home.locator('.home-chat-panel:not(.is-workspace)')).toHaveCount(0)
+      await expect(home.locator('.home-chat-panel')).toHaveCount(0)
 
-      // 2. Open Ask AI workspace
-      await home.locator('.nav-item').filter({ hasText: 'Ask AI' }).click()
-      const workspacePanel = home.locator('#home-ask-workspace .home-chat-panel')
-      await expect(workspacePanel).toHaveCount(1)
-      await expect(workspacePanel).toHaveClass(/is-workspace/)
-
-      // 3. User submits prompt to create Word document
-      const input = workspacePanel.locator('textarea')
+      // The Home input hands the prompt to the Ask AI page.
+      const input = home.locator('#home-assistant-slot input')
       await input.fill('Create a quarterly scientific report document')
       await input.press('Enter')
+      const workspacePanel = home.locator('#home-ask-workspace .home-chat-panel')
+      await expect(workspacePanel).toHaveCount(1)
+      await expect(workspacePanel).toBeVisible()
+      await expect(workspacePanel.locator('.hc-msg.user')).toHaveText(
+        'Create a quarterly scientific report document',
+      )
 
       // 4. Assert AgentLoop dispatched create_document and assistant answered
       await expect(workspacePanel.locator('.hc-msg.assistant')).toContainText(
