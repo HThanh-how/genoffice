@@ -4,7 +4,18 @@ import { QueryEmbeddingCache } from '../query-embedding-cache'
 import { fuseHybridResults } from '../hybrid-ranker'
 import { embeddingProfile } from '../embedding-profiles'
 import { capChunksPerDocument, promoteNameMatches } from './result-order'
-import { annotateSkeletonHits, skeletonDocumentIds } from '../storage/repositories/skeleton-repository'
+import {
+  annotateSkeletonHits,
+  skeletonDocumentIds,
+} from '../storage/repositories/skeleton-repository'
+
+export type LexicalCandidates = Array<{
+  chunkId: number
+  rank: number
+  score: number
+  documentId: number
+  strict?: boolean
+}>
 
 export type FreshDocumentMemoryHit = DocumentMemoryHit & {
   stale?: boolean
@@ -19,7 +30,18 @@ export interface SearchServiceOptions {
   store: DocumentMemoryStore
   externalNames?: (query: string, limit: number) => Promise<Array<{ path: string; name: string }>>
   askEmbed?: (text: string) => Promise<number[] | null>
-  askSemantic?: (vector: number[], limit: number, spaceId: string) => Promise<Array<{ chunkId: number; rank: number; score: number; documentId: number }> | null>
+  askSemantic?: (
+    vector: number[],
+    limit: number,
+    spaceId: string,
+  ) => Promise<Array<{ chunkId: number; rank: number; score: number; documentId: number }> | null>
+  /**
+   * Runs the lexical (FTS5) candidate query on the document-memory worker thread. A common-word query costs
+   * 0.3-1.5 s of SQLite time, which on Electron's main thread froze every window for that long on each chat send.
+   * Resolves null when the worker cannot answer (down, busy past the timeout, error): the caller then runs the
+   * same query on the main connection, so a search is never lost.
+   */
+  askLexical?: (query: string, limit: number) => Promise<LexicalCandidates | null>
   annotateFreshness?: (hits: DocumentMemoryHit[]) => Promise<FreshDocumentMemoryHit[]>
   /**
    * Opening a document whose body was compacted to a skeleton asks for the full re-read of the ORIGINAL file.
@@ -53,6 +75,18 @@ export class SearchService {
     this.querySequence++
   }
 
+  private async lexicalCandidates(query: string, limit: number): Promise<LexicalCandidates> {
+    if (this.options.askLexical) {
+      try {
+        const reply = await this.options.askLexical(query, limit)
+        if (reply) return reply
+      } catch {
+        // fall through to the main connection
+      }
+    }
+    return this.store.searchLexical(query, limit)
+  }
+
   async searchProgressive(
     query: string,
     limit = 8,
@@ -67,50 +101,86 @@ export class SearchService {
 
     // 1. Lexical and name matches
     const namedRaw = this.store.searchNames(query, 5)
-    const lexicalCandidates = this.store.searchLexical(query, 200)
+    const lexicalCandidates = await this.lexicalCandidates(query, 200)
+    if (callbacks?.isCancelled?.() || this.querySequence !== queryToken) return []
     // Without semantic vectors the list is lexical only: at most 2 chunks per document, so one
     // long document cannot fill every slot while other matching documents are pushed out.
     const lexicalRaw = this.store.hydrateChunkHits(capChunksPerDocument(lexicalCandidates, limit))
-    const annotateFresh = this.options.annotateFreshness ?? (async (hits) => hits.map((h) => ({ ...h, stale: false, missing: false })))
+    const annotateFresh =
+      this.options.annotateFreshness ??
+      (async (hits) => hits.map((h) => ({ ...h, stale: false, missing: false })))
     // One extra indexed query per result list (never per hit); ranking and hit order are untouched.
-    const annotate = async (hits: DocumentMemoryHit[]): Promise<FreshDocumentMemoryHit[]> => this.flagSkeletons(await annotateFresh(hits))
+    const annotate = async (hits: DocumentMemoryHit[]): Promise<FreshDocumentMemoryHit[]> =>
+      this.flagSkeletons(await annotateFresh(hits))
     let externalHits: DocumentMemoryHit[] = []
     if (this.options.externalNames) {
-      const indexedPaths = new Set([...namedRaw, ...lexicalRaw].map((h) => normalizeSearchPath(h.path)))
+      const indexedPaths = new Set(
+        [...namedRaw, ...lexicalRaw].map((h) => normalizeSearchPath(h.path)),
+      )
       const externalFiles = await this.searchExternal(query, 5, indexedPaths)
       externalHits = externalFiles.slice(0, 3).map((f) => this.externalHit(f))
     }
     // Documents named like the query come first, even when their content also matches.
     const lexicalOrder = promoteNameMatches(namedRaw, lexicalRaw)
-    const lexicalHits = await annotate([...lexicalOrder.head, ...externalHits, ...lexicalOrder.tail])
+    const lexicalHits = await annotate([
+      ...lexicalOrder.head,
+      ...externalHits,
+      ...lexicalOrder.tail,
+    ])
 
-    if (callbacks?.isCancelled?.() || (queryToken !== undefined && this.querySequence !== queryToken)) return []
+    if (
+      callbacks?.isCancelled?.() ||
+      (queryToken !== undefined && this.querySequence !== queryToken)
+    )
+      return []
     callbacks?.onLexical?.(lexicalHits)
 
     // 2. Query embedding for semantic hybrid search
     let finalHits = lexicalHits
     if (this.options.askEmbed) {
       try {
-        const spaceId = activeEmbeddingModel ?? (this.store.getEmbeddingSpaces?.()[0]?.id ?? 'default')
+        const spaceId =
+          activeEmbeddingModel ?? this.store.getEmbeddingSpaces?.()[0]?.id ?? 'default'
         let vector: number[] | null = this.queryCache.get(spaceId, query) ?? null
         if (!vector) {
           vector = await this.options.askEmbed(query)
-          if (callbacks?.isCancelled?.() || (queryToken !== undefined && this.querySequence !== queryToken)) return []
+          if (
+            callbacks?.isCancelled?.() ||
+            (queryToken !== undefined && this.querySequence !== queryToken)
+          )
+            return []
           if (vector && vector.length) {
             this.queryCache.set(spaceId, query, vector)
           }
         }
-        if (callbacks?.isCancelled?.() || (queryToken !== undefined && this.querySequence !== queryToken)) return []
+        if (
+          callbacks?.isCancelled?.() ||
+          (queryToken !== undefined && this.querySequence !== queryToken)
+        )
+          return []
         if (vector && vector.length) {
-          let semanticCandidates: Array<{ chunkId: number; rank: number; score: number; documentId: number }> = []
+          let semanticCandidates: Array<{
+            chunkId: number
+            rank: number
+            score: number
+            documentId: number
+          }> = []
           if (this.options.askSemantic) {
             const reply = await this.options.askSemantic(vector, 200, spaceId)
-            if (callbacks?.isCancelled?.() || (queryToken !== undefined && this.querySequence !== queryToken)) return []
+            if (
+              callbacks?.isCancelled?.() ||
+              (queryToken !== undefined && this.querySequence !== queryToken)
+            )
+              return []
             if (reply) semanticCandidates = reply
           } else {
             semanticCandidates = this.store.searchSemantic(vector, 200, spaceId)
           }
-          if (callbacks?.isCancelled?.() || (queryToken !== undefined && this.querySequence !== queryToken)) return []
+          if (
+            callbacks?.isCancelled?.() ||
+            (queryToken !== undefined && this.querySequence !== queryToken)
+          )
+            return []
           let finalChunkHits: DocumentMemoryHit[] = []
           if (semanticCandidates.length > 0) {
             const fused = fuseHybridResults(lexicalCandidates, semanticCandidates, {
@@ -123,9 +193,17 @@ export class SearchService {
           }
           const hybridOrder = promoteNameMatches(namedRaw, finalChunkHits)
           finalHits = await annotate([...hybridOrder.head, ...externalHits, ...hybridOrder.tail])
-          if (callbacks?.isCancelled?.() || (queryToken !== undefined && this.querySequence !== queryToken)) return []
-          const stalePaths = new Set(lexicalHits.filter((h) => h.stale).map((h) => normalizeSearchPath(h.path)))
-          const missingPaths = new Set(lexicalHits.filter((h) => h.missing).map((h) => normalizeSearchPath(h.path)))
+          if (
+            callbacks?.isCancelled?.() ||
+            (queryToken !== undefined && this.querySequence !== queryToken)
+          )
+            return []
+          const stalePaths = new Set(
+            lexicalHits.filter((h) => h.stale).map((h) => normalizeSearchPath(h.path)),
+          )
+          const missingPaths = new Set(
+            lexicalHits.filter((h) => h.missing).map((h) => normalizeSearchPath(h.path)),
+          )
           if (stalePaths.size > 0 || missingPaths.size > 0) {
             finalHits = finalHits.map((h) => {
               const norm = normalizeSearchPath(h.path)
@@ -142,7 +220,11 @@ export class SearchService {
       }
     }
 
-    if (callbacks?.isCancelled?.() || (queryToken !== undefined && this.querySequence !== queryToken)) return []
+    if (
+      callbacks?.isCancelled?.() ||
+      (queryToken !== undefined && this.querySequence !== queryToken)
+    )
+      return []
     callbacks?.onFinal?.(finalHits)
     return finalHits
   }
