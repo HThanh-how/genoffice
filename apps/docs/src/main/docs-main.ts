@@ -4602,6 +4602,7 @@ export function registerProjectIpc(): void {
         }>
         attachments?: Array<{ name: string; path?: string; ext?: string; sizeBytes?: number }>
         scope?: { label: string; text?: string }
+        handoff?: { title: string }
       },
     ) => {
       if (args.role !== 'user' && args.role !== 'assistant') {
@@ -4622,6 +4623,9 @@ export function registerProjectIpc(): void {
       if (args.tools) msg.tools = args.tools
       if (args.attachments) msg.attachments = args.attachments
       if (args.scope) msg.scope = args.scope
+      if (args.handoff && typeof args.handoff.title === 'string') {
+        msg.handoff = { title: args.handoff.title }
+      }
 
       store.appendChatMessage(args.projectId, args.chatId, msg)
     },

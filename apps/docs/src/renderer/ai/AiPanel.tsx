@@ -65,6 +65,7 @@ import { waitForFullContent } from '../phased-content'
 import { currentDocGeneration } from '../file-actions'
 import { createFilesSkill } from './files-skill'
 import { boundChatHistory } from './chat-retention'
+import { splitHandoff } from '@genoffice/project-store/handoff'
 import { createElectronTransport } from './transport'
 import { useI18n, t as tModule, aiLangDirective, type StringKey } from '../i18n/locale'
 import { createFileNav, Markdown } from '@genoffice/ui'
@@ -112,6 +113,38 @@ function safeJsonInput(input: unknown): string | undefined {
   } catch {
     return undefined
   }
+}
+
+const HANDOFF_DISMISSED_PREFIX = 'ai-handoff-dismissed:'
+
+function readHandoffDismissed(chatId: string): boolean {
+  try {
+    return localStorage.getItem(HANDOFF_DISMISSED_PREFIX + chatId) === '1'
+  } catch {
+    return false
+  }
+}
+
+function markHandoffDismissed(chatId: string): void {
+  try {
+    localStorage.setItem(HANDOFF_DISMISSED_PREFIX + chatId, '1')
+  } catch {
+    /* best effort */
+  }
+}
+
+/** Model-context pair for a carried handoff (restore() drops an unanswered lone user message, so it is paired with an acknowledgement). */
+export function handoffModelContext(
+  text: string,
+): Array<{ role: 'user' | 'assistant'; text: string }> {
+  return [
+    {
+      role: 'user',
+      text: `${text}
+Use this as background for the user's requests about this document (language, style, formatting and audience instructions still apply unless the user changes them).`,
+    },
+    { role: 'assistant', text: 'Understood. I will keep this context in mind.' },
+  ]
 }
 
 interface ChatEntry {
@@ -424,6 +457,11 @@ export function AiPanel({
   const writerEpochRef = useRef(0)
   /** Past conversation restored from JSONL (read-only transcript, not fed to the model) */
   const [historicChat, setHistoricChat] = useState<ChatEntry[]>([])
+  /** context carried over from the Home chat that created/opened this document (first message of its chat) */
+  const [handoff, setHandoff] = useState<{ title: string; text: string } | null>(null)
+  const [handoffOpen, setHandoffOpen] = useState(false)
+  /** restored transcript without the handoff, kept to rebuild model context when the handoff is dismissed */
+  const restoredRef = useRef<Array<{ role: 'user' | 'assistant'; text: string }>>([])
   const [trackChanges, setTrackChanges] = useState(
     () => localStorage.getItem(TRACK_CHANGES_KEY) === '1',
   )
@@ -637,8 +675,16 @@ export function AiPanel({
         chatRefIds.current = ids
         return api.loadChat({ projectId: ids.projectId, chatId: ids.chatId, limit: 200 })
       })
-      .then((msgs) => {
-        if (msgs.length === 0) return
+      .then((loaded) => {
+        if (loaded.length === 0) return
+        const ids = chatRefIds.current
+        const split = splitHandoff(loaded)
+        const carried =
+          split.handoff && !(ids && readHandoffDismissed(ids.chatId)) ? split.handoff : null
+        if (carried) setHandoff(carried)
+        const msgs = split.rest
+        restoredRef.current = msgs.map((m) => ({ role: m.role, text: m.text }))
+        if (msgs.length === 0 && !carried) return
         setHistoricChat(
           msgs.map((m) => ({
             role: m.role,
@@ -662,7 +708,10 @@ export function AiPanel({
           })),
         )
         // restore model context: follow-ups after reopening a file continue the previous conversation (only when the loop is idle with no history)
-        loopRef.current?.restore(msgs.map((m) => ({ role: m.role, text: m.text })))
+        loopRef.current?.restore([
+          ...(carried ? handoffModelContext(carried.text) : []),
+          ...restoredRef.current,
+        ])
       })
       .catch(() => {
         /* history load failures are silent */
@@ -1232,7 +1281,20 @@ export function AiPanel({
     setInput('')
   }
 
+  const dismissHandoff = () => {
+    const ids = chatRefIds.current
+    if (ids) markHandoffDismissed(ids.chatId)
+    setHandoff(null)
+    setHandoffOpen(false)
+    // drop the carried context from the model too, keeping any restored transcript
+    if (!busy && chat.length === 0) {
+      loopRef.current?.reset()
+      if (restoredRef.current.length > 0) loopRef.current?.restore(restoredRef.current)
+    }
+  }
+
   const newChat = () => {
+    if (handoff) dismissHandoff()
     msgQueue.clear()
     if (pendingSendRef.current) {
       pendingSendRef.current.aborted = true
@@ -1245,6 +1307,7 @@ export function AiPanel({
     // Restored history is painted above the live turn: without this the
     // previous conversation survives "New chat" on screen (#195).
     setHistoricChat([])
+    restoredRef.current = []
     // Unsent composer attachments would otherwise ride into the next chat's
     // file context (availableAttachments merges sent + live). The typed
     // draft itself is kept — only staged files are dropped.
@@ -1448,6 +1511,38 @@ export function AiPanel({
         loadModels={() => window.desktop.getGeminiModels()}
       />
       <div ref={logRef} className="ai-chat" onScroll={onLogScroll}>
+        {handoff && (
+          <div className="ai-handoff">
+            <div className="ai-handoff-row">
+              <button
+                className="ai-handoff-toggle"
+                aria-expanded={handoffOpen}
+                onClick={() => setHandoffOpen((v) => !v)}
+                title={t(handoffOpen ? 'aiHandoffHide' : 'aiHandoffShow')}
+              >
+                <span className="ai-handoff-caret" aria-hidden="true">
+                  {handoffOpen ? '▾' : '▸'}
+                </span>
+                <span className="ai-handoff-label" dir="auto">
+                  {t('aiHandoffNote', { title: handoff.title })}
+                </span>
+              </button>
+              <button
+                className="ai-handoff-dismiss"
+                onClick={dismissHandoff}
+                title={t('aiHandoffDismiss')}
+                aria-label={t('aiHandoffDismiss')}
+              >
+                ×
+              </button>
+            </div>
+            {handoffOpen && (
+              <pre className="ai-handoff-body" dir="auto">
+                {handoff.text}
+              </pre>
+            )}
+          </div>
+        )}
         {/* past conversation (read-only transcript, not fed to the model), shown continuously with the current turn */}
         {historicChat.length > 0 && (
           <>
