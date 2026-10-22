@@ -161,7 +161,7 @@ export function CardThumbnail({ card, isVi, mediaAssets }: CardThumbnailProps): 
     document.body.appendChild(canvas)
 
     let stop: (() => void) | null = null
-    let timer: ReturnType<typeof setTimeout> | null = null
+    let timer: number | null = null
     let isMounted = true
     let resolveTask: (() => void) | null = null
 
@@ -177,28 +177,41 @@ export function CardThumbnail({ card, isVi, mediaAssets }: CardThumbnailProps): 
             rgbOf(SPLASH_THEMES.docs.color),
             lighterRgbOf(SPLASH_THEMES.docs.color),
           )
-          timer = setTimeout(
-            () => {
-              if (isMounted && !isCancelled()) {
-                try {
-                  const url = canvas.toDataURL('image/png')
-                  if (url && url.length > 50) {
-                    setBoundedCache(sceneThumbnailCache, sceneKey, url)
-                    setCachedDataUrl(url)
-                  }
-                } catch {
-                  // Canvas tainted or read failed; fallback is fine
+          // Take the frame once the scene has run as long as it needs AND has drawn a few frames
+          // (a timer alone can fire before the first frame when the page is busy)
+          const started = performance.now()
+          const runFor = sceneMeta(sceneId)?.thumbMs ?? 100
+          let frames = 0
+          const capture = () => {
+            frames += 1
+            if (
+              isMounted &&
+              !isCancelled() &&
+              (frames < 4 || performance.now() - started < runFor)
+            ) {
+              timer = requestAnimationFrame(capture)
+              return
+            }
+            if (isMounted && !isCancelled()) {
+              try {
+                const url = canvas.toDataURL('image/png')
+                if (url && url.length > 50) {
+                  setBoundedCache(sceneThumbnailCache, sceneKey, url)
+                  setCachedDataUrl(url)
                 }
+              } catch {
+                // Canvas tainted or read failed; fallback is fine
               }
-              if (stop) {
-                stop()
-                stop = null
-              }
-              resolve()
-              resolveTask = null
-            },
-            sceneMeta(sceneId)?.thumbMs ?? 100,
-          )
+            }
+            timer = null
+            if (stop) {
+              stop()
+              stop = null
+            }
+            resolve()
+            resolveTask = null
+          }
+          timer = requestAnimationFrame(capture)
         } catch {
           if (stop) {
             stop()
@@ -214,7 +227,7 @@ export function CardThumbnail({ card, isVi, mediaAssets }: CardThumbnailProps): 
       isMounted = false
       cancelQueue()
       if (timer) {
-        clearTimeout(timer)
+        cancelAnimationFrame(timer)
         timer = null
       }
       if (stop) {

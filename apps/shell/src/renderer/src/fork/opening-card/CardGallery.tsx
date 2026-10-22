@@ -197,6 +197,9 @@ export function CardGallery({
     return map
   }, [ordered, prefs])
 
+  // A few cards in use get a wider tile; when many are (the stock scenes), the frame and badge are enough
+  const inUseCount = ordered.filter((c) => (usage.get(c.id)?.length ?? 0) > 0).length
+
   const focusCard = (id: string | undefined) => {
     if (id) itemRefs.current.get(id)?.focus()
   }
@@ -503,7 +506,7 @@ export function CardGallery({
                   aria-controls={isOpen ? DETAIL_PANEL_ID : undefined}
                   aria-label={inUse ? `${text.name} (${isVi ? 'đang dùng' : 'in use'})` : text.name}
                   tabIndex={isFocusable ? 0 : -1}
-                  className={`ocs-gallery-card-item${isOpen ? ' is-open' : ''}${inUse ? ' is-inuse' : ''}${inTrash ? ' is-trashed' : ''}`}
+                  className={`ocs-gallery-card-item${isOpen ? ' is-open' : ''}${inUse ? ' is-inuse' : ''}${inUse && inUseCount <= 3 ? ' is-wide' : ''}${inTrash ? ' is-trashed' : ''}`}
                   onClick={() => {
                     if (!inTrash) onToggleCard(card)
                   }}
