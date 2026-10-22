@@ -19,6 +19,7 @@ import {
   resolveAgyCliPath,
   realRunDeps,
   agyUsageToTokenUsage,
+  AGY_MAX_PROMPT_CHARS,
   type AgyDeniedAction,
   type AgyEvent,
   type AgyRunDeps,
@@ -26,6 +27,12 @@ import {
 import { createAgyLimiter, type Limiter } from './agy-limiter'
 import { classifyAgyFailure, hasAgyPrintTimeoutWarning } from './agy-errors'
 import { chatModelFor } from './agy-cli'
+import {
+  agyAppendOnly,
+  agyConversationError,
+  agyMessageHash,
+  agyResumeEnabled,
+} from './agy-conversation'
 
 // ---------------------------------------------------------------------------
 // Constants & Limits
@@ -85,6 +92,7 @@ export function residentSessionSignature(
   tools: readonly AgentToolDef[],
   model: string,
   effort?: string,
+  cliPath?: string,
 ): string {
   const normalizedTools = tools.map((t) => ({
     name: t.name,
@@ -98,6 +106,8 @@ export function residentSessionSignature(
         tools: normalizedTools,
         model: model.trim(),
         effort: effort ?? '',
+        cliPath,
+        protocol: 'schema-v1',
       }),
     )
     .digest('hex')
@@ -184,7 +194,7 @@ interface ResidentSession {
   sessionId: string
   workerId: string
   signature: string
-  semanticFingerprints: string[]
+  prefixHashes: string[]
   conversationId?: string | undefined
 }
 
@@ -253,6 +263,7 @@ class AgyResidentManager {
     model: string,
     effort: AgyEffort | undefined,
     deps: AgyRunDeps,
+    conversationId?: string,
   ): Promise<ResidentWorker> {
     const current = this.spawnQueue
     let resolveQueue!: () => void
@@ -261,7 +272,7 @@ class AgyResidentManager {
     })
     await current.catch(() => undefined)
     try {
-      const existing = this.findUnboundWorker(cliPath, model, effort)
+      const existing = conversationId ? undefined : this.findUnboundWorker(cliPath, model, effort)
       if (existing) {
         existing.inUse = true
         if (existing.idleTimer) {
@@ -278,6 +289,7 @@ class AgyResidentManager {
           cliPath,
           model,
           ...(effort !== undefined ? { effort } : {}),
+          ...(conversationId ? { conversationId } : {}),
         },
         deps,
       )
@@ -370,7 +382,7 @@ class AgyResidentManager {
   }): Promise<{ text: string; calls: AgentToolCall[]; usage?: AiTokenUsage }> {
     const scope = String(input.cb.sessionScope ?? 'global')
     const sessionId = input.cb.sessionId!
-    const sessionKey = `${scope}:${sessionId}`
+    const sessionKey = JSON.stringify([scope, sessionId])
 
     const prevLock = this.sessionLocks.get(sessionKey) ?? Promise.resolve()
     let resolveLock!: () => void
@@ -385,7 +397,29 @@ class AgyResidentManager {
         err.name = 'AbortError'
         throw err
       }
-      return await this.executeTurnInternal(input, sessionKey, scope, sessionId)
+      const deadline = Date.now() + AGY_RESIDENT_TURN_TIMEOUT_MS
+      const resumeAttempt = { used: false }
+      try {
+        return await this.executeTurnInternal(
+          input,
+          sessionKey,
+          scope,
+          sessionId,
+          deadline,
+          resumeAttempt,
+        )
+      } catch (error) {
+        if (
+          !agyResumeEnabled(input.deps.env) ||
+          !resumeAttempt.used ||
+          input.cb.signal.aborted ||
+          !agyConversationError(error)
+        )
+          throw error
+        if (Date.now() >= deadline) throw error
+        // The failed worker and its session were retired. Retry once with a full seed.
+        return await this.executeTurnInternal(input, sessionKey, scope, sessionId, deadline)
+      }
     } finally {
       resolveLock()
       if (this.sessionLocks.get(sessionKey) === currentLock) {
@@ -407,6 +441,8 @@ class AgyResidentManager {
     sessionKey: string,
     scope: string,
     sessionId: string,
+    deadline: number,
+    resumeAttempt?: { used: boolean },
   ): Promise<{ text: string; calls: AgentToolCall[]; usage?: AiTokenUsage }> {
     const { config, system, messages, tools, cb, deps, say } = input
 
@@ -437,31 +473,36 @@ class AgyResidentManager {
           })
         : undefined
 
-      const currentSignature = residentSessionSignature(system, tools, model, effort)
+      const currentSignature = residentSessionSignature(system, tools, model, effort, cliPath)
       let session = this.sessions.get(sessionKey)
 
       // Check if existing session can be reused incrementally
       let canReuseSession = false
       let isIncremental = false
-      if (session && session.signature === currentSignature) {
-        if (messages.length >= session.semanticFingerprints.length) {
-          let prefixMatches = true
-          for (let i = 0; i < session.semanticFingerprints.length; i++) {
-            if (semanticFingerprint(messages[i]!) !== session.semanticFingerprints[i]) {
-              prefixMatches = false
-              break
-            }
-          }
-          if (prefixMatches) {
-            canReuseSession = true
-            isIncremental = messages.length > session.semanticFingerprints.length
-          }
-        }
+      if (
+        session &&
+        session.signature === currentSignature &&
+        agyAppendOnly(messages, session.prefixHashes) &&
+        renderCausalMessages(messages.slice(session.prefixHashes.length)).length <=
+          AGY_MAX_PROMPT_CHARS
+      ) {
+        canReuseSession = true
+        isIncremental = true
       }
 
       if (canReuseSession && session) {
         worker = this.workers.get(session.workerId)
-        if (!worker || worker.inUse || worker.cliPath !== cliPath) {
+        if (!worker && agyResumeEnabled(deps.env) && session.conversationId) {
+          worker = await this.acquireOrSpawnWorker(
+            cliPath,
+            model,
+            effort,
+            deps,
+            session.conversationId,
+          )
+          worker.boundSessionKey = sessionKey
+          session.workerId = worker.id
+        } else if (!worker || worker.inUse || worker.cliPath !== cliPath) {
           // Worker was terminated, is busy, or belongs to a different executable; reseed
           canReuseSession = false
         }
@@ -485,7 +526,7 @@ class AgyResidentManager {
           sessionId,
           workerId: worker.id,
           signature: currentSignature,
-          semanticFingerprints: [],
+          prefixHashes: [],
         }
         this.sessions.set(sessionKey, session)
         isIncremental = false
@@ -500,11 +541,13 @@ class AgyResidentManager {
       if (!worker || !session) {
         throw new Error('Failed to acquire resident AGY worker')
       }
+      const sentHashes = messages.map(agyMessageHash)
 
       // Determine prompt to write to stdin
       let promptToSend: string
       if (isIncremental) {
-        const newMessages = messages.slice(session.semanticFingerprints.length)
+        if (resumeAttempt) resumeAttempt.used = true
+        const newMessages = messages.slice(session.prefixHashes.length)
         promptToSend = renderCausalMessages(newMessages)
       } else {
         const plan = buildAgyPrompt(system, messages, tools, 'schema')
@@ -514,12 +557,11 @@ class AgyResidentManager {
       worker.stdinWrittenForCurrentTurn = false
       worker.currentTurnSettled = false
 
-      const deadline = Date.now() + AGY_RESIDENT_TURN_TIMEOUT_MS
       let result = await this.runTurnOnWorker({
         worker,
         prompt: promptToSend,
         signal: cb.signal,
-        timeoutMs: AGY_RESIDENT_TURN_TIMEOUT_MS,
+        timeoutMs: Math.max(1, deadline - Date.now()),
         deps,
         cb,
         ...(say ? { say } : {}),
@@ -529,6 +571,8 @@ class AgyResidentManager {
       const known = new Set(tools.map((t) => t.name))
       let structured = readStructuredToolTurn(result.structured, known)
       if (!structured) {
+        // A formatting retry changes the conversation beyond the application's history.
+        worker.retireAfterCurrentTurn = true
         const initial = result
         // Correct formatting once on this same conversation. Do not replay the request,
         // spawn a fallback process, or execute tool-looking text from an invalid response.
@@ -568,13 +612,13 @@ class AgyResidentManager {
         input: call.input,
       }))
 
-      // Update session semantic history including returned assistant turn
+      // Include the returned assistant turn so it is checked but never replayed.
       const assistantMessage: AgentMessage = {
         role: 'assistant',
         text: structured.text,
         toolCalls: returnedCalls,
       }
-      session.semanticFingerprints = [...messages, assistantMessage].map(semanticFingerprint)
+      session.prefixHashes = [...sentHashes, agyMessageHash(assistantMessage)]
       if (result.conversationId) session.conversationId = result.conversationId
 
       worker.lastUsedAt = Date.now()
@@ -602,7 +646,7 @@ class AgyResidentManager {
           await this.retireWorker(worker, deps)
         } else if (!worker.idleTimer) {
           worker.idleTimer = setTimeout(() => {
-            void this.retireWorker(worker!, deps)
+            void this.retireWorker(worker!, deps, true)
           }, AGY_RESIDENT_IDLE_TTL_MS)
           worker.idleTimer.unref?.()
         }
@@ -638,11 +682,15 @@ class AgyResidentManager {
       }
     }
     if (oldest) {
-      void this.retireWorker(oldest, deps)
+      void this.retireWorker(oldest, deps, true)
     }
   }
 
-  private async retireWorker(worker: ResidentWorker, deps?: AgyRunDeps): Promise<void> {
+  private async retireWorker(
+    worker: ResidentWorker,
+    deps?: AgyRunDeps,
+    preserveConversation = false,
+  ): Promise<void> {
     if (worker.retired) return
     worker.retired = true
     if (worker.idleTimer) {
@@ -650,9 +698,11 @@ class AgyResidentManager {
       worker.idleTimer = undefined
     }
     this.workers.delete(worker.id)
-    if (worker.boundSessionKey) {
+    if (worker.boundSessionKey && !(preserveConversation && deps && agyResumeEnabled(deps.env))) {
       this.sessions.delete(worker.boundSessionKey)
     }
+    // Only hashes and CLI-owned IDs survive eviction, never files or an unbounded history.
+    if (this.sessions.size > 128) this.sessions.delete(this.sessions.keys().next().value!)
     try {
       worker.stop()
     } catch {
@@ -668,7 +718,12 @@ class AgyResidentManager {
   }
 
   private async spawnWorker(
-    input: { cliPath: string; model: string; effort?: AgyEffort | undefined },
+    input: {
+      cliPath: string
+      model: string
+      effort?: AgyEffort | undefined
+      conversationId?: string
+    },
     deps: AgyRunDeps,
   ): Promise<ResidentWorker> {
     const id = randomUUID()
@@ -686,6 +741,7 @@ class AgyResidentManager {
       timeoutMs: AGY_RESIDENT_TURN_TIMEOUT_MS,
       ...(input.effort !== undefined ? { effort: input.effort } : {}),
       jsonSchemaPath,
+      conversationId: input.conversationId,
     })
 
     const child = deps.spawn(input.cliPath, args, {
@@ -805,7 +861,9 @@ class AgyResidentManager {
       }
 
       const timer = setTimeout(() => {
-        fail(new AiTimeoutError(timeoutMs))
+        const error = new AiTimeoutError(timeoutMs)
+        error.message += ` (steps=[${trace.join(', ') || 'none'}])`
+        fail(error)
       }, timeoutMs)
 
       const handleLine = (line: string) => {
