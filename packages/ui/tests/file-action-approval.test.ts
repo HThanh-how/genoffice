@@ -104,3 +104,22 @@ it('includes every permission label in every supported locale', () => {
     )
   }
 })
+
+it('shows every ordered merge source and its destination before approval', async () => {
+  const p = proposal()
+  p.action = {
+    tool: 'merge_documents',
+    sources: ['/allowed/B.docx', '/allowed/A.md'],
+    destination: '/allowed/Combined.docx',
+    format: 'docx',
+    separator: 'heading',
+  }
+  let result!: Promise<boolean>
+  act(() => {
+    result = approval.confirm(p)
+  })
+  const text = host.querySelector('pre')!.textContent!
+  expect(text).toBe('/allowed/B.docx\n/allowed/A.md\n→ /allowed/Combined.docx')
+  act(() => host.querySelector('button')!.click())
+  expect(await result).toBe(false)
+})

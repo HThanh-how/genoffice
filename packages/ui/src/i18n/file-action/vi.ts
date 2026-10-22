@@ -8,5 +8,6 @@ export const strings = {
   move_file: 'Di chuyển hoặc đổi tên tệp',
   delete_file: 'Chuyển vào thùng rác hệ thống',
   list_folder: 'Liệt kê thư mục',
+  merge_documents: 'Ghép tài liệu thành tệp mới',
   export_pdf: 'Xuất tệp đã lưu sang PDF',
 } satisfies Record<keyof typeof zh, string>

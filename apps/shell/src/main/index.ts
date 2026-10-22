@@ -6,6 +6,7 @@ import { runStorageBootstrapOffThread } from './document-memory/runtime/storage-
 import { currentMachineSpec } from './document-memory/embedding/initial-profile'
 import { isPathIgnored } from './document-memory/ignore-policy'
 import { FileManagementService } from './file-management'
+import { mergeDocuments } from './merge-documents'
 import { electronOverlayDeps } from './fork/opening-overlay-view'
 import { rotatingFileWriter } from './fork/renderer-diagnostics'
 import {
@@ -5813,6 +5814,8 @@ function registerHomeIpc(): void {
   })
 
   const fileManagement = new FileManagementService({
+    mergeDocuments: (action, output) =>
+      mergeDocuments(action, output, bundledCliRunner(), kbDocumentDeps()),
     roots: () => [
       ...folderRootPaths(),
       ...(folderScan?.folders() ?? []).map((entry) => entry.root),

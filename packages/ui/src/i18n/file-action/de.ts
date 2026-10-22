@@ -8,5 +8,6 @@ export const strings = {
   move_file: 'Datei verschieben oder umbenennen',
   delete_file: 'In den Systempapierkorb verschieben',
   list_folder: 'Ordner auflisten',
+  merge_documents: 'Dokumente in einer neuen Datei zusammenführen',
   export_pdf: 'Gespeicherte Datei als PDF exportieren',
 } satisfies Record<keyof typeof zh, string>

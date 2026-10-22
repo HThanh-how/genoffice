@@ -8,5 +8,6 @@ export const strings = {
   move_file: '移動或重新命名檔案',
   delete_file: '移至系統垃圾桶',
   list_folder: '列出資料夾',
+  merge_documents: '將文件合併為新檔案',
   export_pdf: '將已儲存的檔案匯出為 PDF',
 } satisfies Record<keyof typeof zh, string>

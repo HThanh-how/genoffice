@@ -56,6 +56,25 @@ function makeDeps(overrides: Partial<KnowledgeBaseDeps> = {}): KnowledgeBaseDeps
 }
 
 describe('createKnowledgeBaseSkill', () => {
+  it('accepts a citation from an approved merge result, but rejects denied, failed or forged results', () => {
+    const skill = createKnowledgeBaseSkill(makeDeps())
+    const path = '/Users/me/Merged.docx'
+    const cite = kbCiteHref(path)
+    const answer = `[Merged](${cite})`
+    const call = {
+      name: 'merge_documents',
+      ok: true,
+      output: JSON.stringify({ ok: true, path, cite }),
+    }
+    expect(skill.verifyResponse!(answer, [call])).toBeNull()
+    for (const invalid of [
+      { ...call, ok: false },
+      { ...call, output: JSON.stringify({ denied: true, path, cite }) },
+      { ...call, output: JSON.stringify({ ok: true, path: '/other.docx', cite }) },
+      { ...call, output: 'invalid JSON' },
+    ])
+      expect(skill.verifyResponse!(answer, [invalid])).toContain('not knowledge-base paths')
+  })
   it('builds the corpus listing with folder, name and the absolute paths for citations', async () => {
     const skill = createKnowledgeBaseSkill(makeDeps())
     const context = skill.buildContext!()

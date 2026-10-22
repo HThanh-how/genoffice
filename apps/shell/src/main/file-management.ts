@@ -32,6 +32,7 @@ export interface FileManagementDeps {
   userData(): string
   trashItem(path: string): Promise<void>
   exportPdf(input: string, output: string): Promise<void>
+  mergeDocuments?: (action: FileAction, output: string) => Promise<void>
   now?: () => number
 }
 
@@ -125,7 +126,47 @@ export class FileManagementService {
     const req = raw as FileAction
     if (!FILE_TOOL_NAMES.includes(req.tool)) throw new Error('Unknown file tool')
     let action: FileAction
-    if (req.tool === 'move_file') {
+    if (req.tool === 'merge_documents') {
+      if (!Array.isArray(req.sources) || req.sources.length < 2 || req.sources.length > 20)
+        throw new Error('Expected 2–20 sources')
+      if (req.format !== 'docx' && req.format !== 'md') throw new Error('Invalid output format')
+      if (!['heading', 'pagebreak', 'none'].includes(req.separator!))
+        throw new Error('Invalid separator')
+      if (
+        typeof req.title !== 'string' ||
+        !isValidRawRenameName(req.title) ||
+        req.title.length > 200
+      )
+        throw new Error('Invalid document title')
+      const sources = req.sources.map((source) => this.path(source))
+      let total = 0
+      for (const source of sources) {
+        if (!['.docx', '.md'].includes(extname(source).toLowerCase()))
+          throw new Error('Only saved .docx and .md sources are supported')
+        total += this.regularFile(source).size
+      }
+      if (total > FILE_ACTION_MAX_BYTES) throw new Error('Sources exceed 128 MiB limit')
+      const outputFolder = this.path(req.outputFolder ?? dirname(sources[0]!))
+      if (!lstatSync(outputFolder).isDirectory())
+        throw new Error('Output folder must be a directory')
+      action = {
+        tool: req.tool,
+        sources,
+        title: req.title,
+        format: req.format,
+        separator: req.separator,
+        outputFolder,
+        destination: this.path(join(outputFolder, `${req.title}.${req.format}`), true),
+      }
+      return {
+        action,
+        fingerprint: JSON.stringify([
+          action,
+          sources.map((source) => identity(source, true)),
+          identity(outputFolder, false),
+        ]),
+      }
+    } else if (req.tool === 'move_file') {
       action = {
         tool: req.tool,
         source: this.path(req.source),
@@ -145,10 +186,7 @@ export class FileManagementService {
     }
     const source = action.source ?? action.path!
     if (!['create_folder', 'list_folder'].includes(action.tool)) {
-      const s = lstatSync(source)
-      if (!s.isFile() || s.nlink !== 1)
-        throw new Error('Only regular files with one link are supported')
-      if (s.size > FILE_ACTION_MAX_BYTES) throw new Error('File exceeds 128 MiB limit')
+      this.regularFile(source)
     }
     if (action.tool === 'list_folder' && !lstatSync(source).isDirectory()) {
       throw new Error('Path must be a directory')
@@ -159,6 +197,14 @@ export class FileManagementService {
       action.destination ? identity(dirname(action.destination), false) : null,
     ])
     return { action, fingerprint }
+  }
+
+  private regularFile(path: string) {
+    const s = lstatSync(path)
+    if (!s.isFile() || s.nlink !== 1)
+      throw new Error('Only regular files with one link are supported')
+    if (s.size > FILE_ACTION_MAX_BYTES) throw new Error('File exceeds 128 MiB limit')
+    return s
   }
 
   private prune() {
@@ -220,21 +266,24 @@ export class FileManagementService {
         }
         throw error
       }
-    } else if (a.tool === 'export_pdf') {
+    } else if (a.tool === 'export_pdf' || a.tool === 'merge_documents') {
       const tempDir = mkdtempSync(join(dirname(a.destination!), '.genoffice-export-'))
-      const tempPdf = join(tempDir, 'export.pdf')
+      const tempOutput = join(tempDir, `output${extname(a.destination!)}`)
       try {
-        await this.deps.exportPdf(a.path!, tempPdf)
-        const output = lstatSync(tempPdf)
+        if (a.tool === 'merge_documents') {
+          if (!this.deps.mergeDocuments) throw new Error('Document merge is unavailable')
+          await this.deps.mergeDocuments(a, tempOutput)
+        } else await this.deps.exportPdf(a.path!, tempOutput)
+        const output = lstatSync(tempOutput)
         if (!output.isFile() || output.isSymbolicLink() || output.size > FILE_ACTION_MAX_BYTES) {
-          throw new Error('Invalid or oversized PDF output')
+          throw new Error('Invalid or oversized document output')
         }
-        // Export can take time; revalidate roots, policy, parents and source before publication.
+        // Conversion can take time; revalidate policy and all sources before publication.
         if (this.check(a).fingerprint !== checked.fingerprint)
           throw new Error('File changed during export')
-        copyFileSync(tempPdf, a.destination!, constants.COPYFILE_EXCL)
+        copyFileSync(tempOutput, a.destination!, constants.COPYFILE_EXCL)
       } finally {
-        if (statOrMissing(tempPdf)) unlinkSync(tempPdf)
+        if (statOrMissing(tempOutput)) unlinkSync(tempOutput)
         rmdirSync(tempDir)
       }
     }

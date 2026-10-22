@@ -8,5 +8,6 @@ export const strings = {
   move_file: 'Przenieś plik lub zmień nazwę',
   delete_file: 'Przenieś do kosza systemowego',
   list_folder: 'Wyświetl folder',
+  merge_documents: 'Scal dokumenty w nowy plik',
   export_pdf: 'Eksportuj zapisany plik do PDF',
 } satisfies Record<keyof typeof zh, string>

@@ -2,7 +2,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { act, createElement } from 'react'
 import { createRoot } from 'react-dom/client'
-import type { CreateDocumentDeps } from '@genoffice/agent-core'
+import type { CreateDocumentDeps, createFileManagementSkill } from '@genoffice/agent-core'
 import { HomeChat } from '../src/renderer/src/HomeChat'
 import { requestChatPrefill } from '../src/renderer/src/chat-events'
 import type { HomeApi } from '../src/shared/home-api'
@@ -11,12 +11,17 @@ import type { I18n } from '../src/renderer/src/locale'
 const captured = vi.hoisted(() => ({
   docDeps: null as CreateDocumentDeps | null,
   runs: 0,
+  captureMerge: undefined as Parameters<typeof createFileManagementSkill>[2],
 }))
 
 vi.mock('@genoffice/agent-core', async (original) => {
   const actual = await original<typeof import('@genoffice/agent-core')>()
   return {
     ...actual,
+    createFileManagementSkill: (...args: Parameters<typeof createFileManagementSkill>) => {
+      captured.captureMerge = args[2]
+      return actual.createFileManagementSkill(...args)
+    },
     createDocumentSkill: (deps: CreateDocumentDeps) => {
       captured.docDeps = deps
       return actual.createDocumentSkill(deps)
@@ -72,7 +77,40 @@ describe('HomeChat document open lifecycle & concurrency isolation', () => {
     localStorage.clear()
     captured.docDeps = null
     captured.runs = 0
+    captured.captureMerge = undefined
   })
+
+  it.each([false, true])(
+    'only opens the merged output once while its original run is authorized (switched=%s)',
+    async (switched) => {
+      const host = document.createElement('div')
+      document.body.append(host)
+      const root = createRoot(host)
+      const onOpenPath = vi.fn(async () => true)
+      const api = mockApi({ fileActionPropose: vi.fn(), fileActionDecide: vi.fn() })
+      try {
+        await act(async () => {
+          root.render(
+            createElement(HomeChat, { api, i18n: mockI18n, workspaceActive: true, onOpenPath }),
+          )
+        })
+        await act(async () => {
+          requestChatPrefill({ text: 'Merge files', intent: 'new', send: true })
+        })
+        const finish = captured.captureMerge!()
+        if (switched)
+          await act(async () => {
+            requestChatPrefill({ text: 'Another task', intent: 'new', send: true })
+          })
+        expect(await finish('/Users/me/GenOffice/Merged.docx')).toBe(!switched)
+        expect(onOpenPath).toHaveBeenCalledTimes(switched ? 0 : 1)
+        if (!switched) expect(onOpenPath).toHaveBeenCalledWith('/Users/me/GenOffice/Merged.docx')
+      } finally {
+        await act(async () => root.unmount())
+        host.remove()
+      }
+    },
+  )
 
   it('Two concurrent open requests deduplicate to single onOpenPath invocation', async () => {
     let resolveOpen!: (value: boolean) => void

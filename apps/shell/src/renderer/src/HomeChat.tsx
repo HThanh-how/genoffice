@@ -896,7 +896,26 @@ export function HomeChat({
         }),
         docSkillRef.current!,
         ...(typeof api.fileActionPropose === 'function'
-          ? [createFileManagementSkill(api, fileApproval.confirm)]
+          ? [
+              createFileManagementSkill(api, fileApproval.confirm, () => {
+                const owner = convRef.current
+                const table = fileTableRef.current
+                const generation = runGenerationRef.current
+                const run = activeRunRef.current
+                const context: CreateDocumentExecutionContext = {
+                  sessionId: owner.executionId || activeSessionIdRef.current || undefined,
+                  userTurnId: currentUserTurnIdRef.current || undefined,
+                }
+                return async (path) => {
+                  if (!isAutoOpenAuthorized(owner, generation, run, context)) return false
+                  createdPathsRef.current.add(path)
+                  table.addFile({ path, name: path.split(/[\\/]/).pop() ?? path })
+                  await seedDocumentChat(path, 'created')
+                  if (!isAutoOpenAuthorized(owner, generation, run, context)) return false
+                  return openDocumentPath(path, context)
+                }
+              }),
+            ]
           : []),
       ]),
       // a sectioned document is create + up to 12 appends + the answer, after a few searches

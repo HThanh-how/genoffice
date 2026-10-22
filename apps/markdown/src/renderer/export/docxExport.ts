@@ -277,6 +277,9 @@ function mapTable(node: JSONContent, ctx: WalkContext): TableModel {
 
 function walkBlock(ctx: WalkContext, node: JSONContent, base?: ParaFormat): void {
   switch (node.type) {
+    case 'pageBreak':
+      pushParagraph(ctx, { type: 'paragraph', runs: [], format: { pageBreakBefore: true } })
+      break
     case 'paragraph':
       pushTextblock(ctx, node.content, (runs) => ({ type: 'paragraph', runs, format: base }))
       break
