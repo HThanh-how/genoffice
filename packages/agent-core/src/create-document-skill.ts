@@ -112,6 +112,12 @@ what the file would contain.
   was already written, and make at most ${APPEND_TO_DOCUMENT_MAX_CALLS} append_to_document calls per request.`
 
 const CREATE_SYSTEM_PROMPT_TAIL = `
+- Before drafting, ask for essential missing details instead of guessing. For a
+  lesson plan, confirm the subject, class/grade and week or lesson/topic when the
+  user has not supplied them. If ask_user is available, use its option cards;
+  ask dependent questions in the next call after reading the answer. If it is
+  unavailable, ask in chat and wait. Do not create a file until these are resolved
+  or the user explicitly asks you to choose defaults. If the user cancels, stop.
 - Always read existing sources thoroughly first using available search and read tools
   before synthesizing the document content.
 - Write the content in Markdown (headings #/##, bullet/numbered lists, tables with

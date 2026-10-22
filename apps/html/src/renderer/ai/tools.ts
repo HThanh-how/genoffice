@@ -1,3 +1,4 @@
+import type { ClarifyQuestion } from '@genoffice/ui'
 import type { AgentSkill, AgentToolCall, AgentToolDef, ToolExecution } from '@genoffice/agent-core'
 import { t } from '../i18n/locale'
 import type { ElementEntry, ParseMap } from '../document/parse-map'
@@ -60,14 +61,7 @@ export interface HtmlDocAccess {
 
 export type PlanMode = 'new' | 'redesign' | 'restyle' | 'extract'
 
-export interface ClarifyQuestion {
-  id: string
-  label: string
-  description?: string
-  /** ≤5 options; the card appends "decide for me" and a free-text "other" itself */
-  options: string[]
-  multi?: boolean
-}
+export type { ClarifyQuestion } from '@genoffice/ui'
 
 export type BriefDecision =
   { kind: 'confirmed'; brief: Brief } | { kind: 'redo'; note: string } | { kind: 'cancelled' }
