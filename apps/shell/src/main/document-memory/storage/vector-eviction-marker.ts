@@ -1,5 +1,6 @@
 import type { DatabaseSync } from 'node:sqlite'
 import { ensureRedundancySchema } from './redundancy-schema'
+import { memoizePositive } from './statement-cache'
 
 /**
  * Durable marker "vectors of this document were evicted by cache retention".
@@ -40,14 +41,23 @@ export const VECTOR_EVICTION_APPLIES_SQL = `EXISTS (
   SELECT 1 FROM document_vector_evictions m
   WHERE m.document_id = documents.id AND m.hash IS documents.hash AND documents.last_opened_at <= m.evicted_at)`
 
+const vectorEvictionTablePresent = new WeakMap<DatabaseSync, true>()
+
 export function hasVectorEvictionTable(db: DatabaseSync): boolean {
-  try {
-    return Boolean(
-      db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'document_vector_evictions'").get(),
-    )
-  } catch {
-    return false
-  }
+  // Asked on every poll page and every stats call; a present table is never dropped at runtime, so only the first positive answer pays for the probe.
+  return memoizePositive(vectorEvictionTablePresent, db, () => {
+    try {
+      return Boolean(
+        db
+          .prepare(
+            "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'document_vector_evictions'",
+          )
+          .get(),
+      )
+    } catch {
+      return false
+    }
+  })
 }
 
 /** Idempotent. Requires `documents`, `chunks` and `chunk_embeddings` to exist. */
@@ -73,7 +83,11 @@ function placeholders(ids: number[]): string {
 }
 
 /** Mark documents whose vectors were just evicted. Call inside the eviction transaction, after the delete. */
-export function markVectorsEvicted(db: DatabaseSync, documentIds: number[], nowMs: number = Date.now()): void {
+export function markVectorsEvicted(
+  db: DatabaseSync,
+  documentIds: number[],
+  nowMs: number = Date.now(),
+): void {
   if (documentIds.length === 0 || !hasVectorEvictionTable(db)) return
   db.prepare(
     `INSERT INTO document_vector_evictions (document_id, evicted_at, hash)
@@ -85,14 +99,18 @@ export function markVectorsEvicted(db: DatabaseSync, documentIds: number[], nowM
 export function clearVectorEvictions(db: DatabaseSync, documentIds: number[]): number {
   if (documentIds.length === 0 || !hasVectorEvictionTable(db)) return 0
   return Number(
-    db.prepare(`DELETE FROM document_vector_evictions WHERE document_id IN (${placeholders(documentIds)})`).run(...documentIds)
-      .changes,
+    db
+      .prepare(
+        `DELETE FROM document_vector_evictions WHERE document_id IN (${placeholders(documentIds)})`,
+      )
+      .run(...documentIds).changes,
   )
 }
 
 export function countVectorEvictions(db: DatabaseSync): number {
   if (!hasVectorEvictionTable(db)) return 0
-  return (db.prepare('SELECT count(*) AS c FROM document_vector_evictions').get() as { c: number }).c
+  return (db.prepare('SELECT count(*) AS c FROM document_vector_evictions').get() as { c: number })
+    .c
 }
 
 export interface VectorEvictionReleaseResult {

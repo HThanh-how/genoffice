@@ -30,6 +30,7 @@ import {
 } from '../../name-search-projection'
 import type { SyncMetadataGuard } from '../../runtime/sync-metadata-admission'
 import { hasContentEvictedColumn } from '../migration/cache-retention'
+import { cachedStatement } from '../statement-cache'
 import {
   clearVectorEvictions,
   hasVectorEvictionTable,
@@ -484,6 +485,55 @@ export class DocumentRepository {
     }
   }
 
+  /**
+   * The common case of a folder reconcile: the file is already known, its name projection is current and the
+   * importance hint would not change. Answered from reads alone - no write transaction, no row rewrite, no WAL
+   * frames (a no-op upsert used to append ~4 KB of WAL per unchanged file; a rescan of the corpus left a 565 MB WAL).
+   * Returns null whenever anything would have to be written, and the caller takes the transactional path.
+   */
+  private enrollmentWithoutWrite(
+    normalizedPath: string,
+    fileName: string,
+    mtimeMs: number,
+    sizeBytes: number,
+    inference: { suggestion: string; reason?: string | null },
+  ): FileEnrollmentResult | null {
+    const row = cachedStatement(
+      this.db,
+      'SELECT id, mtime_ms, size_bytes, status, excluded, importance_suggestion, importance_reason FROM documents WHERE path = ?',
+    ).get(normalizedPath) as
+      | {
+          id: number
+          mtime_ms: number | null
+          size_bytes: number | null
+          status: string
+          excluded: number
+          importance_suggestion: string | null
+          importance_reason: string | null
+        }
+      | undefined
+    if (!row || row.excluded === 1 || row.status === 'excluded') return null
+    // The upsert only ever rewrites the hint while it is still 'unknown' / 'normal'.
+    const hintReplaceable =
+      row.importance_suggestion === 'unknown' || row.importance_suggestion === 'normal'
+    if (
+      hintReplaceable &&
+      (row.importance_suggestion !== inference.suggestion ||
+        (row.importance_reason ?? null) !== (inference.reason ?? null))
+    ) {
+      return null
+    }
+    if (!isProjectionUpToDate(this.db, row.id, buildDocumentProjection(fileName, normalizedPath)))
+      return null
+    const hasChanged =
+      row.mtime_ms === null ||
+      row.mtime_ms !== mtimeMs ||
+      row.size_bytes === null ||
+      row.size_bytes !== sizeBytes ||
+      row.status === 'pending'
+    return { outcome: hasChanged ? 'updated' : 'unchanged' }
+  }
+
   enrollDiscoveredResult(path: string, mtimeMs: number, sizeBytes: number): FileEnrollmentResult {
     // Media is finished work at enrollment: never "needs indexing" (callers would queue extraction).
     if (mediaKindOfPath(path)) {
@@ -496,14 +546,23 @@ export class DocumentRepository {
     const normalizedPath = resolve(path)
     const fileName = basename(normalizedPath)
     const inference = inferDocumentImportance({ name: fileName, path: normalizedPath })
+    const unchanged = this.enrollmentWithoutWrite(
+      normalizedPath,
+      fileName,
+      mtimeMs,
+      sizeBytes,
+      inference,
+    )
+    if (unchanged) return unchanged
     const guard = this.getEffectiveSyncGuard()
     let reservationId: string | undefined
     let ownerToken: string | undefined
     this.db.exec('BEGIN IMMEDIATE')
     try {
-      const existing = this.db
-        .prepare('SELECT id, mtime_ms, size_bytes, status, excluded FROM documents WHERE path = ?')
-        .get(normalizedPath) as
+      const existing = cachedStatement(
+        this.db,
+        'SELECT id, mtime_ms, size_bytes, status, excluded FROM documents WHERE path = ?',
+      ).get(normalizedPath) as
         | {
             id: number
             mtime_ms: number | null
@@ -553,15 +612,14 @@ export class DocumentRepository {
         ownerToken = dec.ownerToken
       }
 
-      this.db
-        .prepare(
-          `INSERT INTO documents(path, name, status, last_opened_at, priority_at, chunk_counted, importance_suggestion, importance_reason)
+      cachedStatement(
+        this.db,
+        `INSERT INTO documents(path, name, status, last_opened_at, priority_at, chunk_counted, importance_suggestion, importance_reason)
            VALUES (?, ?, 'pending', 0, ?, 1, ?, ?)
            ON CONFLICT(path) DO UPDATE SET
              importance_suggestion = CASE WHEN documents.importance_suggestion = 'unknown' OR documents.importance_suggestion = 'normal' THEN excluded.importance_suggestion ELSE documents.importance_suggestion END,
              importance_reason = CASE WHEN documents.importance_suggestion = 'unknown' OR documents.importance_suggestion = 'normal' THEN excluded.importance_reason ELSE documents.importance_reason END`,
-        )
-        .run(normalizedPath, fileName, mtimeMs, inference.suggestion, inference.reason)
+      ).run(normalizedPath, fileName, mtimeMs, inference.suggestion, inference.reason)
       const document = this.documentByPath(normalizedPath)
       if (!document || document.status === 'excluded') {
         this.db.exec('COMMIT')
@@ -643,13 +701,12 @@ export class DocumentRepository {
   }
 
   documentByPath(path: string): StoredDocument | null {
-    const row = this.db
-      .prepare(
-        `SELECT id, path, name, status, mtime_ms, size_bytes, hash, error, truncated, truncated_reason,
+    const row = cachedStatement(
+      this.db,
+      `SELECT id, path, name, status, mtime_ms, size_bytes, hash, error, truncated, truncated_reason,
                 importance_override, importance_suggestion, importance_reason, importance_updated_at, content_evicted
       FROM documents WHERE path = ?`,
-      )
-      .get(resolve(path)) as DocRow | undefined
+    ).get(resolve(path)) as DocRow | undefined
     return row ? toDocument(row) : null
   }
 
@@ -962,12 +1019,11 @@ export class DocumentRepository {
       (hasVectorEvictionTable(this.db) ? ` AND NOT ${VECTOR_EVICTION_APPLIES_SQL}` : '')
     const cursor = after ? ' AND (priority_at < ? OR (priority_at = ? AND id < ?))' : ''
     const args: Array<number> = after ? [after.priorityAt, after.priorityAt, after.id] : []
-    return this.db
-      .prepare(
-        `SELECT path, priority_at AS priorityAt, id FROM documents WHERE excluded = 0 AND status IN ('pending', 'text-only')${evictedClause}${cursor}
+    return cachedStatement(
+      this.db,
+      `SELECT path, priority_at AS priorityAt, id FROM documents WHERE excluded = 0 AND status IN ('pending', 'text-only')${evictedClause}${cursor}
           ORDER BY priority_at DESC, id DESC LIMIT ?`,
-      )
-      .all(...args, Math.max(1, Math.floor(limit))) as unknown as Array<{
+    ).all(...args, Math.max(1, Math.floor(limit))) as unknown as Array<{
       path: string
       priorityAt: number
       id: number
