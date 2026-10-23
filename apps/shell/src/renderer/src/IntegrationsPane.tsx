@@ -1,3 +1,4 @@
+import { SettingsCard, SettingsRow } from './fork/settings-ui/SettingsCard'
 import { mcpLaunch, type McpLaunch } from '@genoffice/cli/mcp-launch'
 import { useCallback, useEffect, useState } from 'react'
 import type { TFunc } from './locale'
@@ -195,24 +196,20 @@ export function IntegrationsPane({
     <>
       <h3 className="set-pane-title">{t('setSecIntegrations')}</h3>
 
-      <section className="set-intg-hero">
-        <div className="set-intg-hero-title">{t('intgHeroTitle')}</div>
-        <div className="set-field-desc">{t('intgHeroDesc')}</div>
+      <SettingsCard title={t('intgHeroTitle')} subtitle={t('intgHeroDesc')} icon="integrations">
         <ol className="set-intg-hero-steps">
           <li>{t('intgHeroStep1')}</li>
           <li>{t('intgHeroStep2')}</li>
           <li>{t('intgHeroStep3')}</li>
         </ol>
-      </section>
+      </SettingsCard>
 
-      <section className="set-intg-part">
-        <h4 className="set-pane-subtitle set-intg-step">
-          <span className="set-intg-step-no">1</span>
-          {t('intgCliPartTitle')}
-          <span className="set-intg-version">{t('intgSkillVersion', { v: bundled })}</span>
-        </h4>
-        <div className="set-field-desc set-intg-lead">{t('intgCliPartDesc')}</div>
-
+      <SettingsCard
+        title={t('intgCliPartTitle')}
+        subtitle={t('intgCliPartDesc')}
+        icon="skills"
+        action={<span className="set-intg-version">{t('intgSkillVersion', { v: bundled })}</span>}
+      >
         <h5 className="set-intg-sub">{t('intgStep1Title')}</h5>
         <div className="set-field-desc set-intg-lead">
           {t('intgStep1Desc')} {t('intgStep1Update')}
@@ -231,7 +228,7 @@ export function IntegrationsPane({
               data-agent={row.id}
               data-state={state.status}
             >
-              <div className="set-field">
+              <SettingsRow className="set-field">
                 <div className="set-field-text">
                   <div className="set-field-stack">
                     <div className="set-field-label">{row.label}</div>
@@ -280,7 +277,7 @@ export function IntegrationsPane({
                     </button>
                   )}
                 </div>
-              </div>
+              </SettingsRow>
               {pending?.agentId === row.id && confirmBlock(pending)}
               {notice?.agentId === row.id && (
                 <div className="set-field-desc set-intg-notice">{notice.text}</div>
@@ -359,7 +356,7 @@ export function IntegrationsPane({
               </button>
             </div>
           )}
-          <div className="set-field">
+          <SettingsRow className="set-field">
             <div className="set-field-text">
               <div className="set-field-stack">
                 <div className="set-field-desc">{t('intgCliLauncher')}</div>
@@ -373,17 +370,15 @@ export function IntegrationsPane({
                 {copied === 'path' ? t('intgCopied') : t('intgCopyPath')}
               </button>
             </div>
-          </div>
+          </SettingsRow>
         </details>
-      </section>
+      </SettingsCard>
 
-      <section className="set-intg-part">
-        <h4 className="set-pane-subtitle set-intg-step">
-          <span className="set-intg-step-no">2</span>
-          {t('intgMcpPartTitle')}
-        </h4>
-        <div className="set-field-desc set-intg-lead">{t('intgMcpPartDesc')}</div>
-
+      <SettingsCard
+        title={t('intgMcpPartTitle')}
+        subtitle={t('intgMcpPartDesc')}
+        icon="integrations"
+      >
         <div className="set-intg-mcp">
           <h5 className="set-intg-sub">
             <span className="set-intg-option-letter">A</span>
@@ -442,7 +437,7 @@ export function IntegrationsPane({
         <div className="set-field-desc set-intg-lead">{t('intgStep2Desc')}</div>
         {examples}
         <div className="set-field-desc set-intg-lead">{t('intgMcpTryNote')}</div>
-      </section>
+      </SettingsCard>
     </>
   )
 }

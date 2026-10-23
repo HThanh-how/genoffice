@@ -1,3 +1,4 @@
+import { SettingsCard, SettingsRow } from './fork/settings-ui/SettingsCard'
 import { useEffect, useRef, useState } from 'react'
 import { createI18n, defineStrings, type Lang } from '@genoffice/i18n'
 import { useI18n } from './locale'
@@ -682,160 +683,166 @@ export function DocumentMemorySettings() {
           : t('modelError')
 
   return (
-    <section className="set-memory" aria-label={t('title')}>
-      <h4 className="set-field-label">{t('title')}</h4>
-      <p className="set-field-desc">{t('description')}</p>
-      <div className="set-field set-field-top">
-        <div className="set-field-text">
-          <div className="set-field-label">{t('enabled')}</div>
-        </div>
-        <button
-          className="set-switch"
-          type="button"
-          role="switch"
-          aria-checked={status?.enabled ?? false}
-          disabled={!status || busy}
-          onClick={() =>
-            void perform(() => window.aiOffice.setDocumentMemoryEnabled(!status?.enabled))
-          }
-        />
-      </div>
-      <div className="set-field">
-        <div className="set-field-text">
-          <div className="set-field-label">{t('model')}</div>
-        </div>
-        <div className="set-field-value">{modelLabel}</div>
-      </div>
-      {status && (
-        <div className="set-field-desc" aria-live="polite">
-          {t('docs')}: {status.documents} · {t('chunks')}: {status.chunks} · {t('vectors')}:{' '}
-          {status.vectors} · {t('pending')}: {status.pending} · {t('errors')}: {status.errors}
-        </div>
-      )}
+    <>
+      <SettingsCard title={t('title')} subtitle={t('description')} icon="files">
+        <SettingsRow className="set-field set-field-top">
+          <div className="set-field-text">
+            <div className="set-field-label">{t('enabled')}</div>
+          </div>
+          <button
+            className="set-switch"
+            type="button"
+            role="switch"
+            aria-checked={status?.enabled ?? false}
+            disabled={!status || busy}
+            onClick={() =>
+              void perform(() => window.aiOffice.setDocumentMemoryEnabled(!status?.enabled))
+            }
+          />
+        </SettingsRow>
+        <SettingsRow className="set-field">
+          <div className="set-field-text">
+            <div className="set-field-label">{t('model')}</div>
+          </div>
+          <div className="set-field-value">{modelLabel}</div>
+        </SettingsRow>
+        {status && (
+          <div className="set-field-desc" aria-live="polite">
+            {t('docs')}: {status.documents} · {t('chunks')}: {status.chunks} · {t('vectors')}:{' '}
+            {status.vectors} · {t('pending')}: {status.pending} · {t('errors')}: {status.errors}
+          </div>
+        )}
+      </SettingsCard>
       <IndexingModeSettings />
       <AgyOcrSettings />
       <EmbeddingModelSettings />
-      <h4 className="set-field-label">{scanT('title')}</h4>
-      <div className="set-field" aria-live="polite">
-        <div className="set-field-text">
-          {folderScan?.running ? (
-            <>
-              <div className="set-field-label" title={folderScan.root}>
-                {scanT('running', { folder: folderScan.root || '…' })}
-              </div>
-              <div className="set-field-desc">
-                {scanT('progress', { count: folderScan.discovered })}
-              </div>
-            </>
-          ) : folderScan?.state === 'complete' ? (
-            <>
-              <div className="set-field-label">
-                {scanT('complete', { count: folderScan.discovered })}
-              </div>
-              <div className="set-field-desc" title={folderScan.root}>
-                {folderScan.root}
-              </div>
-            </>
-          ) : folderScan?.state === 'stopped' ? (
-            <>
-              <div className="set-field-label">
-                {scanT('stopped', { count: folderScan.discovered })}
-              </div>
-              {folderScan.root && (
+      <SettingsCard title={scanT('title')} subtitle={scanT('choose')} icon="search">
+        <SettingsRow className="set-field" aria-live="polite">
+          <div className="set-field-text">
+            {folderScan?.running ? (
+              <>
+                <div className="set-field-label" title={folderScan.root}>
+                  {scanT('running', { folder: folderScan.root || '…' })}
+                </div>
+                <div className="set-field-desc">
+                  {scanT('progress', { count: folderScan.discovered })}
+                </div>
+              </>
+            ) : folderScan?.state === 'complete' ? (
+              <>
+                <div className="set-field-label">
+                  {scanT('complete', { count: folderScan.discovered })}
+                </div>
                 <div className="set-field-desc" title={folderScan.root}>
                   {folderScan.root}
                 </div>
-              )}
-            </>
-          ) : null}
-          {folderScan && (
-            <div className="set-field-desc">
-              {scanT('counts', {
-                enrolled: folderScan.enrolled,
-                skipped: folderScan.skipped,
-                errors: folderScan.errors,
-              })}
-            </div>
-          )}
-          {!folderScan?.running && (status?.pending ?? 0) > 0 && (
-            <div className="set-field-desc">
-              {scanT('embedding', { count: status?.pending ?? 0 })}
-            </div>
-          )}
-          {folderScan?.lastError && <div className="set-field-desc">{folderScan.lastError}</div>}
-        </div>
-        {folderScan?.running ? (
-          <button className="set-btn" disabled={scanBusy} onClick={() => void stopFolderScan()}>
-            {scanT('stop')}
-          </button>
-        ) : (
-          <button className="set-btn" disabled={scanBusy || busy} onClick={() => void scanFolder()}>
-            {scanT('choose')}
-          </button>
-        )}
-      </div>
-      <IndexedFolders />
-      <div className="set-field">
-        <div className="set-field-text">
-          <div className="set-field-label">{t('location')}</div>
-        </div>
-        <div className="set-field-value" title={status?.dbPath}>
-          {status?.dbPath || '—'}
-        </div>
-      </div>
-      <h4 className="set-field-label">{t('recent')}</h4>
-      {!status?.files.length && <p className="set-field-desc">{t('empty')}</p>}
-      {status?.files.map((file) => (
-        <div className="set-field" key={file.id}>
-          <div className="set-field-text">
-            <div className="set-field-label" title={file.path}>
-              {file.name}
-            </div>
-            <div className="set-field-desc">{file.status}</div>
+              </>
+            ) : folderScan?.state === 'stopped' ? (
+              <>
+                <div className="set-field-label">
+                  {scanT('stopped', { count: folderScan.discovered })}
+                </div>
+                {folderScan.root && (
+                  <div className="set-field-desc" title={folderScan.root}>
+                    {folderScan.root}
+                  </div>
+                )}
+              </>
+            ) : null}
+            {folderScan && (
+              <div className="set-field-desc">
+                {scanT('counts', {
+                  enrolled: folderScan.enrolled,
+                  skipped: folderScan.skipped,
+                  errors: folderScan.errors,
+                })}
+              </div>
+            )}
+            {!folderScan?.running && (status?.pending ?? 0) > 0 && (
+              <div className="set-field-desc">
+                {scanT('embedding', { count: status?.pending ?? 0 })}
+              </div>
+            )}
+            {folderScan?.lastError && <div className="set-field-desc">{folderScan.lastError}</div>}
           </div>
-          <button
-            className="set-btn"
-            disabled={busy}
-            onClick={() => void perform(() => window.aiOffice.excludeDocumentMemory(file.path))}
-          >
-            {t('exclude')}
-          </button>
-        </div>
-      ))}
-      {actionError && (
-        <p className="set-field-desc" role="alert">
-          {actionError}
-        </p>
-      )}
-      {confirming ? (
-        <div className="set-field">
-          <span className="set-field-desc">{t('confirmClear')}</span>
-          <button
-            className="set-btn"
-            disabled={busy}
-            onClick={() => {
-              setConfirming(false)
-              void perform(() => window.aiOffice.clearDocumentMemory())
-            }}
-          >
-            {t('confirm')}
-          </button>
-          <button className="set-btn" disabled={busy} onClick={() => setConfirming(false)}>
-            {t('cancel')}
-          </button>
-        </div>
-      ) : (
-        <div className="set-field">
-          <span />
-          <button
-            className="set-btn"
-            disabled={busy || !status}
-            onClick={() => setConfirming(true)}
-          >
-            {t('clear')}
-          </button>
-        </div>
-      )}
-    </section>
+          {folderScan?.running ? (
+            <button className="set-btn" disabled={scanBusy} onClick={() => void stopFolderScan()}>
+              {scanT('stop')}
+            </button>
+          ) : (
+            <button
+              className="set-btn"
+              disabled={scanBusy || busy}
+              onClick={() => void scanFolder()}
+            >
+              {scanT('choose')}
+            </button>
+          )}
+        </SettingsRow>
+      </SettingsCard>
+      <IndexedFolders />
+      <SettingsCard title={t('recent')} subtitle={t('location')} icon="files">
+        <SettingsRow className="set-field">
+          <div className="set-field-text">
+            <div className="set-field-label">{t('location')}</div>
+          </div>
+          <div className="set-field-value" title={status?.dbPath}>
+            {status?.dbPath || '—'}
+          </div>
+        </SettingsRow>
+        {!status?.files.length && <p className="set-field-desc">{t('empty')}</p>}
+        {status?.files.map((file) => (
+          <SettingsRow className="set-field" key={file.id}>
+            <div className="set-field-text">
+              <div className="set-field-label" title={file.path}>
+                {file.name}
+              </div>
+              <div className="set-field-desc">{file.status}</div>
+            </div>
+            <button
+              className="set-btn"
+              disabled={busy}
+              onClick={() => void perform(() => window.aiOffice.excludeDocumentMemory(file.path))}
+            >
+              {t('exclude')}
+            </button>
+          </SettingsRow>
+        ))}
+        {actionError && (
+          <p className="set-field-desc" role="alert">
+            {actionError}
+          </p>
+        )}
+        {confirming ? (
+          <SettingsRow className="set-field">
+            <span className="set-field-desc">{t('confirmClear')}</span>
+            <button
+              className="set-btn"
+              disabled={busy}
+              onClick={() => {
+                setConfirming(false)
+                void perform(() => window.aiOffice.clearDocumentMemory())
+              }}
+            >
+              {t('confirm')}
+            </button>
+            <button className="set-btn" disabled={busy} onClick={() => setConfirming(false)}>
+              {t('cancel')}
+            </button>
+          </SettingsRow>
+        ) : (
+          <SettingsRow className="set-field">
+            <span />
+            <button
+              className="set-btn"
+              disabled={busy || !status}
+              onClick={() => setConfirming(true)}
+            >
+              {t('clear')}
+            </button>
+          </SettingsRow>
+        )}
+      </SettingsCard>
+    </>
   )
 }

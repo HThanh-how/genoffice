@@ -1,3 +1,5 @@
+import { SettingsCard } from './settings-ui/SettingsCard'
+import { settingsCardCopy } from '../i18n/strings-settings-card'
 import React, { useEffect, useMemo, useRef, useState } from 'react'
 import type { OpeningEffectsState } from '../../../shared/home-api'
 import {
@@ -508,173 +510,176 @@ export function OpeningCardStudio({
   }
 
   return (
-    <div className="ocs-container">
-      {/* Studio Header: title, one primary action, the rest in a menu */}
-      <div className="ocs-studio-header">
-        <div className="ocs-studio-title-group">
-          <h2 className="ocs-studio-title">{isVi ? 'Thẻ mở tệp' : 'Opening cards'}</h2>
-        </div>
-
-        <div className="ocs-studio-header-actions">
-          <button type="button" className="set-btn" onClick={() => setShowAiModal(true)}>
-            {isVi ? 'Tạo bằng AI' : 'Create with AI'}
-          </button>
-
-          <div className="ocs-more" ref={menuRef}>
-            <button
-              type="button"
-              className="set-btn ocs-more-btn"
-              aria-haspopup="menu"
-              aria-expanded={menuOpen}
-              aria-label={isVi ? 'Thêm thao tác' : 'More actions'}
-              onClick={() => setMenuOpen((open) => !open)}
-            >
-              <svg
-                width="16"
-                height="16"
-                viewBox="0 0 16 16"
-                fill="currentColor"
-                aria-hidden="true"
-              >
-                <circle cx="3" cy="8" r="1.3" />
-                <circle cx="8" cy="8" r="1.3" />
-                <circle cx="13" cy="8" r="1.3" />
-              </svg>
+    <SettingsCard
+      className="settings-studio"
+      title={isVi ? 'Thẻ mở tệp' : 'Opening cards'}
+      subtitle={settingsCardCopy(lang).studioHint}
+      icon="opening"
+    >
+      <div className="ocs-container">
+        {/* Studio Header: title, one primary action, the rest in a menu */}
+        <div className="ocs-studio-header">
+          <div className="ocs-studio-header-actions">
+            <button type="button" className="set-btn" onClick={() => setShowAiModal(true)}>
+              {isVi ? 'Tạo bằng AI' : 'Create with AI'}
             </button>
-            {menuOpen && (
-              <div className="ocs-more-menu" role="menu">
-                <button
-                  type="button"
-                  role="menuitem"
-                  onClick={() => {
-                    setMenuOpen(false)
-                    setShowMediaModal(true)
-                  }}
+
+            <div className="ocs-more" ref={menuRef}>
+              <button
+                type="button"
+                className="set-btn ocs-more-btn"
+                aria-haspopup="menu"
+                aria-expanded={menuOpen}
+                aria-label={isVi ? 'Thêm thao tác' : 'More actions'}
+                onClick={() => setMenuOpen((open) => !open)}
+              >
+                <svg
+                  width="16"
+                  height="16"
+                  viewBox="0 0 16 16"
+                  fill="currentColor"
+                  aria-hidden="true"
                 >
-                  {isVi ? 'Thêm hình ảnh…' : 'Add media…'}
-                </button>
-                <button
-                  type="button"
-                  role="menuitem"
-                  title={isVi ? 'Xuất danh sách thẻ ra tệp JSON' : 'Export cards to JSON file'}
-                  onClick={() => {
-                    setMenuOpen(false)
-                    void handleExport()
-                  }}
-                >
-                  {isVi ? 'Xuất thẻ' : 'Export'}
-                </button>
-                <button
-                  type="button"
-                  role="menuitem"
-                  title={isVi ? 'Nhập thẻ từ tệp JSON' : 'Import cards from JSON file'}
-                  onClick={() => {
-                    setMenuOpen(false)
-                    importFileInputRef.current?.click()
-                  }}
-                >
-                  {isVi ? 'Nhập thẻ' : 'Import'}
-                </button>
-              </div>
-            )}
+                  <circle cx="3" cy="8" r="1.3" />
+                  <circle cx="8" cy="8" r="1.3" />
+                  <circle cx="13" cy="8" r="1.3" />
+                </svg>
+              </button>
+              {menuOpen && (
+                <div className="ocs-more-menu" role="menu">
+                  <button
+                    type="button"
+                    role="menuitem"
+                    onClick={() => {
+                      setMenuOpen(false)
+                      setShowMediaModal(true)
+                    }}
+                  >
+                    {isVi ? 'Thêm hình ảnh…' : 'Add media…'}
+                  </button>
+                  <button
+                    type="button"
+                    role="menuitem"
+                    title={isVi ? 'Xuất danh sách thẻ ra tệp JSON' : 'Export cards to JSON file'}
+                    onClick={() => {
+                      setMenuOpen(false)
+                      void handleExport()
+                    }}
+                  >
+                    {isVi ? 'Xuất thẻ' : 'Export'}
+                  </button>
+                  <button
+                    type="button"
+                    role="menuitem"
+                    title={isVi ? 'Nhập thẻ từ tệp JSON' : 'Import cards from JSON file'}
+                    onClick={() => {
+                      setMenuOpen(false)
+                      importFileInputRef.current?.click()
+                    }}
+                  >
+                    {isVi ? 'Nhập thẻ' : 'Import'}
+                  </button>
+                </div>
+              )}
+            </div>
+            <input
+              ref={importFileInputRef}
+              type="file"
+              accept=".json"
+              style={{ display: 'none' }}
+              onChange={handleImportFile}
+            />
           </div>
-          <input
-            ref={importFileInputRef}
-            type="file"
-            accept=".json"
-            style={{ display: 'none' }}
-            onChange={handleImportFile}
-          />
         </div>
-      </div>
 
-      {/* Floating Status & Error Alerts */}
-      {statusMessage && (
-        <div className="ocs-floating-toast is-success" role="status">
-          <span>{statusMessage}</span>
-        </div>
-      )}
-      {errorMessage && (
-        <div className="ocs-floating-toast is-error" role="alert">
-          <span>{errorMessage}</span>
-          <button type="button" className="ocs-toast-close" onClick={() => setErrorMessage('')}>
-            &times;
-          </button>
-        </div>
-      )}
+        {/* Floating Status & Error Alerts */}
+        {statusMessage && (
+          <div className="ocs-floating-toast is-success" role="status">
+            <span>{statusMessage}</span>
+          </div>
+        )}
+        {errorMessage && (
+          <div className="ocs-floating-toast is-error" role="alert">
+            <span>{errorMessage}</span>
+            <button type="button" className="ocs-toast-close" onClick={() => setErrorMessage('')}>
+              &times;
+            </button>
+          </div>
+        )}
 
-      {/* The details of a card open right under its row when it is clicked, and scroll with the list */}
-      <div className="ocs-studio-layout">
-        <RandomPanel
-          cards={allCards.filter((c) => !prefs.removedCards?.includes(c.id))}
-          prefs={prefs}
-          lang={lang}
-          groupIds={visibleGroupIds(allCards, prefs)}
-          onChange={handleSetRandom}
-        />
-        <div className="ocs-layout-left">
-          <CardGallery
-            cards={allCards}
-            openCardId={openCardId}
+        {/* The details of a card open right under its row when it is clicked, and scroll with the list */}
+        <div className="ocs-studio-layout">
+          <RandomPanel
+            cards={allCards.filter((c) => !prefs.removedCards?.includes(c.id))}
             prefs={prefs}
             lang={lang}
-            mediaAssets={state.mediaAssets}
-            onToggleCard={toggleCard}
-            onCloseDetail={() => setOpenCardId(null)}
-            onToggleFavorite={handleToggleFavorite}
-            onRemoveCard={handleRemoveCard}
-            onRestoreCard={handleRestoreCard}
-            onEmptyTrash={handleEmptyTrash}
-            onCreateGroup={handleCreateGroup}
-            onRenameGroup={handleRenameGroup}
-            onDeleteGroup={handleDeleteGroup}
-            renderDetail={(card) => (
-              <CardPreview
-                key={card.id}
-                card={card}
-                prefs={prefs}
-                lang={lang}
-                tier={tier}
-                panelId={DETAIL_PANEL_ID}
-                onClose={() => setOpenCardId(null)}
-                onSetGlobal={handleSetGlobal}
-                onAssignToApp={handleAssignToApp}
-                onResetOverride={handleResetOverride}
-                onPreviewWindow={onPreview}
-                onOpenCustomizer={setCustomizingCard}
-                onRemoveCard={handleRemoveCard}
-                onMoveToGroup={handleMoveToGroup}
-              />
-            )}
+            groupIds={visibleGroupIds(allCards, prefs)}
+            onChange={handleSetRandom}
           />
+          <div className="ocs-layout-left">
+            <CardGallery
+              cards={allCards}
+              openCardId={openCardId}
+              prefs={prefs}
+              lang={lang}
+              mediaAssets={state.mediaAssets}
+              onToggleCard={toggleCard}
+              onCloseDetail={() => setOpenCardId(null)}
+              onToggleFavorite={handleToggleFavorite}
+              onRemoveCard={handleRemoveCard}
+              onRestoreCard={handleRestoreCard}
+              onEmptyTrash={handleEmptyTrash}
+              onCreateGroup={handleCreateGroup}
+              onRenameGroup={handleRenameGroup}
+              onDeleteGroup={handleDeleteGroup}
+              renderDetail={(card) => (
+                <CardPreview
+                  key={card.id}
+                  card={card}
+                  prefs={prefs}
+                  lang={lang}
+                  tier={tier}
+                  panelId={DETAIL_PANEL_ID}
+                  onClose={() => setOpenCardId(null)}
+                  onSetGlobal={handleSetGlobal}
+                  onAssignToApp={handleAssignToApp}
+                  onResetOverride={handleResetOverride}
+                  onPreviewWindow={onPreview}
+                  onOpenCustomizer={setCustomizingCard}
+                  onRemoveCard={handleRemoveCard}
+                  onMoveToGroup={handleMoveToGroup}
+                />
+              )}
+            />
+          </div>
         </div>
+
+        {/* Modals */}
+        {customizingCard && (
+          <CardCustomizer
+            card={customizingCard}
+            lang={lang}
+            onSave={handleSaveCustomCard}
+            onClose={() => setCustomizingCard(null)}
+          />
+        )}
+
+        {showAiModal && (
+          <AiCardModal
+            lang={lang}
+            onSave={handleSaveCustomCard}
+            onClose={() => setShowAiModal(false)}
+          />
+        )}
+
+        {showMediaModal && (
+          <MediaImportModal
+            lang={lang}
+            onImport={handleImportMedia}
+            onClose={() => setShowMediaModal(false)}
+          />
+        )}
       </div>
-
-      {/* Modals */}
-      {customizingCard && (
-        <CardCustomizer
-          card={customizingCard}
-          lang={lang}
-          onSave={handleSaveCustomCard}
-          onClose={() => setCustomizingCard(null)}
-        />
-      )}
-
-      {showAiModal && (
-        <AiCardModal
-          lang={lang}
-          onSave={handleSaveCustomCard}
-          onClose={() => setShowAiModal(false)}
-        />
-      )}
-
-      {showMediaModal && (
-        <MediaImportModal
-          lang={lang}
-          onImport={handleImportMedia}
-          onClose={() => setShowMediaModal(false)}
-        />
-      )}
-    </div>
+    </SettingsCard>
   )
 }

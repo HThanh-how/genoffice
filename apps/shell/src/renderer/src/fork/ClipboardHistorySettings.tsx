@@ -1,3 +1,4 @@
+import { SettingsRow } from './settings-ui/SettingsCard'
 import { useEffect, useState } from 'react'
 import { clipboardHistoryLabels } from '@genoffice/electron-utils/clipboard-history-labels'
 import { useI18n } from '../locale'
@@ -20,7 +21,7 @@ export function ClipboardHistorySettings() {
   }, [])
 
   return (
-    <div className="set-field">
+    <SettingsRow className="set-field">
       <div className="set-field-text">
         <div className="set-field-stack">
           <div className="set-field-label">{labels.title}</div>
@@ -66,6 +67,6 @@ export function ClipboardHistorySettings() {
           {cleared ? labels.cleared : labels.clear}
         </button>
       )}
-    </div>
+    </SettingsRow>
   )
 }

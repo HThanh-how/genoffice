@@ -1,3 +1,5 @@
+import { SettingsCardHeader } from '../settings-ui/SettingsCard'
+import { settingsCardCopy } from '../../i18n/strings-settings-card'
 import React, { useEffect, useMemo, useRef, useState } from 'react'
 import type {
   OpeningCardDefinition,
@@ -232,10 +234,14 @@ function CardCustomizerSession({
 
   return (
     <div className="ocs-customizer-dialog-overlay" role="dialog" aria-modal="true">
-      <div className="ocs-customizer-dialog">
+      <div className="ocs-customizer-dialog settings-card settings-dialog">
         <div className="ocs-customizer-header">
           <h3 className="ocs-customizer-title">
-            {isVi ? 'Tùy chỉnh thẻ mở tệp' : 'Customize Opening Card'}
+            <SettingsCardHeader
+              title={isVi ? 'Tùy chỉnh thẻ mở tệp' : 'Customize Opening Card'}
+              subtitle={settingsCardCopy(lang).studioHint}
+              icon="opening"
+            />
           </h3>
           <button
             type="button"

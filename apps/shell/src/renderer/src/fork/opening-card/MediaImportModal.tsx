@@ -1,3 +1,5 @@
+import { SettingsCardHeader } from '../settings-ui/SettingsCard'
+import { settingsCardCopy } from '../../i18n/strings-settings-card'
 import React, { useEffect, useRef, useState } from 'react'
 
 interface MediaImportModalProps {
@@ -89,10 +91,14 @@ export function MediaImportModal({
 
   return (
     <div className="ocs-customizer-dialog-overlay" role="dialog" aria-modal="true">
-      <div className="ocs-customizer-dialog ocs-media-modal-dialog">
+      <div className="ocs-customizer-dialog settings-card settings-dialog ocs-media-modal-dialog">
         <div className="ocs-customizer-header">
           <h3 className="ocs-customizer-title">
-            {isVi ? '🖼️ Nhập hình ảnh / Media riêng' : '🖼️ Import Personal Media'}
+            <SettingsCardHeader
+              title={isVi ? 'Nhập hình ảnh / Media riêng' : 'Import Personal Media'}
+              subtitle={settingsCardCopy(lang).studioHint}
+              icon="media"
+            />
           </h3>
           <button
             type="button"

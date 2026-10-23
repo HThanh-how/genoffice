@@ -1,3 +1,5 @@
+import { SettingsCardHeader } from '../settings-ui/SettingsCard'
+import { settingsCardCopy } from '../../i18n/strings-settings-card'
 import React, { useEffect, useMemo, useRef, useState } from 'react'
 import type { OpeningCardDefinition } from '../../../../shared/opening-card-types'
 import { buildIsolatedHtmlHostDocument } from '../../../../shared/opening-card-html-sanitizer'
@@ -187,10 +189,14 @@ export function AiCardModal({ lang, onSave, onClose }: AiCardModalProps): React.
 
   return (
     <div className="ocs-customizer-dialog-overlay" role="dialog" aria-modal="true">
-      <div className="ocs-customizer-dialog ocs-ai-modal-dialog">
+      <div className="ocs-customizer-dialog settings-card settings-dialog ocs-ai-modal-dialog">
         <div className="ocs-customizer-header">
           <h3 className="ocs-customizer-title">
-            {isVi ? '✨ Bộ sinh thẻ bằng AI' : '✨ AI Card Generator'}
+            <SettingsCardHeader
+              title={isVi ? 'Bộ sinh thẻ bằng AI' : 'AI Card Generator'}
+              subtitle={settingsCardCopy(lang).studioHint}
+              icon="opening"
+            />
           </h3>
           <button
             type="button"

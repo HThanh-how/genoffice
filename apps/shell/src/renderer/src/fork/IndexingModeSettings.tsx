@@ -1,3 +1,4 @@
+import { SettingsCard, SettingsRow } from './settings-ui/SettingsCard'
 import { useEffect, useState } from 'react'
 import { useI18n } from '../locale'
 import {
@@ -70,9 +71,12 @@ export function IndexingModeSettings() {
   const effective = state?.effective ?? null
   const tone = !effective ? 'wait' : effective.paused ? 'paused' : effective.tier
   return (
-    <div className="set-indexmode">
-      <h4 className="set-field-label">{indexingString(lang, 'title')}</h4>
-      <p className="set-field-desc">{indexingString(lang, 'desc')}</p>
+    <SettingsCard
+      className="set-indexmode"
+      title={indexingString(lang, 'title')}
+      subtitle={indexingString(lang, 'desc')}
+      icon="files"
+    >
       <div
         className="set-indexmode-cards"
         role="radiogroup"
@@ -109,7 +113,7 @@ export function IndexingModeSettings() {
               : indexingString(lang, 'statusChecking')}
         </span>
       </div>
-      <div className="set-field set-field-top">
+      <SettingsRow className="set-field set-field-top">
         <div className="set-field-text">
           <div className="set-field-stack">
             <div className="set-field-label">{indexingString(lang, 'pauseBattery')}</div>
@@ -130,7 +134,7 @@ export function IndexingModeSettings() {
             })
           }
         />
-      </div>
-    </div>
+      </SettingsRow>
+    </SettingsCard>
   )
 }

@@ -1,3 +1,5 @@
+import { SettingsCard, SettingsRow } from './settings-ui/SettingsCard'
+import { settingsCardCopy } from '../i18n/strings-settings-card'
 import { useEffect, useRef, useState } from 'react'
 import { Dropdown } from '@genoffice/ui'
 import type { OpeningEffectsState } from '../../../shared/home-api'
@@ -140,65 +142,71 @@ export function OpeningEffectsSettings({ lang }: { lang: string }) {
 
   return (
     <>
-      <div className="set-field">
-        <div className="set-field-text">
-          <div className="set-field-stack">
-            <div className="set-field-label">{c.show}</div>
-            <div className="set-field-desc">{c.showHint}</div>
+      <SettingsCard
+        title={settingsCardCopy(lang).opening}
+        subtitle={settingsCardCopy(lang).openingHint}
+        icon="opening"
+      >
+        <SettingsRow className="set-field">
+          <div className="set-field-text">
+            <div className="set-field-stack">
+              <div className="set-field-label">{c.show}</div>
+              <div className="set-field-desc">{c.showHint}</div>
+            </div>
           </div>
-        </div>
-        <Dropdown
-          className="set-dd"
-          value={prefs.enabled ? 'on' : 'off'}
-          ariaLabel={c.show}
-          options={[
-            { value: 'on', label: c.on },
-            { value: 'off', label: c.off },
-          ]}
-          onPick={(value) => save({ ...prefs, enabled: value === 'on' })}
-        />
-      </div>
-      {!prefs.enabled && (
-        <div className="ocs-disabled-banner" role="status">
-          <div className="ocs-disabled-banner-text">
-            <strong>
-              {lang === 'vi'
-                ? 'Hiệu ứng mở tệp đang tắt'
-                : 'Opening effects are currently turned off'}
-            </strong>
-            <span>
-              {lang === 'vi'
-                ? 'Bật hiệu ứng để hiển thị thẻ khi mở tài liệu. Bạn vẫn có thể tùy biến và xem thử thẻ bên dưới.'
-                : 'Turn on effects to display cards when documents open. You can still customize and preview cards below.'}
-            </span>
+          <Dropdown
+            className="set-dd"
+            value={prefs.enabled ? 'on' : 'off'}
+            ariaLabel={c.show}
+            options={[
+              { value: 'on', label: c.on },
+              { value: 'off', label: c.off },
+            ]}
+            onPick={(value) => save({ ...prefs, enabled: value === 'on' })}
+          />
+        </SettingsRow>
+        {!prefs.enabled && (
+          <div className="ocs-disabled-banner" role="status">
+            <div className="ocs-disabled-banner-text">
+              <strong>
+                {lang === 'vi'
+                  ? 'Hiệu ứng mở tệp đang tắt'
+                  : 'Opening effects are currently turned off'}
+              </strong>
+              <span>
+                {lang === 'vi'
+                  ? 'Bật hiệu ứng để hiển thị thẻ khi mở tài liệu. Bạn vẫn có thể tùy biến và xem thử thẻ bên dưới.'
+                  : 'Turn on effects to display cards when documents open. You can still customize and preview cards below.'}
+              </span>
+            </div>
+            <button
+              type="button"
+              className="set-btn ocs-btn-primary"
+              onClick={() => save({ ...prefs, enabled: true })}
+            >
+              {lang === 'vi' ? 'Bật hiệu ứng ngay' : 'Turn on now'}
+            </button>
           </div>
-          <button
-            type="button"
-            className="set-btn ocs-btn-primary"
-            onClick={() => save({ ...prefs, enabled: true })}
-          >
-            {lang === 'vi' ? 'Bật hiệu ứng ngay' : 'Turn on now'}
-          </button>
-        </div>
-      )}
-      <div className="set-field">
-        <div className="set-field-text">
-          <div className="set-field-stack">
-            <div className="set-field-label">{c.tier}</div>
-            <div className="set-field-desc">{c.tierHint}</div>
+        )}
+        <SettingsRow className="set-field">
+          <div className="set-field-text">
+            <div className="set-field-stack">
+              <div className="set-field-label">{c.tier}</div>
+              <div className="set-field-desc">{c.tierHint}</div>
+            </div>
           </div>
-        </div>
-        <Dropdown
-          className="set-dd"
-          value={prefs.tier}
-          ariaLabel={c.tier}
-          options={(['auto', 'full', 'lite', 'minimal'] as OpeningTierChoice[]).map((tier) => ({
-            value: tier,
-            label: c.tiers[tier],
-          }))}
-          onPick={(tier) => save({ ...prefs, tier })}
-        />
-      </div>
+          <Dropdown
+            className="set-dd"
+            value={prefs.tier}
+            ariaLabel={c.tier}
+            options={(['auto', 'full', 'lite', 'minimal'] as OpeningTierChoice[]).map((tier) => ({
+              value: tier,
+              label: c.tiers[tier],
+            }))}
+            onPick={(tier) => save({ ...prefs, tier })}
+          />
+        </SettingsRow>
+      </SettingsCard>
       <OpeningCardStudio
         state={state}
         lang={lang}
@@ -206,16 +214,22 @@ export function OpeningEffectsSettings({ lang }: { lang: string }) {
         onPreview={(app, s) => void api.previewOpening(app, s)}
       />
 
-      <details className="set-opening-advanced">
-        <summary>
-          {lang === 'vi'
-            ? 'Tùy chọn nâng cao (HTML tùy chỉnh cũ)'
-            : 'Advanced (Legacy Custom HTML)'}
-        </summary>
+      <SettingsCard
+        fold
+        title={
+          lang === 'vi' ? 'Tùy chọn nâng cao (HTML tùy chỉnh cũ)' : 'Advanced (Legacy Custom HTML)'
+        }
+        subtitle={settingsCardCopy(lang).advancedHint}
+        icon="legacy"
+      >
         <div style={{ marginTop: '12px' }}>
           <div className="set-field-desc set-opening-guide">{c.guide}</div>
           {OPENING_APPS.map((app) => (
-            <div className="set-field set-opening-row" key={app} style={{ marginTop: '8px' }}>
+            <SettingsRow
+              className="set-field set-opening-row"
+              key={app}
+              style={{ marginTop: '8px' }}
+            >
               <div className="set-field-text">
                 <div className="set-field-stack">
                   <div className="set-field-label">{c.apps[app]}</div>
@@ -250,10 +264,10 @@ export function OpeningEffectsSettings({ lang }: { lang: string }) {
                   </button>
                 )}
               </div>
-            </div>
+            </SettingsRow>
           ))}
         </div>
-      </details>
+      </SettingsCard>
       {error && <div className="set-field-desc set-opening-error">{error}</div>}
     </>
   )

@@ -1,3 +1,4 @@
+import { SettingsRow } from './settings-ui/SettingsCard'
 import { useEffect, useState } from 'react'
 import { useI18n } from '../locale'
 
@@ -29,7 +30,7 @@ export function DefaultFolderToggle() {
     }
   }, [])
   return (
-    <div className="set-field">
+    <SettingsRow className="set-field">
       <div className="set-field-text">
         <div className="set-field-stack">
           <div className="set-field-label">{w.label}</div>
@@ -55,6 +56,6 @@ export function DefaultFolderToggle() {
             .finally(() => setSaving(false))
         }}
       />
-    </div>
+    </SettingsRow>
   )
 }

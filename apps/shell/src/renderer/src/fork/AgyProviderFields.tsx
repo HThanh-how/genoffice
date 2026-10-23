@@ -1,3 +1,4 @@
+import { SettingsRow } from './settings-ui/SettingsCard'
 import { useCallback, useEffect, useRef, useState, type Dispatch, type SetStateAction } from 'react'
 import type { AiProviderConfig } from '@genoffice/ai-provider/browser'
 import { useI18n, type TFunc } from '../locale'
@@ -115,7 +116,7 @@ export function AgyProviderFields<
           {agyString(lang, 'agyRecheck')}
         </button>
       </div>
-      <div className="set-field">
+      <SettingsRow className="set-field">
         <div className="set-field-text">
           <div className="set-field-stack">
             <label className="set-field-label" htmlFor="set-ai-agy-path">
@@ -135,7 +136,7 @@ export function AgyProviderFields<
           onChange={(e) => update({ cliPath: e.target.value.trim() })}
           onBlur={(e) => void check(e.target.value.trim())}
         />
-      </div>
+      </SettingsRow>
     </>
   )
 }

@@ -1,3 +1,4 @@
+import { SettingsRow } from './settings-ui/SettingsCard'
 import { useEffect, useState } from 'react'
 import { useI18n } from '../locale'
 import { clipboardString } from './clipboard-strings'
@@ -19,7 +20,7 @@ export function ClipboardSettingsToggle() {
   }, [])
 
   return (
-    <div className="set-field">
+    <SettingsRow className="set-field">
       <div className="set-field-text">
         <div className="set-field-stack">
           <div className="set-field-label">{clipboardString(lang, 'clipSetting')}</div>
@@ -44,6 +45,6 @@ export function ClipboardSettingsToggle() {
             .finally(() => setSaving(false))
         }}
       />
-    </div>
+    </SettingsRow>
   )
 }
