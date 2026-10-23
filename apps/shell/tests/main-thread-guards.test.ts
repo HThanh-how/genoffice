@@ -19,7 +19,7 @@ describe('main-thread guards', () => {
   it('the file search handler asks the search thread, not the store', () => {
     const index = read('index.ts')
     expect(index).not.toMatch(/fileIndexStore!?\.search\(/)
-    expect(index).toContain('fileSearch.search(')
+    expect(index).toMatch(/fileSearch!?\.search\(/)
   })
 
   it('the snapshot, folder-count and issue-summary handlers read the aggregates, not the tables', () => {

@@ -11,7 +11,7 @@ import { describe, expect, it } from 'vitest'
  */
 
 const source = readFileSync(resolve(__dirname, '../src/main/index.ts'), 'utf8')
-const ready = source.slice(source.indexOf('app.whenReady().then(async () => {'))
+const ready = source.slice(source.indexOf('async function startShell()'))
 
 describe('main start-up order', () => {
   it('does not import or await the in-process storage bootstrap', () => {
