@@ -1143,6 +1143,9 @@ contextBridge.exposeInMainWorld('agyChat', createAgyChatPreloadApi(ipcRenderer))
 
 contextBridge.exposeInMainWorld('appActions', createAppActionPreload(ipcRenderer, false))
 
-window.addEventListener('online', () => {
-  void ipcRenderer.invoke(HOME_CHANNELS.checkDocumentIndexSources).catch(() => {})
-})
+// A real preload always has `window`; the node-based preload tests import this module without one.
+if (typeof window !== 'undefined') {
+  window.addEventListener('online', () => {
+    void ipcRenderer.invoke(HOME_CHANNELS.checkDocumentIndexSources).catch(() => {})
+  })
+}

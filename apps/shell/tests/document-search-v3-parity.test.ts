@@ -66,6 +66,16 @@ class TestWorker extends EventEmitter {
       this.emit('message', ack)
       return
     }
+    // The one-shot startup OCR recovery traversal runs at write-ready, before any test pauses indexing;
+    // it is answered empty and is not an extraction request.
+    if (message.type === 'ocr-reconcile-page') {
+      setTimeout(
+        () =>
+          this.emit('message', { id: message.id, result: { paths: [], afterId: 0, done: true } }),
+        0,
+      )
+      return
+    }
     this.requests.push(message)
     this.pending = message
   }

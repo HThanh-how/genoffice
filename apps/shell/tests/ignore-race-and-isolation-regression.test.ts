@@ -72,11 +72,13 @@ describe('GenOffice Final Targeted Repair Regression', () => {
         mtimeMs: Date.now(),
       }
       ;(indexer as any).enqueue(scanned)
-      await new Promise((r) => setTimeout(r, 20))
-
-      // Verify extraction started
-      expect(askMock).toHaveBeenCalledWith(
-        expect.objectContaining({ type: 'extract', path: testFile }),
+      // The first drain probes the file's root once (cold worker-thread stat) before extracting.
+      await vi.waitFor(
+        () =>
+          expect(askMock).toHaveBeenCalledWith(
+            expect.objectContaining({ type: 'extract', path: testFile }),
+          ),
+        { timeout: 5_000 },
       )
 
       // WHILE EXTRACTION IS IN-FLIGHT: ignore policy changes!
