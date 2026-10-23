@@ -42,6 +42,14 @@ class SpyWorker extends EventEmitter {
       setTimeout(() => this.emit('message', ack), 0)
       return
     }
+    if (message.type === 'ocr-reconcile-page') {
+      setTimeout(
+        () =>
+          this.emit('message', { id: message.id, result: { paths: [], afterId: 0, done: true } }),
+        0,
+      )
+      return
+    }
     this.requests.push(message)
   }
   terminate(): Promise<number> {

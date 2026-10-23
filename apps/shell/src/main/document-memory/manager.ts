@@ -1,5 +1,5 @@
 import { startJunkPurge } from './runtime/junk-purge'; import { enqueueIncompletePaged } from './runtime/poll-intake'; import { appendBootstrapLog } from './bootstrap-log'; import { currentIndexingPolicy } from '../fork/indexing-policy-bus'; import { WorkerHost } from './runtime/worker-host'; import { VectorGate } from './runtime/vector-gate'; import { QueueLanes, EXTRACT_SLICE_MS, EMBED_SLICE_MS } from './runtime/queue-lanes'; import { QueueWatchdog, blockedReasonOf, type QueueProbe } from './runtime/queue-health'
-import { mkdirSync, readFileSync, writeFileSync } from 'node:fs'
+import { mkdirSync, readFileSync, writeFileSync } from 'node:fs'; import { CachedOcrRecovery } from './runtime/ocr-recovery'
 import { dirname, join, resolve } from 'node:path'
 import { writeExtractedContentSliced, getValidatedFreeDiskBytes } from './runtime/content-write-budget'
 import type { Worker } from 'node:worker_threads'
@@ -61,7 +61,7 @@ export class DocumentMemoryManager {
     try { await new Promise<void>((r) => setImmediate(r)); while (!this.stopped && this.store.backfillCounters()) { await new Promise<void>((r) => setImmediate(r)) } } catch { /* ignore */ }
   }
   private ocrHostInput(): OcrHostInput {
-    return { store: this.store, isEnabled: () => this.isEnabled(), isStopped: () => this.stopped, admission: this.admission, maintScheduler: this.maintScheduler, budgetCoord: this.budgetCoord, dbDir: dirname(this.dbPath), workerTimeoutMs: this.workerTimeoutMs, askWorker: (req, timeout) => this.ask(req as any, timeout), reindex: (path) => this.enqueue(resolve(path), true) }
+    return { store: this.store, isEnabled: () => this.isEnabled(), isStopped: () => this.stopped, admission: this.admission, maintScheduler: this.maintScheduler, budgetCoord: this.budgetCoord, dbDir: dirname(this.dbPath), workerTimeoutMs: this.workerTimeoutMs, askWorker: (req, timeout) => this.ask(req as any, timeout), reindex: (path) => { const p = resolve(path); this.invalidatePath(p); this.enqueue(p, true) } }
   }
   ocrHost(): OcrJobHost { return createOcrHost(this.ocrHostInput()) }
   /** Local OCR pass + the cloud host that waits for it; one per manager. The OCR scheduler tick calls `.runner.tick()`. */
@@ -99,7 +99,7 @@ export class DocumentMemoryManager {
     this.budgetCoord = new StorageBudgetCoordinator({
       settingsDir: this.settingsDir, getMaintBudget: () => this.maintScheduler.budget, setMaintBudget: (b) => this.maintScheduler.setBudget(b),
       askWorker: (req, timeout) => this.ask(req, timeout, false), isStopped: () => this.stopped, workerTimeoutMs: this.workerTimeoutMs,
-      onWriteReady: () => { if (this.enabled && !this.stopped) { this.drain(); void this.pendingIntake.triggerReplay() } },
+      onWriteReady: () => { if (this.enabled && !this.stopped) { this.drain(); void this.ocrRecovery.run(); void this.pendingIntake.triggerReplay() } },
       onHandshakeFailure: (err) => { if (!this.stopped && this.host.isUp) this.recycleWorker(`Handshake failed: ${err}`) },
     })
     initialBudget = options.budget ?? createStorageBudget(this.budgetCoord.getConfig().maxDatabaseBytes)
@@ -476,10 +476,10 @@ export class DocumentMemoryManager {
     const idx = this.queue.indexOf(path); if (idx >= 0) this.queue.splice(idx, 1)
     this.embeddingCoord.removePath(path)
   }
-  private polling = false
+  private polling = false; private readonly ocrRecovery = new CachedOcrRecovery({ ask: (r) => this.ask(r), isActive: () => !this.stopped && this.enabled && !isIndexingPaused() && this.budgetCoord.isWriteReady(), enqueue: (p) => this.enqueue(p) })
   private async poll(): Promise<void> {
     if (this.stopped || !this.enabled || isIndexingPaused() || this.polling) return
-    this.polling = true
+    this.polling = true; void this.ocrRecovery.run()
     // Every incomplete file is offered on every poll, however many wait: a path that fell out of the in-memory line (a refusal, a restarted worker, a changed file) only comes back through here.
     try { await enqueueIncompletePaged({ readPage: (after, limit) => this.store.incompletePathsPage(after, limit), isBusy: (p) => this.queued.has(p) || this.gate.isParked(p) || this.activeExtractions.has(p) || this.embeddingCoord.isEmbeddingPath(p) || this.embeddingCoord.embedsQueue.some((j) => j.path === p), enqueue: (p) => this.enqueue(p), isStopped: () => this.stopped || !this.enabled }) } finally { this.polling = false }
     this.skippedMigrationDocs.clear(); this.scheduleMigrationStep(1000); this.drain(); const probe = this.probe(); if (!this.stopped && this.enabled) this.watchdog.observe(this.progressTicks, probe, probe.pausedBy, blockedReasonOf(probe))

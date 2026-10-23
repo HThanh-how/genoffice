@@ -12,6 +12,8 @@ import { EMBEDDING_PROFILES } from '../src/main/document-memory/embedding-profil
 import { extractDocument } from '../src/main/document-memory/worker'
 import { buildScannedPdf, testPattern } from './helpers/scanned-pdf'
 import { storageBudgetAckReply, waitForManagerWriteReady } from './helpers/storage-budget-ack'
+import { readOcrRecoveryPage } from '../src/main/document-memory/storage/repositories/ocr-recovery-repository'
+import type { ExtractResult } from '../src/main/document-memory/runtime/extraction-coordinator'
 
 let dir: string
 let manager: DocumentMemoryManager | undefined
@@ -30,10 +32,18 @@ afterEach(async () => {
 /** The index process, run in-process: the real extraction (with the OCR lookup) and real page rendering. */
 class InProcessWorker extends EventEmitter {
   renders = 0
+  afterExtract?: (result: ExtractResult) => Promise<void>
   constructor(private readonly dbPath: string) {
     super()
   }
-  postMessage(message: { id: number; type: string; path?: string; texts?: string[]; ocr?: never }) {
+  postMessage(message: {
+    id: number
+    type: string
+    path?: string
+    texts?: string[]
+    ocr?: never
+    afterId?: number
+  }) {
     setTimeout(async () => {
       try {
         const ack = storageBudgetAckReply(message)
@@ -45,7 +55,18 @@ class InProcessWorker extends EventEmitter {
           const store = new DocumentMemoryStore(this.dbPath)
           try {
             const result = await extractDocument(message.path!, (p, h) => store.ocr.pages(p, h))
+            await this.afterExtract?.(result)
             this.emit('message', { id: message.id, result })
+          } finally {
+            store.close()
+          }
+        } else if (message.type === 'ocr-reconcile-page') {
+          const store = new DocumentMemoryStore(this.dbPath)
+          try {
+            this.emit('message', {
+              id: message.id,
+              result: readOcrRecoveryPage(store.rawDb, message.afterId ?? 0),
+            })
           } finally {
             store.close()
           }
@@ -86,6 +107,73 @@ async function until(check: () => boolean, timeout = 8000) {
 }
 
 describe('scanned PDF through the real manager (in-process index worker)', () => {
+  it('startup repairs complete cached OCR on a legacy empty row without rendering or calling OCR', async () => {
+    const path = join(dir, 'startup-scan.pdf')
+    const jpeg = encodeGrayJpeg(testPattern(120, 160, 0), 120, 160, 70)
+    writeFileSync(path, buildScannedPdf([{ jpeg, width: 120, height: 160 }]))
+    const dbPath = join(dir, 'document-memory.db')
+    const seed = new DocumentMemoryStore(dbPath)
+    const empty = await extractDocument(path)
+    seed.replaceDocument(path, { ...empty, status: 'empty', embeddingModel: null })
+    seed.ocr.savePages(path, { ...empty, totalPages: 1 }, [
+      { page: 1, text: 'Synthetic startup recovery searchable invoice' },
+    ])
+    seed.rawDb
+      .prepare(
+        "UPDATE documents SET status = 'empty', error = 'No readable text; scanned documents need OCR' WHERE path = ?",
+      )
+      .run(path)
+    seed.close()
+    const worker = new InProcessWorker(dbPath)
+    manager = new DocumentMemoryManager(dir, {
+      pollIntervalMs: 60_000,
+      workerFactory: () => worker as unknown as Worker,
+    })
+    reader = new DocumentMemoryStore(dbPath)
+    await until(() => ['text-only', 'ready'].includes(reader!.documentByPath(path)!.status))
+    expect(reader.chunkProgress(path).totalChunks).toBeGreaterThan(0)
+    expect(reader.documentByPath(path)?.error).toBeNull()
+    expect(worker.renders).toBe(0)
+  })
+
+  it('an OCR reindex request during extraction survives the active-path guard and stale empty reply', async () => {
+    const path = join(dir, 'racing-scan.pdf')
+    const jpeg = encodeGrayJpeg(testPattern(120, 160, 0), 120, 160, 70)
+    writeFileSync(path, buildScannedPdf([{ jpeg, width: 120, height: 160 }]))
+    const dbPath = join(dir, 'document-memory.db')
+    const worker = new InProcessWorker(dbPath)
+    let release!: () => void
+    let extracted: ExtractResult | undefined
+    const held = new Promise<void>((resolve) => {
+      release = resolve
+    })
+    worker.afterExtract = async (result) => {
+      extracted = result
+      worker.afterExtract = undefined
+      await held
+    }
+    manager = new DocumentMemoryManager(dir, {
+      pollIntervalMs: 60_000,
+      workerFactory: () => worker as unknown as Worker,
+    })
+    reader = new DocumentMemoryStore(dbPath)
+    await waitForManagerWriteReady(manager)
+    manager.indexDiscoveredFile(path)
+    await until(() => !!extracted)
+    const host = manager.ocrHost()
+    expect(
+      await host.savePages(path, { ...extracted!, totalPages: 1 }, [
+        { page: 1, text: 'Synthetic racing OCR completion searchable invoice' },
+      ]),
+    ).toMatchObject({ ok: true })
+    host.reindex(path)
+    release()
+    await until(() => ['text-only', 'ready'].includes(reader!.documentByPath(path)!.status))
+    expect(reader.chunkProgress(path).totalChunks).toBeGreaterThan(0)
+    expect(reader.documentByPath(path)?.error).toBeNull()
+    expect(worker.renders).toBe(0)
+  })
+
   it('replaces a worker after a stalled native step and ignores its late model messages', async () => {
     class StalledWorker extends EventEmitter {
       terminated = false

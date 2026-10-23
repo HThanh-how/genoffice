@@ -14,6 +14,7 @@ import type { DatabaseSync } from 'node:sqlite'
 import { basename } from 'node:path'
 import { capChunks, chunkDocumentText, type DocumentChunk } from './chunks'
 import { isSensitiveName } from './media/sensitive-names'
+import { requestCachedOcrIndexing } from './storage/repositories/ocr-recovery-repository'
 
 /** Failed local attempts (same file version) after which the local pass stops trying a file. */
 export const LOCAL_OCR_MAX_ATTEMPTS = 3
@@ -204,7 +205,13 @@ export class OcrSidecar {
   /** Store transcribed pages; rows of an older version of the file are dropped first. */
   savePages(path: string, meta: OcrFileMeta, pages: readonly OcrPageText[]): void {
     if (!path || typeof path !== 'string' || !Array.isArray(pages) || pages.length === 0) return
-    if (!meta || typeof meta.hash !== 'string' || !Number.isFinite(meta.mtimeMs) || !Number.isSafeInteger(meta.sizeBytes)) return
+    if (
+      !meta ||
+      typeof meta.hash !== 'string' ||
+      !Number.isFinite(meta.mtimeMs) ||
+      !Number.isSafeInteger(meta.sizeBytes)
+    )
+      return
 
     this.db.exec('BEGIN IMMEDIATE')
     try {
@@ -223,7 +230,13 @@ export class OcrSidecar {
           OR ocr_pages.hash <> excluded.hash`,
       )
       for (const page of pages) {
-        if (!page || typeof page.page !== 'number' || !Number.isSafeInteger(page.page) || page.page < 1) continue
+        if (
+          !page ||
+          typeof page.page !== 'number' ||
+          !Number.isSafeInteger(page.page) ||
+          page.page < 1
+        )
+          continue
         const text = typeof page.text === 'string' ? page.text.slice(0, 32_768) : ''
         upsert.run(
           path,
@@ -240,6 +253,8 @@ export class OcrSidecar {
           tier === 'local' && meta.escalate === true ? 1 : 0,
         )
       }
+      // The queue callback is only a wake-up: a crash before it must not strand cached text.
+      requestCachedOcrIndexing(this.db, path)
       this.db.exec('COMMIT')
     } catch (error) {
       this.db.exec('ROLLBACK')
@@ -281,7 +296,9 @@ export class OcrSidecar {
   pagesPresent(path: string, mtimeMs: number, sizeBytes: number): number[] {
     return (
       this.db
-        .prepare('SELECT page FROM ocr_pages WHERE path = ? AND mtime_ms = ? AND size_bytes = ? ORDER BY page')
+        .prepare(
+          'SELECT page FROM ocr_pages WHERE path = ? AND mtime_ms = ? AND size_bytes = ? ORDER BY page',
+        )
         .all(path, mtimeMs, sizeBytes) as unknown as Array<{ page: number }>
     ).map((row) => row.page)
   }
@@ -344,7 +361,8 @@ export class OcrSidecar {
   ): { attempts: number; code: string; mtimeMs: number; sizeBytes: number } | null {
     const row = this.db
       .prepare('SELECT attempts, code, mtime_ms, size_bytes FROM ocr_local_failures WHERE path = ?')
-      .get(path) as { attempts: number; code: string; mtime_ms: number; size_bytes: number } | undefined
+      .get(path) as
+      { attempts: number; code: string; mtime_ms: number; size_bytes: number } | undefined
     return row
       ? { attempts: row.attempts, code: row.code, mtimeMs: row.mtime_ms, sizeBytes: row.size_bytes }
       : null
@@ -418,8 +436,12 @@ export class OcrSidecar {
     // pages that count as read for the asker: the cloud does not count escalated local rows
     const doneFilter = local ? '' : "AND NOT (o.tier = 'local' AND o.escalate = 1)"
     // Media rows are never OCR work here (a bare database without the media table has none).
-    const hasMedia = this.db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'document_media'").get()
-    const notMedia = hasMedia ? 'AND NOT EXISTS (SELECT 1 FROM document_media dm WHERE dm.document_id = d.id)' : ''
+    const hasMedia = this.db
+      .prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'document_media'")
+      .get()
+    const notMedia = hasMedia
+      ? 'AND NOT EXISTS (SELECT 1 FROM document_media dm WHERE dm.document_id = d.id)'
+      : ''
     // a file with escalated local pages is cloud work whatever its status became after the local text arrived
     const escalatedBranch =
       mode === 'cloud'
@@ -440,6 +462,7 @@ export class OcrSidecar {
         WHERE d.excluded = 0 AND lower(d.path) LIKE '%.pdf'
           ${notMedia} AND (
           (d.status = 'empty' AND d.error LIKE 'No readable text%')
+          OR (d.status = 'pending' AND EXISTS (SELECT 1 FROM ocr_pages o WHERE ${same}))
           OR (d.status IN ('pending', 'text-only', 'ready') AND d.truncated = 1
               AND EXISTS (SELECT 1 FROM ocr_pages o WHERE o.path = d.path))
           OR (d.status IN ('text-only', 'ready')
@@ -469,7 +492,8 @@ export class OcrSidecar {
       // The cloud lists feed Antigravity: pages of identity / legal / credential papers
       // (cccd, passport, sổ hộ khẩu ...) are never sent unless the caller explicitly opts in.
       // The local pass reads them too (on this device only).
-      if (!local && !options.includeSensitive && isSensitiveName(basename(row.path), row.path)) continue
+      if (!local && !options.includeSensitive && isSensitiveName(basename(row.path), row.path))
+        continue
       if (local && (row.failed_attempts ?? 0) >= LOCAL_OCR_MAX_ATTEMPTS) continue
       const base = {
         id: row.id,
@@ -478,11 +502,21 @@ export class OcrSidecar {
         mtimeMs: row.mtime_ms,
         lastOpenedAt: row.last_opened_at,
       }
-      if (!local && options.leaveToLocal && row.done === 0 && row.local_rows === 0 && row.failed_attempts === null)
+      if (
+        !local &&
+        options.leaveToLocal &&
+        row.done === 0 &&
+        row.local_rows === 0 &&
+        row.failed_attempts === null
+      )
         continue // the local pass has not reached this file yet
       if (mode === 'cloud' && row.local_rows > 0) {
         // the local pass handled this file: the cloud reader only gets the pages it escalated
-        const wanted = (escalatedOf.all(row.path, row.mtime_ms, row.size_bytes) as unknown as Array<{ page: number }>)
+        const wanted = (
+          escalatedOf.all(row.path, row.mtime_ms, row.size_bytes) as unknown as Array<{
+            page: number
+          }>
+        )
           .map((r) => r.page)
           .filter((page) => page <= maxPagesPerFile)
         if (wanted.length === 0) continue
@@ -508,7 +542,8 @@ export class OcrSidecar {
         if (wanted.every((page) => done.has(page))) continue
         const isWanted = new Set(local ? wanted : scanned)
         const skipPages: number[] = []
-        for (let page = 1; page <= row.scan_total; page++) if (!isWanted.has(page)) skipPages.push(page)
+        for (let page = 1; page <= row.scan_total; page++)
+          if (!isWanted.has(page)) skipPages.push(page)
         out.push({
           ...base,
           pagesDone: wanted.filter((page) => done.has(page)).length,
@@ -527,7 +562,10 @@ export class OcrSidecar {
     return out
   }
 
-  private pagesDoneFor(file: { path: string; mtimeMs: number; sizeBytes: number }, any: boolean): number[] {
+  private pagesDoneFor(
+    file: { path: string; mtimeMs: number; sizeBytes: number },
+    any: boolean,
+  ): number[] {
     return any
       ? this.pagesPresent(file.path, file.mtimeMs, file.sizeBytes)
       : this.pagesDone(file.path, file.mtimeMs, file.sizeBytes)

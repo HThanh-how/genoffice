@@ -68,6 +68,10 @@ class TurnWorker extends EventEmitter {
       this.emit('message', ack)
       return
     }
+    if (message.type === 'ocr-reconcile-page') {
+      this.emit('message', { id: message.id, result: { paths: [], afterId: 0, done: true } })
+      return
+    }
     this.requests.push({ path: message.path, sliceMs: message.sliceMs })
     this.pending = message
   }

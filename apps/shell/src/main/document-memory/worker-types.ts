@@ -31,6 +31,13 @@ export type WorkerRequest =
   | { type: 'ocr-render'; path: string; ocr: OcrRenderRequest }
   | { type: 'ocr-prepare'; bytes: Uint8Array; dpi: number }
   | {
+      type: 'ocr-orient'
+      bytes: Uint8Array
+      degrees: import('./local-ocr/orientation').QuarterTurn
+      maxEdge?: number
+    }
+  | { type: 'ocr-reconcile-page'; afterId: number }
+  | {
       type: 'search'
       query: string
       vector: number[] | null

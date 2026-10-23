@@ -22,6 +22,8 @@ import { IMAGE_OCR_STATE } from '../src/main/document-memory/media/media-ocr-gat
 import { decodePngGray } from '../src/main/document-memory/local-ocr/gray-image'
 import { LocalOcrEngineRegistry } from '../src/main/document-memory/local-ocr/registry'
 import { prepareForTesseract } from '../src/main/document-memory/local-ocr/tesseract-prepare'
+import { orientTesseractImage } from '../src/main/document-memory/local-ocr/orientation-image'
+import type { QuarterTurn } from '../src/main/document-memory/local-ocr/orientation'
 import { TESSERACT_ENGINE_ID } from '../src/main/document-memory/local-ocr/tesseract-engine'
 import { DocumentMemoryManager } from '../src/main/document-memory/manager'
 import { DocumentMemoryStore } from '../src/main/document-memory/store'
@@ -73,6 +75,8 @@ class InProcessWorker extends EventEmitter {
     limit?: number
     bytes?: Uint8Array
     dpi?: number
+    degrees?: QuarterTurn
+    maxEdge?: number
   }) {
     setTimeout(async () => {
       try {
@@ -98,6 +102,11 @@ class InProcessWorker extends EventEmitter {
           this.emit('message', {
             id: message.id,
             result: prepareForTesseract(message.bytes!, message.dpi ?? 150),
+          })
+        } else if (message.type === 'ocr-orient') {
+          this.emit('message', {
+            id: message.id,
+            result: orientTesseractImage(message.bytes!, message.degrees ?? 0, message.maxEdge),
           })
         } else if (message.type === 'embed') {
           this.emit('message', { type: 'model', state: 'ready' })

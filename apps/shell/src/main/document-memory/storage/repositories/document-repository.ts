@@ -39,6 +39,7 @@ import {
 import { mediaKindOfPath } from '../../media/media-kinds'
 import { enrollMediaRow, type MediaEnrollResult } from '../../media/media-enrollment'
 import { isMediaDocument } from '../../media/media-repository'
+import { requestCachedOcrIndexing } from './ocr-recovery-repository'
 
 export type {
   FileImportanceOverride,
@@ -862,6 +863,8 @@ export class DocumentRepository {
         replacement.truncated ? (replacement.truncatedReason ?? null) : null,
         id,
       )
+    // A stale empty extraction may arrive after the OCR transaction committed.
+    if (replacement.status === 'empty') requestCachedOcrIndexing(this.db, normalizedPath)
     const proj = buildDocumentProjection(fileName, normalizedPath)
     if (!isProjectionUpToDate(this.db, id, proj)) {
       const projOk = syncProjectionUpdate(

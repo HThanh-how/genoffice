@@ -27,7 +27,7 @@ describe('PDFs with some scanned pages', () => {
     const db = new DatabaseSync(':memory:')
     db.exec(`CREATE TABLE documents (id INTEGER PRIMARY KEY, path TEXT, size_bytes INTEGER, mtime_ms REAL,
       last_opened_at INTEGER DEFAULT 0, excluded INTEGER DEFAULT 0, status TEXT, error TEXT,
-      truncated INTEGER DEFAULT 0, priority_at INTEGER DEFAULT 0)`)
+      truncated INTEGER DEFAULT 0, priority_at INTEGER DEFAULT 0, hash TEXT, updated_at INTEGER DEFAULT 0)`)
     OcrSidecar.ensureSchema(db)
     db.prepare(
       "INSERT INTO documents(id, path, size_bytes, mtime_ms, status) VALUES (1, '/a/mixed.pdf', 10, 5, 'text-only')",

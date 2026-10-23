@@ -26,6 +26,8 @@ import {
 import { TESSERACT_ESCALATION_THRESHOLD } from './escalation'
 import { detectImageFormat, prepareForTesseract, TESSERACT_MAX_EDGE_PX } from './tesseract-prepare'
 import { findTessdataDir, findTesseractWorkerScript, tesseractCoresPresent } from './resources'
+import { ORIENTATION_PROBE_EDGE_PX, probeOrientation, type QuarterTurn } from './orientation'
+import { orientTesseractImage } from './orientation-image'
 
 export const TESSERACT_ENGINE_ID = 'tesseract-vie'
 
@@ -54,7 +56,7 @@ interface TesseractWorker {
     image: Uint8Array,
     options: object,
     output: Record<string, boolean>,
-  ): Promise<{ data: { text: string; tsv?: string } }>
+  ): Promise<{ data: { text: string; tsv?: string; confidence?: number } }>
   terminate(): Promise<unknown>
 }
 interface TesseractModule {
@@ -77,6 +79,8 @@ export interface TesseractEngineOptions {
    * missing answer sends the original image to Tesseract unprocessed. Default: in this thread.
    */
   prepare?: (bytes: Uint8Array, dpi: number) => Promise<Uint8Array | null>
+  /** Downscale / quarter-turn in the index worker; null means the encoding cannot be decoded. */
+  orient?: (bytes: Uint8Array, degrees: QuarterTurn, maxEdge?: number) => Promise<Uint8Array | null>
   /** worker initialization timeout in milliseconds (default: 30_000) */
   initTimeoutMs?: number
 }
@@ -94,7 +98,8 @@ export class TesseractEngine implements LocalOcrEngine {
   private readonly langPath: string | null
   private readonly workerPath: string | null
   private readonly loadModule: () => Promise<TesseractModule>
-  private readonly prepare: (bytes: Uint8Array, dpi: number) => Promise<Uint8Array | null>
+  private readonly prepare: NonNullable<TesseractEngineOptions['prepare']>
+  private readonly orient: NonNullable<TesseractEngineOptions['orient']>
   private readonly initTimeoutMs: number
   private workerPromise: Promise<TesseractWorker> | null = null
   private activeWorker: TesseractWorker | null = null
@@ -107,6 +112,8 @@ export class TesseractEngine implements LocalOcrEngine {
       options.workerPath === undefined ? findTesseractWorkerScript() : options.workerPath
     this.loadModule = options.loadModule ?? loadTesseract
     this.prepare = options.prepare ?? (async (bytes, dpi) => prepareForTesseract(bytes, dpi))
+    this.orient =
+      options.orient ?? (async (bytes, degrees, edge) => orientTesseractImage(bytes, degrees, edge))
     this.initTimeoutMs = options.initTimeoutMs ?? DEFAULT_INIT_TIMEOUT_MS
   }
 
@@ -279,9 +286,26 @@ export class TesseractEngine implements LocalOcrEngine {
 
     const image = prepared
     let timer: NodeJS.Timeout | undefined
+    let expired = false
     try {
       const result = await Promise.race([
-        worker.recognize(image, {}, { text: true, tsv: true }),
+        (async () => {
+          const probe = await this.orient(image, 0, ORIENTATION_PROBE_EDGE_PX)
+          const degrees = probe
+            ? await probeOrientation(async (angle) => {
+                if (expired) throw new Error('Tesseract timed out')
+                const rotated = angle === 0 ? probe : await this.orient(probe, angle)
+                if (expired) throw new Error('Tesseract timed out')
+                if (!rotated) return 0
+                const result = await worker.recognize(rotated, {}, { text: true })
+                return result.data.confidence ?? 0
+              })
+            : 0
+          if (expired) throw new Error('Tesseract timed out')
+          const oriented = degrees === 0 ? image : await this.orient(image, degrees)
+          if (expired) throw new Error('Tesseract timed out')
+          return worker.recognize(oriented ?? image, {}, { text: true, tsv: true })
+        })(),
         new Promise<never>((_, reject) => {
           timer = setTimeout(
             () => reject(new Error('Tesseract timed out')),
@@ -309,6 +333,7 @@ export class TesseractEngine implements LocalOcrEngine {
       }
       throw error instanceof Error ? error : new Error(String(error))
     } finally {
+      expired = true
       clearTimeout(timer)
     }
   }

@@ -27,6 +27,7 @@ import {
 import { LocalOcrEngineRegistry } from '../local-ocr/registry'
 import { TesseractEngine, TESSERACT_ENGINE_ID } from '../local-ocr/tesseract-engine'
 import { createOcrHost, type OcrHostInput } from '../ocr-host'
+import type { QuarterTurn } from '../local-ocr/orientation'
 
 /** Files read per `runOnce` batch, and batches per tick (a tick is a sequence of batches, never parallel). */
 export const LOCAL_OCR_BATCH_FILES = 25
@@ -35,7 +36,9 @@ export const LOCAL_OCR_MAX_BATCHES_PER_TICK = 40
 const PREPARE_TIMEOUT_MS = 60_000
 
 type WorkerAsk = (
-  request: { type: 'ocr-prepare'; bytes: Uint8Array; dpi: number },
+  request:
+    | { type: 'ocr-prepare'; bytes: Uint8Array; dpi: number }
+    | { type: 'ocr-orient'; bytes: Uint8Array; degrees: QuarterTurn; maxEdge?: number },
   timeoutMs?: number,
 ) => Promise<unknown>
 
@@ -198,6 +201,15 @@ export function createLocalOcrWiring(deps: LocalOcrWiringDeps): LocalOcrWiring {
                 throw new Error(reply.error)
               }
               return reply?.result instanceof Uint8Array ? reply.result : null
+            },
+            orient: async (bytes, degrees, maxEdge) => {
+              const reply = (await deps.ask(
+                { type: 'ocr-orient', bytes, degrees, maxEdge },
+                PREPARE_TIMEOUT_MS,
+              )) as { result?: unknown; error?: string } | null
+              if (!reply || reply.error)
+                throw new Error(reply?.error ?? 'Orientation worker unavailable')
+              return reply.result instanceof Uint8Array ? reply.result : null
             },
           }),
       },

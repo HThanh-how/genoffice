@@ -73,6 +73,9 @@ import { ocrChunksFromPages, ocrDocumentHash, type OcrLookup } from './ocr-sidec
 import { extractImageOcrText } from './image-ocr-extract'
 import { mediaKindOfPath } from './media/media-kinds'
 import { prepareForTesseract } from './local-ocr/tesseract-prepare'
+import { readOcrRecoveryPage } from './storage/repositories/ocr-recovery-repository'
+import { orientTesseractImage } from './local-ocr/orientation-image'
+import type { QuarterTurn } from './local-ocr/orientation'
 /** `ocr` finds text the scanned-PDF reader stored for a PDF that has no text layer of its own. */
 /** A page with fewer characters than this has no usable text layer. */
 const MIN_PAGE_TEXT_CHARS = 20
@@ -371,6 +374,9 @@ onIndexRequest(
     ocr?: OcrRenderRequest
     bytes?: Uint8Array
     dpi?: number
+    maxEdge?: number
+    degrees?: QuarterTurn
+    afterId?: number
     backupPath?: string
     dbPath?: string
     budget?: DocumentIndexStorageBudget
@@ -396,6 +402,14 @@ onIndexRequest(
               request.path,
               request.ocr ?? { count: 1, maxPages: 1000, done: [] },
             ),
+          )
+        else if (request.type === 'ocr-reconcile-page')
+          result = await withBackgroundBudget(async () =>
+            readOcrRecoveryPage(getWorkerStore().rawDb, request.afterId ?? 0),
+          )
+        else if (request.type === 'ocr-orient')
+          result = await withBackgroundBudget(async () =>
+            orientTesseractImage(request.bytes!, request.degrees ?? 0, request.maxEdge),
           )
         else if (request.type === 'ocr-prepare')
           // CPU-bound decode / shrink / flatten of an image for the Tesseract engine (kept off the main thread)
