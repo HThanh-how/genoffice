@@ -1,3 +1,4 @@
+import { traceOp } from '../trace-op'
 import { Worker } from 'node:worker_threads'
 import { readdir, stat } from 'node:fs/promises'
 import { basename, dirname, isAbsolute, relative } from 'node:path'
@@ -271,7 +272,14 @@ export class FileIndexer {
     if (Date.now() - this.lastScanAt >= maxAgeMs) void this.scan()
   }
 
-  async scan(): Promise<void> {
+  scan(): Promise<void> {
+    return traceOp('file-index.scan', () => this.scanTraced(), {
+      kind: 'indexer',
+      source: 'automatic',
+    })
+  }
+
+  private async scanTraced(): Promise<void> {
     if (this.stopped) return
     if (this.scanning) {
       this.scanRequested = true
@@ -314,7 +322,12 @@ export class FileIndexer {
         }
         let partChain: Promise<void> = Promise.resolve()
         const res = await this.ask({ id: 0, type: 'scan', root }, (files) => {
-          partChain = partChain.then(() => absorb(files))
+          partChain = partChain.then(() =>
+            traceOp('file-index.scan-part', () => absorb(files), {
+              kind: 'indexer',
+              source: 'automatic',
+            }),
+          )
         })
         await partChain
         if (res.type === 'scan') await absorb(res.files)
@@ -540,7 +553,14 @@ export class FileIndexer {
   }
 
   /** Parse and write in the worker; the main thread hears only the outcome. A timeout or crash is recorded like any failed parse. */
-  private async indexInWorker(f: ScannedFile): Promise<void> {
+  private indexInWorker(f: ScannedFile): Promise<void> {
+    return traceOp('file-index.extract-turn', () => this.indexInWorkerTraced(f), {
+      kind: 'indexer',
+      source: 'automatic',
+    })
+  }
+
+  private async indexInWorkerTraced(f: ScannedFile): Promise<void> {
     if (this.stopped) return
     if (isPathIgnored(f.path)) {
       await this.removeRows([f.path])

@@ -1582,6 +1582,7 @@ export function Home() {
     let nameTimer = 0
     const key = searchKey
     const ext = filter === 'all' ? undefined : filter
+    let source: 'user-input' | 'automatic' = 'user-input'
     const runNames = () => {
       if (composingRef.current) {
         nameTimer = window.setTimeout(runNames, 50)
@@ -1592,7 +1593,7 @@ export function Home() {
         if (seq === nameSeq.current) setNameRes({ key, page })
       }
       void window.aiOffice
-        .searchFiles({ q, ext, limit: 50, nameOnly: true })
+        .searchFiles({ q, ext, limit: 50, nameOnly: true, source })
         .then(settle)
         // the in-memory matches and the full search still answer
         .catch(() =>
@@ -1607,7 +1608,7 @@ export function Home() {
       const seq = ++searchSeq.current
       const startedAt = performance.now()
       void window.aiOffice
-        .searchFiles({ q, ext, limit: 100 })
+        .searchFiles({ q, ext, limit: 100, source })
         .then((page) => {
           if (seq !== searchSeq.current) return
           setSearchRes({ key, page })
@@ -1617,6 +1618,7 @@ export function Home() {
           if (page.index.pending > 0 || page.index.scanning)
             timer = window.setTimeout(
               () => {
+                source = 'automatic'
                 runNames()
                 run()
               },

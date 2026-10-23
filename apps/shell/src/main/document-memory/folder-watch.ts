@@ -1,3 +1,4 @@
+import { traceOp } from '../trace-op'
 import { watch as fsWatch, type FSWatcher } from 'node:fs'
 import { stat } from 'node:fs/promises'
 import { basename, isAbsolute, relative, resolve, sep } from 'node:path'
@@ -190,7 +191,11 @@ export class FolderWatchManager {
         isFirst = false
         try {
           refreshGenOfficeIgnoreForRoot(root)
-          const result = (await this.folders.reconcile(root)) as { ok?: boolean; reason?: string }
+          const result = (await traceOp(
+            'document-memory.reconcile',
+            () => this.folders.reconcile(root),
+            { kind: 'timer', source: 'automatic' },
+          )) as { ok?: boolean; reason?: string }
           if (result?.ok === false) {
             if (result.reason === 'busy') this.markDirty(root)
             else this.retryAfterReconcileFailure(root, state)
@@ -393,8 +398,11 @@ export class FolderWatchManager {
     for (const subtree of subtrees) {
       if (this.closed || !this.safeEnabled()) return
       try {
-        const result = (await this.folders.reconcileSubtree(root, subtree)) as
-          { ok?: boolean; reason?: string } | undefined
+        const result = (await traceOp(
+          'document-memory.reconcile-subtree',
+          () => this.folders.reconcileSubtree!(root, subtree),
+          { kind: 'timer', source: 'automatic' },
+        )) as { ok?: boolean; reason?: string } | undefined
         if (!result || result.ok === false) {
           this.markDirty(root)
           return
@@ -462,7 +470,11 @@ export class FolderWatchManager {
     state.pendingSubtrees.clear()
     try {
       refreshGenOfficeIgnoreForRoot(root)
-      const result = (await this.folders.reconcile(root)) as { ok?: boolean; reason?: string }
+      const result = (await traceOp(
+        'document-memory.reconcile',
+        () => this.folders.reconcile(root),
+        { kind: 'timer', source: 'automatic' },
+      )) as { ok?: boolean; reason?: string }
       if (result?.ok === false && result.reason === 'busy') {
         this.markDirty(root)
         return

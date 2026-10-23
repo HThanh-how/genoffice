@@ -1,3 +1,4 @@
+import { traceOp } from '../trace-op'
 import type { IpcMain } from 'electron'
 import { resolve } from 'node:path'
 import type { FolderScanManager } from '../document-memory/folder-scan'
@@ -656,7 +657,10 @@ export function createIgnoreReconcileController(
     }
   }
 
-  const flush = async (): Promise<void> => {
+  const flush = (): Promise<void> =>
+    traceOp('ignore-policy.reconcile', flushTraced, { kind: 'timer', source: 'automatic' })
+
+  const flushTraced = async (): Promise<void> => {
     if (debounceTimer) {
       clearTimeout(debounceTimer)
       debounceTimer = null

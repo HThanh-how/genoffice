@@ -227,6 +227,8 @@ export interface RecentPage {
 
 /** local file search over names, folders and extracted text */
 export interface FileSearchQuery {
+  /** Diagnostic origin only; never includes the query text. */
+  source?: 'user-input' | 'automatic'
   q: string
   /** sidebar filter key ('docx' | 'xlsx' | ...); omit for all */
   ext?: string

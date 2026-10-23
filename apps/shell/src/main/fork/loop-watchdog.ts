@@ -4,6 +4,7 @@ import { appendFileSync, existsSync, mkdirSync, renameSync, statSync } from 'nod
 import { dirname } from 'node:path'
 import { getSqliteTimingSummary } from '../document-memory/sqlite-timing'
 import { rotatingFileWriter } from './renderer-diagnostics'
+import { operationsSince } from '../trace-op'
 
 /**
  * Always-on diagnostic for main-process stalls.
@@ -161,6 +162,7 @@ export function startLoopWatchdog(options: LoopWatchdogOptions): () => void {
             maxStallMs: Math.round(maxStall),
             busyMs,
             top,
+            operations: operationsSince(started),
           })
         }
       } catch {
@@ -176,6 +178,7 @@ export function startLoopWatchdog(options: LoopWatchdogOptions): () => void {
   const tick = (): void => {
     const t = now()
     const lag = t - last - sampleMs
+    const intervalStart = last
     last = t
     if (lag >= threshold) {
       if (!profiling)
@@ -200,6 +203,7 @@ export function startLoopWatchdog(options: LoopWatchdogOptions): () => void {
           },
           rssMB: Math.round(memoryUsage().rss / (1024 * 1024)),
           recentSlowSqlite: slow,
+          operations: operationsSince(intervalStart),
         })
         suppressed = 0
         lastReportAt = t

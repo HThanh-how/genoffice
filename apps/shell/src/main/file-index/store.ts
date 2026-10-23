@@ -3,6 +3,7 @@ import { basename, dirname, extname } from 'node:path'
 import { MAX_BODY_CHARS } from './extract'
 import { buildSnippet, containsAny, excerpt, type SnippetPart } from './snippet'
 import { normalizeDocumentText } from '../document-memory/normalization'
+import { traceOp } from '../trace-op'
 import {
   parseQuery,
   termChars,
@@ -41,6 +42,8 @@ export interface SearchHit {
 }
 
 export interface SearchOptions {
+  /** Diagnostic provenance; no personal text. */
+  source?: 'user-input' | 'automatic' | 'unknown'
   /** restrict to these lowercased extensions */
   exts?: readonly string[]
   offset?: number
@@ -319,6 +322,24 @@ export class FileIndexStore {
    * query, then name/folder hits, then more exact terms, then BM25 and recency.
    */
   search(input: string, opts: SearchOptions = {}): SearchResult {
+    const details = {
+      kind: 'search' as const,
+      source: opts.source ?? 'unknown',
+      queryLength: input.length,
+      resultCount: 0,
+    }
+    return traceOp(
+      'file-index.search',
+      () => {
+        const result = this.searchPage(input, opts)
+        details.resultCount = result.hits.length
+        return result
+      },
+      details,
+    )
+  }
+
+  private searchPage(input: string, opts: SearchOptions): SearchResult {
     const parsed = parseQuery(input)
     if (parsed.include.length === 0) return { hits: [], total: 0 }
     const nameOnly = opts.nameOnly === true
@@ -401,27 +422,50 @@ export class FileIndexStore {
       opts.offset != null && Number.isFinite(opts.offset) ? Math.max(0, opts.offset) : 0
     const page = rows.slice(offset, offset + limit)
     const bodies = nameOnly ? new Map<number, string>() : this.fetchBodies(page.map((r) => r.id))
-    const hits = page.map((r) => {
-      const needles = [...candidates.get(r.id)!.needles]
-      const body = bodies.get(r.id)
-      return {
-        path: r.path,
-        name: r.name,
-        ext: r.ext,
-        mtimeMs: r.mtime_ms,
-        sizeBytes: r.size_bytes,
-        snippet: body ? buildSnippet(body, needles) : null,
-        needles,
-        ...(opts.excerptChars && body
-          ? { excerpt: excerpt(body, needles, opts.excerptChars) }
-          : {}),
-      }
-    })
+    // This store API is synchronous (also used by kb:search); do not change its callers' contract.
+    const hits = traceOp(
+      'file-index.snippets',
+      () =>
+        page.map((r) => {
+          const needles = [...candidates.get(r.id)!.needles]
+          const body = bodies.get(r.id)
+          return {
+            path: r.path,
+            name: r.name,
+            ext: r.ext,
+            mtimeMs: r.mtime_ms,
+            sizeBytes: r.size_bytes,
+            snippet: body ? buildSnippet(body, needles) : null,
+            needles,
+            ...(opts.excerptChars && body
+              ? { excerpt: excerpt(body, needles, opts.excerptChars) }
+              : {}),
+          }
+        }),
+      { kind: 'search', queryLength: input.length, resultCount: page.length },
+    )
     return { hits, total: rows.length }
   }
 
   /** name and body excerpt for the given paths, in that order; unknown paths are skipped */
   excerptsFor(
+    paths: readonly string[],
+    q: string,
+    chars: number,
+  ): Array<{ path: string; name: string; excerpt: string }> {
+    const details = { kind: 'search' as const, queryLength: q.length, resultCount: 0 }
+    return traceOp(
+      'file-index.excerpts',
+      () => {
+        const results = this.excerptsPage(paths, q, chars)
+        details.resultCount = results.length
+        return results
+      },
+      details,
+    )
+  }
+
+  private excerptsPage(
     paths: readonly string[],
     q: string,
     chars: number,

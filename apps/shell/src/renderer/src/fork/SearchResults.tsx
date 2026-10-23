@@ -76,7 +76,7 @@ export function SearchResults({ api, query, onOpened }: SearchResultsProps) {
       inFlightSeqRef.current = seq
 
       try {
-        const res = await api.searchFiles({ q, limit: 100 })
+        const res = await api.searchFiles({ q, limit: 100, source: 'user-input' })
         if (seq === searchSeq.current) {
           searchPageQueryRef.current = q
           setSearchPage(res)
@@ -138,7 +138,7 @@ export function SearchResults({ api, query, onOpened }: SearchResultsProps) {
 
       inFlightSeqRef.current = currentSeq
       try {
-        const res = await api.searchFiles({ q, limit: 100 })
+        const res = await api.searchFiles({ q, limit: 100, source: 'automatic' })
         // Stale Query Guard: Drop response if sequence has advanced, component unmounted, or query changed
         if (alive && currentSeq === searchSeq.current && searchPageQueryRef.current === q) {
           setSearchPage(res)
@@ -210,8 +210,7 @@ export function SearchResults({ api, query, onOpened }: SearchResultsProps) {
   if (searchPage?.hits) {
     for (const hit of searchPage.hits) {
       const nameMarks = markText(hit.name, hit.needles)
-      const nameMatched =
-        nameMarks.some((m) => m.hit) || hit.name.toLowerCase().includes(qLower)
+      const nameMatched = nameMarks.some((m) => m.hit) || hit.name.toLowerCase().includes(qLower)
 
       if (!hit.snippet || nameMatched) {
         bestMatches.push(hit)
@@ -453,9 +452,7 @@ export function SearchResults({ api, query, onOpened }: SearchResultsProps) {
                   {bestMatches.length} {isVi ? 'kết quả' : 'results'}
                 </span>
               </div>
-              <ul className="idx-search-list">
-                {bestMatches.map((h, i) => renderHitItem(h, i))}
-              </ul>
+              <ul className="idx-search-list">{bestMatches.map((h, i) => renderHitItem(h, i))}</ul>
             </section>
           )}
 

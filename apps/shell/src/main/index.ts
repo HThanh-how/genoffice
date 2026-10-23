@@ -1,3 +1,4 @@
+import { installIpcTracing, traceOp } from './trace-op'
 import { registerAppActionIpc } from './app-action-ipc'
 import { showAppMessageBox, setFeedbackThemeGetter } from './app-message-box'
 import { DocumentMemoryManager } from './document-memory/manager'
@@ -535,6 +536,8 @@ import {
 } from '../shared/update-source'
 import { isUpdateChannel, type UpdateChannel } from '../shared/update-api'
 import { resolveWindowIcon } from './window-icon'
+
+installIpcTracing(ipcMain)
 
 /**
  * GenOffice unified shell: ONE Electron app, ONE BrowserWindow, hosting the
@@ -5807,10 +5810,35 @@ function registerHomeIpc(): void {
       const exts = filter && filter !== 'all' ? (SEARCH_EXT_FAMILY[filter] ?? [filter]) : undefined
       const offset = Number.isFinite(query.offset) ? Math.max(0, Math.floor(query.offset!)) : 0
       const limit = Number.isFinite(query.limit) ? Math.max(0, Math.floor(query.limit!)) : 50
+      const details = {
+        kind: 'search' as const,
+        queryLength: q.length,
+        resultCount: 0,
+        source:
+          query.source === 'user-input'
+            ? ('user-input' as const)
+            : query.source === 'automatic'
+              ? ('automatic' as const)
+              : ('unknown' as const),
+      }
       const starred = new Set(readStarredFiles())
       const result =
         q && fileSearch
-          ? await fileSearch.search(q, { exts, offset, limit, nameOnly: query.nameOnly === true })
+          ? await traceOp(
+              'home.search-files',
+              async () => {
+                const result = await fileSearch!.search(q, {
+                  exts,
+                  offset,
+                  limit,
+                  nameOnly: query.nameOnly === true,
+                  source: details.source,
+                })
+                details.resultCount = result.hits.length
+                return result
+              },
+              details,
+            )
           : { hits: [], total: 0 }
       const filteredHits = result.hits.filter((h) => !isPathIgnored(h.path))
       return {
@@ -5840,7 +5868,7 @@ function registerHomeIpc(): void {
     const starred = readStarredFiles()
     const hits = searchKnowledgeBase(
       (qq, pool) =>
-        store.search(qq, { limit: pool }).hits.map((h) => ({
+        store.search(qq, { limit: pool, source: 'automatic' }).hits.map((h) => ({
           path: h.path,
           name: h.name,
           ext: h.ext,
@@ -8606,9 +8634,18 @@ async function runHeadlessExportEntry(
 
 installThemedDialogs(showAppMessageBox)
 
-app.whenReady().then(async () => {
+app.whenReady().then(() => traceOp('startup.ready', startShell, { kind: 'startup' }))
+
+async function startShell(): Promise<void> {
   // first scan waits for the windows to come up; later ones follow folder changes
-  setTimeout(() => ensureFileIndexer()?.refresh(), 4000)
+  setTimeout(
+    () =>
+      traceOp('file-index.initial-refresh', () => ensureFileIndexer()?.refresh(), {
+        kind: 'timer',
+        source: 'automatic',
+      }),
+    4000,
+  )
   installRendererProtocol({
     docs: join(DOCS_OUT, 'renderer'),
     sheets: join(SHEETS_OUT, 'renderer'),
@@ -8662,7 +8699,9 @@ app.whenReady().then(async () => {
   startLoopWatchdogToFile(join(userDataDir, 'logs', 'main-lag.log')) // local log, only written when the main thread stalls > 200 ms
   // a move of the index to another folder, chosen in the settings, happens here: nothing has the
   // database open yet
-  const dbMove = await applyPendingDbMove(userDataDir)
+  const dbMove = await traceOp('startup.db-move', () => applyPendingDbMove(userDataDir), {
+    kind: 'startup',
+  })
   everything = createEverything(userDataDir)
   setOpeningConfig({
     prefs: openingPrefs,
@@ -8696,10 +8735,15 @@ app.whenReady().then(async () => {
     documentMemory = null
     storageStartup.set('unavailable')
   } else {
-    storageBootstrap = runStorageBootstrapOffThread(
-      indexDbDir,
-      { settingsDir: userDataDir },
-      { onProgress: (progress) => storageStartup.set(progress.phase, progress.percent) },
+    storageBootstrap = traceOp(
+      'startup.storage-bootstrap',
+      () =>
+        runStorageBootstrapOffThread(
+          indexDbDir,
+          { settingsDir: userDataDir },
+          { onProgress: (progress) => storageStartup.set(progress.phase, progress.percent) },
+        ),
+      { kind: 'startup' },
     )
   }
   void listLegacyRecovery(app.getPath('userData')).catch((error) =>
@@ -8871,7 +8915,7 @@ app.whenReady().then(async () => {
   })
   beginColdOpening(pendingLaunchPaths)
   installUiScale()
-  createShellWindow()
+  traceOp('startup.create-window', () => createShellWindow(), { kind: 'startup' })
   initClipboardSuggest()
   initClipboardHistory()
   // deferred to ready: labels need currentLang(), which reads app.getLocale()
@@ -8928,7 +8972,12 @@ app.whenReady().then(async () => {
 
   // The window is up and answering; the index opens as soon as its storage check / upgrade is verified.
   void storageBootstrap?.then(
-    (bootstrap) => attachDocumentMemory(bootstrap, userDataDir, indexDbDir),
+    (bootstrap) =>
+      traceOp(
+        'startup.attach-memory',
+        () => attachDocumentMemory(bootstrap, userDataDir, indexDbDir),
+        { kind: 'startup' },
+      ),
     (error: unknown) => {
       console.error('[document-memory] Critical: Storage bootstrap rejected, fail-closed:', error)
       storageStartup.set('unavailable')
@@ -8955,7 +9004,7 @@ app.whenReady().then(async () => {
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) createShellWindow()
   })
-})
+}
 
 app.on('window-all-closed', () => {
   // A headless export destroys its hidden window between documents; only
