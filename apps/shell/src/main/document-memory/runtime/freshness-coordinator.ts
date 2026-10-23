@@ -12,7 +12,7 @@ import type {
 export type { FileEnrollmentOutcome, FileEnrollmentResult }
 import type { FreshDocumentMemoryHit } from './search-service'
 import type { FileStabilityGate } from '../file-stability'
-import { volumeRootOf } from '../volume-root'
+import { rootAvailability, type RootAvailability } from '../root-availability'
 import { discoveredPathAdmission } from '../artifact-policy'
 import { isIndexableExtension, isJunkFileName } from '../scan-policy'
 import { mediaKindOfPath } from '../media/media-kinds'
@@ -42,6 +42,7 @@ export interface FreshnessCoordinatorOptions {
   isEnabled?: () => boolean
   stabilityRetryScheduleMs?: number[]
   intakeAdapter?: PendingMetadataIntakeAdapter
+  roots?: RootAvailability
 }
 
 const RENAME_HASH_MAX_BYTES = 64 * 1024 * 1024
@@ -106,6 +107,10 @@ export class FreshnessCoordinator {
     this.stabilityRetryScheduleMs = options.stabilityRetryScheduleMs ?? [15_000, 30_000, 60_000]
   }
 
+  private get roots(): RootAvailability {
+    return this.options.roots ?? rootAvailability
+  }
+
   get store(): DocumentMemoryStore {
     return this.options.store
   }
@@ -167,6 +172,7 @@ export class FreshnessCoordinator {
         error: mediaResult.error,
       }
     }
+    const sourceRecovered = this.store.ocr.sourceSeen(p, current)
     const enrollResult = this.store.enrollDiscoveredResult(p, current.mtimeMs, current.sizeBytes)
     if (enrollResult.outcome === 'excluded') {
       return enrollResult
@@ -189,7 +195,8 @@ export class FreshnessCoordinator {
       }
       return { outcome: 'excluded' }
     }
-    const needsIndex = enrollResult.outcome === 'created' || enrollResult.outcome === 'updated'
+    const needsIndex =
+      sourceRecovered || enrollResult.outcome === 'created' || enrollResult.outcome === 'updated'
     if (
       !needsIndex &&
       (document.mtimeMs !== current.mtimeMs || document.sizeBytes !== current.sizeBytes)
@@ -242,6 +249,7 @@ export class FreshnessCoordinator {
   ): Promise<{ added: number; changed: number; moved: number; removed: number }> {
     const result = { added: 0, changed: 0, moved: 0, removed: 0 }
     if (this.options.isStopped?.()) return result
+    if (!(await this.roots.confirmPath(root))) return result
     const seen = new Set<string>()
     for (const path of files.keys()) seen.add(pathKey(path))
     const candidates = new Map<number, MissingCandidate[]>()
@@ -279,6 +287,7 @@ export class FreshnessCoordinator {
     for (const row of gone) {
       if (this.options.isStopped?.()) return result
       if (!this.store.documentByPath(row.path)) continue
+      if (!(await this.roots.confirmPath(row.path))) return result
       await this.tombstone(row.path)
       result.removed++
     }
@@ -564,17 +573,17 @@ export class FreshnessCoordinator {
   }
 
   async isGone(path: string): Promise<boolean> {
+    if (!(await this.roots.checkPath(path))) return false
     if ((await this.statOutcome(path, 1000)).kind !== 'gone') return false
-    const root = await this.statOutcome(volumeRootOf(path), 1000)
-    return root.kind === 'other' || root.kind === 'file'
+    return this.roots.confirmPath(path)
   }
 
   async sourceUnavailable(path: string): Promise<boolean> {
-    const root = await this.statOutcome(volumeRootOf(path), 1000)
-    return root.kind === 'gone' || root.kind === 'unknown'
+    return !(await this.roots.confirmPath(path))
   }
 
   async statOutcome(path: string, timeoutMs = 1000): Promise<StatOutcome> {
+    if (!(await this.roots.checkPath(path))) return { kind: 'unknown' }
     let timer: NodeJS.Timeout | undefined
     const lookup: Promise<StatOutcome> = stat(path).then(
       (value): StatOutcome =>

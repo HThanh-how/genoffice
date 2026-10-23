@@ -110,4 +110,33 @@ describe('Index attention list', () => {
     // 12 files exist and 10 are shown: one control loads the rest
     expect(container.querySelector('.ix-files-more')?.textContent).toMatch(/Show 2 more files/)
   })
+
+  it('shows an offline root calmly and checks it on request', async () => {
+    const { api, calls } = makeApi()
+    act(() =>
+      root.render(
+        createElement(LocaleProvider, {
+          initial: 'en',
+          children: createElement(IndexAttention, {
+            api,
+            attention: {
+              total: 0,
+              groups: [],
+              offlineRoots: [{ root: 'G:', since: 1_000, waiting: 1454 }],
+            },
+            onChanged: () => undefined,
+          }),
+        }),
+      ),
+    )
+    await flush()
+    const note = container.querySelector('[role="status"]')!
+    expect(note.textContent).toContain('G: is not connected')
+    expect(note.textContent).toContain('1,454 files are waiting')
+    expect(note.textContent).toContain('resume automatically')
+    expect(container.querySelector('.ix-issue')).toBeNull()
+    act(() => note.querySelector<HTMLButtonElement>('button')!.click())
+    await flush()
+    expect(calls.some(([name]) => name === 'checkDocumentIndexSources')).toBe(true)
+  })
 })

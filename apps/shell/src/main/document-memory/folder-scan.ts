@@ -1,6 +1,7 @@
+import { rootAvailability } from './root-availability'
 import { setImmediate as yieldToEventLoop } from 'node:timers/promises'
-import { opendir, stat } from 'node:fs/promises'
-import { existsSync, lstatSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs'
+import { opendir, lstat, stat } from 'node:fs/promises'
+import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs'
 import { dirname, extname, isAbsolute, parse, relative, resolve, sep } from 'node:path'
 import { FolderWatchManager } from './folder-watch-manager'
 import {
@@ -101,6 +102,7 @@ export interface DiscoveredDocumentIndexer {
     path: string,
     metadata?: { mtimeMs: number; sizeBytes: number },
   ): FileEnrollmentResult
+  recoverOcrSources?(root: string): void
   isWriteReady?(): boolean
   waitForWriteReady?(timeoutMs?: number): Promise<boolean>
   onWriteReadyChange?(listener: (ready: boolean) => void): () => void
@@ -260,6 +262,7 @@ export class FolderScanManager {
 
   private readonly maxMediaPerFolder: number
   private readonly unsubscribeWriteReady?: () => void
+  private readonly unsubscribeRootRecovery: () => void
 
   constructor(
     userData: string,
@@ -271,7 +274,12 @@ export class FolderScanManager {
     setIgnoreStoragePath(resolve(userData, 'document-index-ignore-rules.json'))
     this.manifestPath = resolve(userData, 'document-memory-folders.json')
     this.memory = memory
+    this.unsubscribeRootRecovery = rootAvailability.onRecovered((root) => {
+      if (!this.closed && this.manifest.jobs.some((job) => job.root === root))
+        this.retryUnavailable()
+    })
     this.manifest = readManifest(this.manifestPath)
+    for (const job of this.manifest.jobs) rootAvailability.register(job.root)
     memory.onCleared?.(() => this.unregisterAll())
     if (memory.onWriteReadyChange) {
       this.unsubscribeWriteReady = memory.onWriteReadyChange((ready) => {
@@ -361,7 +369,7 @@ export class FolderScanManager {
     this.reconciling = true
     try {
       try {
-        if (!(await stat(job.root)).isDirectory()) {
+        if (!(await rootAvailability.check(job.root))) {
           this.unavailableReconcileRoots.add(job.root)
           return { ok: false, reason: 'unavailable' }
         }
@@ -406,6 +414,7 @@ export class FolderScanManager {
       if (job.priority) this.memory.prioritizeFolder?.(job.root)
       this.save()
       if (this.unavailableReconcileRoots.delete(job.root)) {
+        this.memory.recoverOcrSources?.(job.root)
         this.busyWaiters = true
       }
       return { ok: true, files: files.size }
@@ -446,7 +455,7 @@ export class FolderScanManager {
     this.reconciling = true
     try {
       try {
-        if (!(await stat(job.root)).isDirectory()) return { ok: false, reason: 'unavailable' }
+        if (!(await rootAvailability.check(job.root))) return { ok: false, reason: 'unavailable' }
       } catch {
         // An unplugged drive or deleted root: never treat its files as deleted.
         return { ok: false, reason: 'unavailable' }
@@ -548,6 +557,7 @@ export class FolderScanManager {
   /** Start or resume scanning one selected folder. */
   start(root: string, owner: FolderOwner = 'manual'): FolderScanStatus {
     const normalizedRoot = validateRoot(root)
+    rootAvailability.register(normalizedRoot)
     if (this.closed) throw new Error('Folder scanner is closed')
 
     if (this.activeRoot === normalizedRoot && this.pendingForgetRoots.has(normalizedRoot)) {
@@ -751,6 +761,7 @@ export class FolderScanManager {
     this.busyWaiters = false
     this.unavailableReconcileRoots.clear()
     this.unsubscribeWriteReady?.()
+    this.unsubscribeRootRecovery()
     if (this.saveDirty) this.save()
     this.watcher?.close()
     this.watcher = null
@@ -894,6 +905,17 @@ export class FolderScanManager {
   }
 
   private async walk(job: ScanJob): Promise<void> {
+    if (!(await rootAvailability.check(job.root))) {
+      job.state = 'stopped'
+      job.unavailable = true
+      job.lastError = 'The selected folder is unavailable; scanning resumes automatically.'
+      this.save()
+      this.emitRootsChanged()
+      return
+    }
+    const rootStat = await lstat(job.root)
+    if (rootStat.isSymbolicLink()) throw new Error('Choose a regular folder, not a symbolic link')
+    if (!rootStat.isDirectory()) throw new Error('Choose a folder to scan')
     if (this.memory.waitForWriteReady) {
       const ready = await this.memory.waitForWriteReady(10_000)
       if (!ready && this.memory.isWriteReady && !this.memory.isWriteReady()) {
@@ -1005,6 +1027,7 @@ export class FolderScanManager {
           job.lastError = 'Scan stopped: some directories or files could not be read'
         }
       } else {
+        this.memory.recoverOcrSources?.(job.root)
         job.state = 'complete'
         job.completedAt = Date.now()
         delete job.deferred
@@ -1385,14 +1408,7 @@ function validateRoot(root: string): string {
   )
     throw new Error('Choose a folder below the system drive root')
   if (!isAbsolute(normalized)) throw new Error('Choose an absolute folder path')
-  try {
-    const result = lstatSync(normalized)
-    if (result.isSymbolicLink()) throw new Error('Choose a regular folder, not a symbolic link')
-    if (!result.isDirectory()) throw new Error('Choose a folder to scan')
-  } catch (error) {
-    if (error instanceof Error && error.message.startsWith('Choose')) throw error
-    throw new Error('The selected folder is unavailable', { cause: error })
-  }
+  // Filesystem validation runs asynchronously in walk, after the bounded root probe.
   return normalized
 }
 

@@ -38,6 +38,15 @@ export type WorkerRequest =
     }
   | { type: 'ocr-reconcile-page'; afterId: number }
   | {
+      type: 'ocr-source-recovery'
+      afterId: number
+      root?: string
+      roots?: string[]
+      rootStates?: Array<{ root: string; online: boolean }>
+      manual?: boolean
+    }
+  | { type: 'ocr-source-recovery-ack'; paths: string[] }
+  | {
       type: 'search'
       query: string
       vector: number[] | null

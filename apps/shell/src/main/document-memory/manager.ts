@@ -1,6 +1,6 @@
 import { startJunkPurge } from './runtime/junk-purge'; import { enqueueIncompletePaged } from './runtime/poll-intake'; import { appendBootstrapLog } from './bootstrap-log'; import { currentIndexingPolicy } from '../fork/indexing-policy-bus'; import { WorkerHost } from './runtime/worker-host'; import { VectorGate } from './runtime/vector-gate'; import { QueueLanes, EXTRACT_SLICE_MS, EMBED_SLICE_MS } from './runtime/queue-lanes'; import { QueueWatchdog, blockedReasonOf, type QueueProbe } from './runtime/queue-health'
-import { mkdirSync, readFileSync, writeFileSync } from 'node:fs'; import { CachedOcrRecovery } from './runtime/ocr-recovery'
-import { dirname, join, resolve } from 'node:path'
+import { mkdirSync, readFileSync, writeFileSync } from 'node:fs'; import { CachedOcrRecovery } from './runtime/ocr-recovery'; import { OcrSourceRecovery } from './runtime/ocr-source-recovery'
+import { dirname, join, resolve } from 'node:path'; import { rootAvailability } from './root-availability'
 import { writeExtractedContentSliced, getValidatedFreeDiskBytes } from './runtime/content-write-budget'
 import type { Worker } from 'node:worker_threads'
 import type { DocumentIndexProgress } from '@genoffice/agent-core'; import type { FolderIndexProgress } from './folder-progress'; import type { DocumentIndexStorageDiagnostics, DocumentIndexMigrationDiagnostics, IndexingBlockReason, IndexingNow } from '../../shared/fork/document-index-api'
@@ -61,7 +61,7 @@ export class DocumentMemoryManager {
     try { await new Promise<void>((r) => setImmediate(r)); while (!this.stopped && this.store.backfillCounters()) { await new Promise<void>((r) => setImmediate(r)) } } catch { /* ignore */ }
   }
   private ocrHostInput(): OcrHostInput {
-    return { store: this.store, isEnabled: () => this.isEnabled(), isStopped: () => this.stopped, admission: this.admission, maintScheduler: this.maintScheduler, budgetCoord: this.budgetCoord, dbDir: dirname(this.dbPath), workerTimeoutMs: this.workerTimeoutMs, askWorker: (req, timeout) => this.ask(req as any, timeout), reindex: (path) => { const p = resolve(path); this.invalidatePath(p); this.enqueue(p, true) } }
+    return { sourceRoot: (p) => rootAvailability.rootOf(p), sourceAvailable: (p) => rootAvailability.checkPath(p), sourceSelectable: (p) => rootAvailability.selectable(p), sourceOffline: (p) => rootAvailability.observe(rootAvailability.rootOf(p), false), onSourcesRecovered: (clear) => this.sourceRecovery.subscribe(clear), store: this.store, isEnabled: () => this.isEnabled(), isStopped: () => this.stopped, admission: this.admission, maintScheduler: this.maintScheduler, budgetCoord: this.budgetCoord, dbDir: dirname(this.dbPath), workerTimeoutMs: this.workerTimeoutMs, askWorker: (req, timeout) => this.ask(req as any, timeout), reindex: (path) => { const p = resolve(path); this.invalidatePath(p); this.enqueue(p, true) } }
   }
   ocrHost(): OcrJobHost { return createOcrHost(this.ocrHostInput()) }
   /** Local OCR pass + the cloud host that waits for it; one per manager. The OCR scheduler tick calls `.runner.tick()`. */
@@ -99,7 +99,7 @@ export class DocumentMemoryManager {
     this.budgetCoord = new StorageBudgetCoordinator({
       settingsDir: this.settingsDir, getMaintBudget: () => this.maintScheduler.budget, setMaintBudget: (b) => this.maintScheduler.setBudget(b),
       askWorker: (req, timeout) => this.ask(req, timeout, false), isStopped: () => this.stopped, workerTimeoutMs: this.workerTimeoutMs,
-      onWriteReady: () => { if (this.enabled && !this.stopped) { this.drain(); void this.ocrRecovery.run(); void this.pendingIntake.triggerReplay() } },
+      onWriteReady: () => { if (this.enabled && !this.stopped) { this.drain(); void this.ocrRecovery.run(); void this.sourceRecovery.run(); void this.pendingIntake.triggerReplay() } },
       onHandshakeFailure: (err) => { if (!this.stopped && this.host.isUp) this.recycleWorker(`Handshake failed: ${err}`) },
     })
     initialBudget = options.budget ?? createStorageBudget(this.budgetCoord.getConfig().maxDatabaseBytes)
@@ -179,7 +179,7 @@ export class DocumentMemoryManager {
   retryDocument(id: number, opts: { now?: boolean; prioritize?: boolean } = {}): { ok: boolean; error?: string } {
     if (!this.enabled || this.stopped) return { ok: false, error: 'paused' }
     const p = this.store.retryDocument(id); if (!p) return { ok: false, error: 'unavailable' }
-    if (opts.prioritize !== false || opts.now) { this.deferred.delete(p); this.urgent.add(p) }
+    this.sourceRecovery.trigger(undefined, true); if (opts.prioritize !== false || opts.now) { this.deferred.delete(p); this.urgent.add(p) }
     if (this.activeExtractions.has(p)) return { ok: true }
     if (this.embeddingCoord.promotePath(p)) { this.drain(); return { ok: true } }
     if (opts.now) {
@@ -259,7 +259,7 @@ export class DocumentMemoryManager {
   searchProgressive(query: string, limit = 8, callbacks?: any) { return this.searchService.searchProgressive(query, limit, callbacks, this.embeddingCoord.currentProfile.embeddingId) }
   async read(chunkId: number): Promise<{ path: string; name: string; location: string; text: string; verified: boolean; error?: string }> {
     const hit = this.store.readChunk(chunkId); if (!hit) return { path: '', name: '', location: '', text: '', verified: false, error: 'The indexed chunk is no longer available.' }
-    const generation = this.currentGeneration(hit.path); const epoch = this.epoch
+    if (!(await rootAvailability.checkPath(hit.path))) return { path: hit.path, name: hit.name, location: hit.location, text: '', verified: false, error: 'The drive or folder is not connected; reading resumes automatically.' }; const generation = this.currentGeneration(hit.path); const epoch = this.epoch
     if ((await this.statOutcome(hit.path)).kind === 'gone') {
       this.freshnessCoord.markMissing(hit.path); return { path: hit.path, name: hit.name, location: hit.location, text: '', verified: false, error: 'The source file is temporarily unavailable.' }
     }
@@ -279,9 +279,9 @@ export class DocumentMemoryManager {
   handleFileEvents(paths: string[]): Promise<void> { return this.freshnessCoord.handleFileEvents(paths, this.stabilityGate) }; reconcileFolder(root: string, files: Map<string, { mtimeMs: number; sizeBytes: number }>) { return this.freshnessCoord.reconcileFolder(root, files) }
   async readNowDocument(idOrPath: number | string): Promise<{ ok: boolean; error?: string; empty?: boolean }> {
     if (!this.enabled || this.stopped) return { ok: false, error: 'paused' }
-    const path = typeof idOrPath === 'number' ? this.store.retryDocument(idOrPath) : resolve(idOrPath)
+    const source = typeof idOrPath === 'number' ? this.store.documentById(idOrPath)?.path : resolve(idOrPath); if (source && !(await rootAvailability.checkPath(source, true))) return { ok: false, error: 'The drive or folder is not connected; reading resumes automatically.' }; const path = typeof idOrPath === 'number' ? this.store.retryDocument(idOrPath) : resolve(idOrPath)
     if (!path || isPathIgnored(path)) return { ok: false, error: 'unavailable' }
-    if (typeof idOrPath === 'string') this.remember(path)
+    this.sourceRecovery.trigger(undefined, true); if (typeof idOrPath === 'string') this.remember(path)
     if (this.activeExtractions.has(path)) {
       this.deferred.delete(path); this.urgent.add(path); await this.waitUntilRead(path)
       if (this.store.documentByPath(path)?.error || this.store.documentByPath(path)?.status !== 'pending') return readOutcome(this.store.documentByPath(path))
@@ -299,7 +299,7 @@ export class DocumentMemoryManager {
     const dl = Date.now() + this.workerTimeoutMs * 2; while (!this.stopped && Date.now() < dl && (this.activeExtractions.has(path) || this.queued.has(path))) await new Promise((r) => setTimeout(r, 20))
   }
   private async readOnce(path: string): Promise<void> {
-    if (isPathIgnored(path)) return; const generation = this.currentGeneration(path); const epoch = this.epoch
+    if (isPathIgnored(path) || this.stopped || !this.enabled) return; const generation = this.currentGeneration(path); const epoch = this.epoch
     this.activeGeneration.set(path, generation); this.activeExtractions.add(path); this.activeSince.set(path, Date.now()); this.pendingCount++
     try {
       const reply = await this.ask({ type: 'extract', path, interactive: true, maxPdfPages: this.extractionCoord.getPdfMaxPages() }, this.workerTimeoutMs, true)
@@ -310,7 +310,7 @@ export class DocumentMemoryManager {
       }
     } finally {
       if (this.activeGeneration.get(path) === generation) this.activeGeneration.delete(path)
-      this.activeExtractions.delete(path); this.activeSince.delete(path); this.pendingCount--
+      this.activeExtractions.delete(path); this.activeSince.delete(path); this.pendingCount--; this.drain()
     }
   }
   private async recordTransientSafe(p: string, err: string, gen: number, ep: number): Promise<void> {
@@ -339,7 +339,7 @@ export class DocumentMemoryManager {
   closeAsync(): Promise<void> {
     if (this.shutdownPromise) return this.shutdownPromise
     if (!this.stopped) {
-      this.stopped = true; this.stopJunkPurge?.(); this.statusAgg?.close(); this.stopPolicyWatch(); this.epoch++
+      this.stopped = true; this.sourceRecovery.dispose(); this.stopJunkPurge?.(); this.statusAgg?.close(); this.stopPolicyWatch(); this.epoch++
       if (this.pollTimer) { clearInterval(this.pollTimer); this.pollTimer = null }; this.admissionRetry.dispose(); if (this.migrationTimer) { clearTimeout(this.migrationTimer); this.migrationTimer = null }
       this.syncAdmissionCoord.close(); this.budgetCoord.close(); this.maintScheduler.dispose(); this.freshnessCoord.clearMissing(); this.embeddingCoord.clearQueue(); this.skippedMigrationDocs.clear(); this.admission.clear(); this.pendingIntake.close()
       this.queue.length = 0; this.queued.clear(); this.gate.clear(); this.urgent.clear(); this.deferred.clear()
@@ -379,7 +379,7 @@ export class DocumentMemoryManager {
       return
     }
     if (this.gate.parked > 0) for (const p of this.gate.release()) this.enqueue(p)
-    if (this.extracting || this.embeddingCoord.isEmbedding()) return
+    if (this.extracting || this.activeExtractions.size > 0 || this.embeddingCoord.isEmbedding()) return
     const lane = this.lanes.next(this.gate.extractable(this.queue.length, this.urgent), this.embeddingCoord.getQueueLength() > 0 && !this.embeddingCoord.isRetryPending())
     if (lane === 'extract') void this.drainExtractions(); else if (lane === 'embed') void this.runEmbedPass()
   }
@@ -394,7 +394,7 @@ export class DocumentMemoryManager {
       while (!this.stopped && this.enabled && !isIndexingPaused() && this.budgetCoord.isWriteReady() && this.gate.extractable(this.queue.length, this.urgent)) {
         // vectors are waiting and this lane has had its share of the process for now: the other lane goes next
         if (Date.now() - sliceStart >= EXTRACT_SLICE_MS && this.embeddingCoord.getQueueLength() > 0 && !this.embeddingCoord.isRetryPending()) break
-        const path = this.takeNext(); const wasTextOnly = this.gate.taken(path); this.queued.delete(path); if (isPathIgnored(path)) continue; this.activeExtractions.add(path)
+        const path = this.takeNext(); const wasTextOnly = this.gate.taken(path); this.queued.delete(path); if (isPathIgnored(path) || !(await rootAvailability.checkPath(path)) || this.stopped || !this.enabled) continue; if (this.activeExtractions.size) { this.queue.unshift(path); this.queued.add(path); break }; this.activeExtractions.add(path)
         this.activeSince.set(path, Date.now()); const generation = this.currentGeneration(path)
         const epoch = this.epoch; this.activeGeneration.set(path, generation); this.pendingCount++
         if (!this.activeBytes.has(path)) { const doc = this.store.documentByPath(path); if (doc?.sizeBytes) this.activeBytes.set(path, doc.sizeBytes) }
@@ -476,10 +476,10 @@ export class DocumentMemoryManager {
     const idx = this.queue.indexOf(path); if (idx >= 0) this.queue.splice(idx, 1)
     this.embeddingCoord.removePath(path)
   }
-  private polling = false; private readonly ocrRecovery = new CachedOcrRecovery({ ask: (r) => this.ask(r), isActive: () => !this.stopped && this.enabled && !isIndexingPaused() && this.budgetCoord.isWriteReady(), enqueue: (p) => this.enqueue(p) })
+  recoverOcrSources(root: string): void { this.sourceRecovery.trigger(root) }; private readonly sourceRecovery = new OcrSourceRecovery({ hasWork: (manual) => this.store.ocr.hasRecoverableSources(manual), wake: () => { void this.poll(); void this.localOcrWiring?.runner.tick() }, ask: (r) => this.ask(r), isActive: () => !this.stopped && this.enabled && !isIndexingPaused() && this.budgetCoord.isWriteReady(), enqueue: (p) => this.enqueue(p) }); private polling = false; private readonly ocrRecovery = new CachedOcrRecovery({ ask: (r) => this.ask(r), isActive: () => !this.stopped && this.enabled && !isIndexingPaused() && this.budgetCoord.isWriteReady(), enqueue: (p) => this.enqueue(p) })
   private async poll(): Promise<void> {
-    if (this.stopped || !this.enabled || isIndexingPaused() || this.polling) return
-    this.polling = true; void this.ocrRecovery.run()
+    if (!this.stopped) void rootAvailability.probeDue(); if (this.stopped || !this.enabled || isIndexingPaused() || this.polling) return
+    this.polling = true; void this.ocrRecovery.run(); void this.sourceRecovery.run()
     // Every incomplete file is offered on every poll, however many wait: a path that fell out of the in-memory line (a refusal, a restarted worker, a changed file) only comes back through here.
     try { await enqueueIncompletePaged({ readPage: (after, limit) => this.store.incompletePathsPage(after, limit), isBusy: (p) => this.queued.has(p) || this.gate.isParked(p) || this.activeExtractions.has(p) || this.embeddingCoord.isEmbeddingPath(p) || this.embeddingCoord.embedsQueue.some((j) => j.path === p), enqueue: (p) => this.enqueue(p), isStopped: () => this.stopped || !this.enabled }) } finally { this.polling = false }
     this.skippedMigrationDocs.clear(); this.scheduleMigrationStep(1000); this.drain(); const probe = this.probe(); if (!this.stopped && this.enabled) this.watchdog.observe(this.progressTicks, probe, probe.pausedBy, blockedReasonOf(probe))

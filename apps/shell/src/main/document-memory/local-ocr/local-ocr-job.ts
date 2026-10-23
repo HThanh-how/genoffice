@@ -41,6 +41,7 @@ import {
 import { shouldEscalate, type EscalationReason } from './escalation'
 import type { EngineSelection, LocalOcrEnginePreference } from './registry'
 import { detectImageFormat } from './tesseract-prepare'
+import { classifyOcrSourceError } from '../ocr-source-errors'
 
 /** PDFs larger than this are not read locally (the renderer loads the whole file). */
 export const LOCAL_OCR_MAX_PDF_BYTES = 64 * 1024 * 1024
@@ -96,6 +97,8 @@ export interface LocalOcrJobDeps {
   /** duty cycle: waits after `activeMs` of work (default: the indexing policy's cool-down) */
   coolDown?(activeMs: number): Promise<void>
   isStopped?(): boolean
+  sourceAvailable?(path: string): Promise<boolean>
+  sourceOffline?(path: string): void
   readImage?(path: string): Promise<{ bytes: Uint8Array; mtimeMs: number; sizeBytes: number }>
   totalRamMB?(): number
   log?(event: LocalOcrEvent): void
@@ -112,13 +115,7 @@ export interface LocalOcrRunSummary {
   stoppedBecause?: string
 }
 
-const PERMANENT_RENDER_CODES = new Set([
-  'password',
-  'corrupt',
-  'unsupported',
-  'too-large',
-  'missing',
-])
+const PERMANENT_RENDER_CODES = new Set(['password', 'corrupt', 'unsupported', 'too-large'])
 
 function cleanText(text: string): string {
   return text
@@ -160,12 +157,13 @@ export class LocalOcrJob {
     const light = this.lightPages()
     const maxFiles = Math.max(1, options.maxFiles ?? DEFAULT_MAX_FILES)
     const pdfs = this.ocr.candidates(light, { mode: 'local', includeSensitive: true })
-    const images = selectImageOcrCandidates(this.deps.db, { engine: 'local', limit: maxFiles })
+    const images = await this.imageCandidates(maxFiles)
     if (pdfs.length === 0 && images.length === 0) return summary
     let engine: LocalOcrEngine | null = null
     try {
       let budget = maxFiles
       for (const row of pdfs) {
+        if (this.deps.sourceAvailable && !(await this.deps.sourceAvailable(row.path))) continue
         if (budget-- <= 0) break
         const outcome = await this.guarded(options.signal)
         if (outcome) return stop(outcome)
@@ -177,6 +175,8 @@ export class LocalOcrJob {
         if (result) return stop(result)
       }
       for (const image of images) {
+        if (this.deps.sourceAvailable && !(await this.deps.sourceAvailable(image.path))) continue
+        if (!this.ocr.sourceRetryAllowed(image.path, image)) continue
         if (budget-- <= 0) break
         const outcome = await this.guarded(options.signal)
         if (outcome) return stop(outcome)
@@ -201,6 +201,25 @@ export class LocalOcrJob {
     const gate = this.deps.gate()
     if (!gate.ok) return `gate:${gate.reason}`
     return null
+  }
+
+  /** Offline images must not fill the SQL limit and starve images on connected roots. */
+  private async imageCandidates(limit: number): Promise<ImageOcrCandidate[]> {
+    const images: ImageOcrCandidate[] = []
+    let afterId = 0
+    while (images.length < limit && !this.deps.isStopped?.()) {
+      const page = selectImageOcrCandidates(this.deps.db, { engine: 'local', afterId, limit: 128 })
+      for (const image of page) {
+        afterId = image.documentId
+        if (this.deps.sourceAvailable && !(await this.deps.sourceAvailable(image.path))) continue
+        if (!this.ocr.sourceRetryAllowed(image.path, image)) continue
+        images.push(image)
+        if (images.length === limit) break
+      }
+      if (page.length < 128) break
+      await new Promise<void>((resolve) => setImmediate(resolve))
+    }
+    return images
   }
 
   private async cool(activeMs: number): Promise<void> {
@@ -240,11 +259,16 @@ export class LocalOcrJob {
       return null
     }
     if (!rendered.ok) {
+      if (rendered.code === 'offline') {
+        this.deps.sourceOffline?.(row.path)
+        return null
+      }
       this.ocr.recordLocalFailure(
         row.path,
         file,
         rendered.code,
         PERMANENT_RENDER_CODES.has(rendered.code),
+        rendered.detail,
       )
       summary.failed++
       this.deps.log?.({ kind: 'file-failed', code: rendered.code })
@@ -367,7 +391,12 @@ export class LocalOcrJob {
         this.deps.log?.({ kind: 'file-skipped', code: 'file-modified' })
         return null
       }
-      markImageOcr(db, image.documentId, IMAGE_OCR_STATE.failed)
+      const failure = await classifyOcrSourceError(image.path, error)
+      if (failure.code === 'offline') {
+        this.deps.sourceOffline?.(image.path)
+        return null
+      }
+      this.ocr.recordLocalFailure(image.path, image, failure.code, false, failure.detail)
       summary.failed++
       this.deps.log?.({ kind: 'file-failed', code: 'unreadable' })
       return null

@@ -19,6 +19,7 @@ export interface ImageOcrSelection {
   /** The user explicitly allowed images to be read by a cloud engine. Required for engine 'cloud'. */
   cloudOptIn?: boolean
   limit?: number
+  afterId?: number
 }
 
 /**
@@ -32,7 +33,10 @@ export interface ImageOcrSelection {
  * `markImageOcr(db, id, IMAGE_OCR_STATE.done)`. A changed file resets `ocr_state` to 0 automatically
  * (media re-enrollment).
  */
-export function selectImageOcrCandidates(db: DatabaseSync, selection: ImageOcrSelection): ImageOcrCandidate[] {
+export function selectImageOcrCandidates(
+  db: DatabaseSync,
+  selection: ImageOcrSelection,
+): ImageOcrCandidate[] {
   if (selection.engine === 'cloud' && selection.cloudOptIn !== true) return []
   const rows = db
     .prepare(
@@ -40,10 +44,13 @@ export function selectImageOcrCandidates(db: DatabaseSync, selection: ImageOcrSe
               coalesce(d.mtime_ms, 0) AS mtimeMs, m.width AS width, m.height AS height, m.sensitive AS sensitive
        FROM document_media m JOIN documents d ON d.id = m.document_id
        WHERE m.kind = 'image' AND m.ocr_candidate = 1 AND m.ocr_state = ${IMAGE_OCR_STATE.none}
-         AND d.excluded = 0 ${selection.engine === 'cloud' ? 'AND m.sensitive = 0' : ''}
+         AND d.excluded = 0 AND d.id > ? ${selection.engine === 'cloud' ? 'AND m.sensitive = 0' : ''}
        ORDER BY m.document_id LIMIT ?`,
     )
-    .all(Math.max(1, Math.min(selection.limit ?? 50, 500))) as unknown as Array<Omit<ImageOcrCandidate, 'sensitive'> & { sensitive: number }>
+    .all(
+      selection.afterId ?? 0,
+      Math.max(1, Math.min(selection.limit ?? 50, 500)),
+    ) as unknown as Array<Omit<ImageOcrCandidate, 'sensitive'> & { sensitive: number }>
   return rows.map((row) => ({ ...row, sensitive: row.sensitive === 1 }))
 }
 

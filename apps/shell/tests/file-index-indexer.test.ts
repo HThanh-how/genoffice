@@ -12,6 +12,7 @@ import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { FileIndexer } from '../src/main/file-index/indexer'
 import { FileIndexStore } from '../src/main/file-index/store'
+import { rootAvailability } from '../src/main/document-memory/root-availability'
 import { publishIndexingPolicy, resetIndexingPolicyBus } from '../src/main/fork/indexing-policy-bus'
 import { resolvePolicy } from '../src/main/fork/indexing-policy'
 
@@ -256,8 +257,11 @@ describe('FileIndexer disconnected drive safety', () => {
     await vi.waitFor(() => expect(store.listAll().get(notesPath())?.status).toBe('ok'))
     renameSync(parked, root)
     writeFileSync(file, 'updated contract beta version')
-    await indexer.scan()
-    await vi.waitFor(() => expect(store.search('beta').hits.map((hit) => hit.path)).toContain(file))
+    await rootAvailability.check(root, true)
+    await vi.waitFor(
+      () => expect(store.search('beta').hits.map((hit) => hit.path)).toContain(file),
+      { timeout: 5_000 },
+    )
     expect(store.search('alpha').hits.map((hit) => hit.path)).not.toContain(file)
   })
 

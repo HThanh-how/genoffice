@@ -1,4 +1,6 @@
 import { availableParallelism, totalmem } from 'node:os'
+import { HOME_CHANNELS } from '../../shared/home-api'
+import { rootAvailability } from '../document-memory/root-availability'
 import { dirname, join } from 'node:path'
 import {
   DOCUMENT_INDEX_CHANNELS,
@@ -14,10 +16,7 @@ import {
 } from '../document-memory/embedding-profiles'
 import { clampPdfPages, DEFAULT_PDF_PAGES, LARGE_PDF_PAGES } from '../document-memory/chunks'
 import { readPdfPages, writePdfPages } from '../document-memory/pdf-pages'
-import {
-  isKnownSearchSource,
-  type KnownSearchSourceEntry,
-} from '../document-memory/known-sources'
+import { isKnownSearchSource, type KnownSearchSourceEntry } from '../document-memory/known-sources'
 import type { DocumentIndexIpcDeps } from './document-index-ipc'
 
 function resolvePdfPagesPath(deps: DocumentIndexIpcDeps): string {
@@ -34,6 +33,9 @@ export function registerFolderAndModelHandlers(
   invalidateCounts: () => void,
 ): void {
   const { ipcMain, getDocumentMemory, getFolderScan } = deps
+  ipcMain.handle(HOME_CHANNELS.checkDocumentIndexSources, async () => {
+    await rootAvailability.probeDue(true)
+  })
   const pdfConfigFile = resolvePdfPagesPath(deps)
   let synced = false
 
@@ -49,7 +51,12 @@ export function registerFolderAndModelHandlers(
   syncMemoryPdfPages()
 
   const knownRoot = (root: unknown): string => {
-    if (typeof root !== 'string' || !getFolderScan()?.folders().some((f) => f.root === root)) {
+    if (
+      typeof root !== 'string' ||
+      !getFolderScan()
+        ?.folders()
+        .some((f) => f.root === root)
+    ) {
       throw new Error('Unknown folder')
     }
     return root
@@ -60,10 +67,12 @@ export function registerFolderAndModelHandlers(
     const memory = getDocumentMemory()
     if (!scan) return []
     return scan.folders().map((folder) => {
-      const counts = memory?.aggregates ? memory.aggregates.folder(folder.root) : memory?.getFolderIndexCounts(folder.root)
+      const counts = memory?.aggregates
+        ? memory.aggregates.folder(folder.root)
+        : memory?.getFolderIndexCounts(folder.root)
       return {
         ...folder,
-        unavailable: false,
+        unavailable: !rootAvailability.selectable(folder.root),
         totalFiles: counts?.totalFiles ?? 0,
         readyFiles: counts?.readyFiles ?? 0,
         pendingFiles: counts?.pendingFiles ?? 0,
@@ -77,12 +86,15 @@ export function registerFolderAndModelHandlers(
     })
   })
 
-  ipcMain.handle(DOCUMENT_INDEX_CHANNELS.setIndexedFolderPriority, (_event, root: unknown, priority: unknown) => {
-    if (typeof priority !== 'boolean') return false
-    const res = getFolderScan()?.setPriority(knownRoot(root), priority) ?? false
-    invalidateCounts()
-    return res
-  })
+  ipcMain.handle(
+    DOCUMENT_INDEX_CHANNELS.setIndexedFolderPriority,
+    (_event, root: unknown, priority: unknown) => {
+      if (typeof priority !== 'boolean') return false
+      const res = getFolderScan()?.setPriority(knownRoot(root), priority) ?? false
+      invalidateCounts()
+      return res
+    },
+  )
 
   ipcMain.handle(DOCUMENT_INDEX_CHANNELS.rescanIndexedFolder, async (_event, root: unknown) => {
     const scan = getFolderScan()
@@ -98,31 +110,52 @@ export function registerFolderAndModelHandlers(
     return scan.unregisterRoot(knownRoot(root), 'manual')
   })
 
-  ipcMain.handle(DOCUMENT_INDEX_CHANNELS.getKnownSearchSources, async (): Promise<KnownSearchSourceEntry[]> => {
-    return deps.getKnownSources?.()?.getKnownSearchSources() ?? []
-  })
+  ipcMain.handle(
+    DOCUMENT_INDEX_CHANNELS.getKnownSearchSources,
+    async (): Promise<KnownSearchSourceEntry[]> => {
+      return deps.getKnownSources?.()?.getKnownSearchSources() ?? []
+    },
+  )
 
-  ipcMain.handle(DOCUMENT_INDEX_CHANNELS.setKnownSearchSource, async (_event, id: unknown, enabled: unknown) => {
-    if (!isKnownSearchSource(id)) throw new Error('Invalid known search source id')
-    if (typeof enabled !== 'boolean') throw new Error('Invalid enabled state')
-    const res = await deps.getKnownSources?.()?.setKnownSearchSource(id, enabled)
-    invalidateCounts()
-    return res!
-  })
+  ipcMain.handle(
+    DOCUMENT_INDEX_CHANNELS.setKnownSearchSource,
+    async (_event, id: unknown, enabled: unknown) => {
+      if (!isKnownSearchSource(id)) throw new Error('Invalid known search source id')
+      if (typeof enabled !== 'boolean') throw new Error('Invalid enabled state')
+      const res = await deps.getKnownSources?.()?.setKnownSearchSource(id, enabled)
+      invalidateCounts()
+      return res!
+    },
+  )
 
   ipcMain.handle(DOCUMENT_INDEX_CHANNELS.getEmbeddingModel, (): EmbeddingModelState => {
-    const machine = { totalMemGiB: Math.round((totalmem() / 1024 ** 3) * 10) / 10, logicalCores: availableParallelism() }
-    const advice = recommendEmbeddingProfile({ ...machine, arch: process.arch, platform: process.platform })
+    const machine = {
+      totalMemGiB: Math.round((totalmem() / 1024 ** 3) * 10) / 10,
+      logicalCores: availableParallelism(),
+    }
+    const advice = recommendEmbeddingProfile({
+      ...machine,
+      arch: process.arch,
+      platform: process.platform,
+    })
     const info = (id: EmbeddingProfileId) => {
       const p = EMBEDDING_PROFILES[id]
-      return { name: p.repo, embeddingId: p.embeddingId, dimensions: p.dimensions, downloadMB: p.downloadMB, memoryMB: p.memoryMB }
+      return {
+        name: p.repo,
+        embeddingId: p.embeddingId,
+        dimensions: p.dimensions,
+        downloadMB: p.downloadMB,
+        memoryMB: p.memoryMB,
+      }
     }
     const memory = getDocumentMemory()
     return {
       profile: memory?.embeddingSettings().profile ?? 'standard',
       recommended: advice.profile,
       ...(advice.limit ? { limit: advice.limit } : {}),
-      ...(typeof memory?.embeddingModelCached === 'function' ? { modelCached: memory.embeddingModelCached() } : {}),
+      ...(typeof memory?.embeddingModelCached === 'function'
+        ? { modelCached: memory.embeddingModelCached() }
+        : {}),
       machine,
       profiles: Object.fromEntries(
         (Object.keys(EMBEDDING_PROFILES) as EmbeddingProfileId[]).map((id) => [id, info(id)]),
@@ -139,7 +172,11 @@ export function registerFolderAndModelHandlers(
     return res
   })
 
-  const pdfPagesState = (pages: number): PdfPagesState => ({ pages, default: DEFAULT_PDF_PAGES, max: LARGE_PDF_PAGES })
+  const pdfPagesState = (pages: number): PdfPagesState => ({
+    pages,
+    default: DEFAULT_PDF_PAGES,
+    max: LARGE_PDF_PAGES,
+  })
 
   ipcMain.handle(DOCUMENT_INDEX_CHANNELS.getPdfPages, (): PdfPagesState => {
     syncMemoryPdfPages()
@@ -149,7 +186,8 @@ export function registerFolderAndModelHandlers(
   })
 
   ipcMain.handle(DOCUMENT_INDEX_CHANNELS.setPdfPages, (_event, rawPages: unknown) => {
-    if (typeof rawPages !== 'number' || !Number.isFinite(rawPages)) throw new Error('Invalid page count')
+    if (typeof rawPages !== 'number' || !Number.isFinite(rawPages))
+      throw new Error('Invalid page count')
     const pages = clampPdfPages(rawPages)
     writePdfPages(pdfConfigFile, pages)
     const memory = getDocumentMemory()

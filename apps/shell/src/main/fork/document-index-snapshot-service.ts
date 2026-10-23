@@ -1,4 +1,5 @@
 import type { FolderScanManager } from '../document-memory/folder-scan'
+import { withOfflineSources } from '../document-memory/runtime/root-status'
 import type { DocumentMemoryManager } from '../document-memory/manager'
 import { foldFolderProgress } from '../document-memory/folder-progress'
 import {
@@ -219,6 +220,8 @@ export function getDocumentIndexSnapshot(
   } catch {
     // ignore
   }
+
+  issues = withOfflineSources(issues, aggregates)
 
   const nowState: IndexingNow =
     typeof documentMemory?.nowStatus === 'function'

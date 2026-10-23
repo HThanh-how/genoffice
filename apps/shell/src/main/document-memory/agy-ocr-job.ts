@@ -140,6 +140,13 @@ export interface OcrJobHost {
     pages: readonly OcrPageText[],
   ): Promise<OcrSavePagesResult | void> | OcrSavePagesResult | void
   /** queue the document for re-extraction so the new OCR text becomes chunks and vectors */
+  onSourcesRecovered?(clear: (paths: string[]) => boolean): () => void
+  recordSourceFailure?(
+    path: string,
+    meta: { mtimeMs: number; sizeBytes: number },
+    code: string,
+    detail?: string,
+  ): void
   reindex(path: string): void
   /**
    * Put the new OCR text into the index right now and resolve once the file is searchable: for a
@@ -304,7 +311,17 @@ export class AgyOcrJob {
 
   // ---- lifecycle ----
 
+  private stopSourceRecovery?: () => void
+
   start(): void {
+    this.stopSourceRecovery ??= this.deps.host.onSourcesRecovered?.((paths) => {
+      const saved = this.deps.state.clearMissingSources(paths)
+      if (saved) {
+        this.nextCheckAt = 0
+        setImmediate(() => void this.tick())
+      }
+      return saved
+    })
     for (const item of this.deps.state.get().manualQueue ?? []) {
       if (this.deps.host.documentById(item.id)?.path === item.path) this.queuedIds.add(item.id)
     }
@@ -316,6 +333,8 @@ export class AgyOcrJob {
 
   stop(): void {
     this.stopped = true
+    this.stopSourceRecovery?.()
+    this.stopSourceRecovery = undefined
     this.cancelTick?.()
     this.cancelTick = null
     this.abort?.abort()
@@ -588,7 +607,13 @@ export class AgyOcrJob {
     const files = this.deps.state.get().files
     const out: OcrCandidate[] = []
     for (const row of this.deps.host.candidates(maxPagesPerFile)) {
-      if (files[row.path]?.nonRetryable) continue
+      const failure = files[row.path]
+      if (
+        failure?.nonRetryable &&
+        (!['missing', 'The file is no longer there'].includes(failure.reason ?? '') ||
+          this.deps.now() < failure.updatedAt + 24 * 3600_000)
+      )
+        continue
       out.push({
         path: row.path,
         sizeBytes: row.sizeBytes,
@@ -649,6 +674,16 @@ export class AgyOcrJob {
         return { pages: charged, stop: true }
       }
       if (!rendered.ok) {
+        if (['missing', 'offline', 'source-busy', 'source-permission'].includes(rendered.code)) {
+          if (rendered.code !== 'offline')
+            host.recordSourceFailure?.(
+              path,
+              { mtimeMs: candidate.mtimeMs, sizeBytes: candidate.sizeBytes },
+              rendered.code,
+              rendered.detail,
+            )
+          return { pages: charged, stop: false }
+        }
         if (rendered.code === 'render') {
           this.failFile(path, rendered.message)
           return { pages: charged, stop: false }
@@ -744,7 +779,9 @@ export class AgyOcrJob {
 
           if (!saveOk) {
             const err =
-              typeof saveRes === 'object' && saveRes !== null && typeof (saveRes as any).error === 'string'
+              typeof saveRes === 'object' &&
+              saveRes !== null &&
+              typeof (saveRes as any).error === 'string'
                 ? (saveRes as any).error
                 : 'OCR storage quota denied persistence'
             this.failFile(path, err, false)
@@ -831,6 +868,7 @@ export class AgyOcrJob {
     this.deps.state.update((data) => {
       const file = (data.files[path] ??= { attempts: 0, updatedAt: 0 })
       file.attempts = 0
+      delete file.nonRetryable
       delete file.reason
       file.updatedAt = this.deps.now()
       data.backoff = { failures: 0, until: 0 }

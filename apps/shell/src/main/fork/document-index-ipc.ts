@@ -1,4 +1,5 @@
 import type { IpcMain } from 'electron'
+import { withOfflineSources } from '../document-memory/runtime/root-status'
 import { stat } from 'node:fs/promises'
 import type { FolderScanManager } from '../document-memory/folder-scan'
 import { ALL_FOLDERS, IndexIssueReader } from '../document-memory/issue-reader'
@@ -165,7 +166,8 @@ export function registerDocumentIndexIpc(deps: DocumentIndexIpcDeps): () => void
     const memory = getDocumentMemory()
     if (!memory) return { total: 0, groups: [] }
     const scope = activeRoot(root)
-    return memory.aggregates ? memory.aggregates.issues(scope) : reader().summary(scope)
+    const summary = memory.aggregates ? memory.aggregates.issues(scope) : reader().summary(scope)
+    return withOfflineSources(summary, memory.aggregates, scope)
   })
 
   ipcMain.handle(

@@ -1,4 +1,9 @@
-import { stat } from 'node:fs/promises'
+import { probePathAvailable } from './root-availability'
+export {
+  probePathAvailable,
+  nativePathProbes,
+  getOrCreateNativePathProbe,
+} from './root-availability'
 import { homedir } from 'node:os'
 import { join, resolve } from 'node:path'
 import { readAppSettings, writeAppSettings } from '../app-settings'
@@ -7,12 +12,7 @@ import type { FolderOwner, FolderScanManager } from './folder-scan'
 export type KnownSearchSource = 'documents' | 'downloads' | 'desktop'
 
 export type KnownSearchSourceStatus =
-  | 'disabled'
-  | 'queued'
-  | 'scanning'
-  | 'watching'
-  | 'unavailable'
-  | 'error'
+  'disabled' | 'queued' | 'scanning' | 'watching' | 'unavailable' | 'error'
 
 export interface KnownSearchSourceEntry {
   id: KnownSearchSource
@@ -38,11 +38,12 @@ export const DEFAULT_KNOWN_SOURCES: Readonly<Record<KnownSearchSource, boolean>>
   desktop: false,
 })
 
-export const UNINITIALIZED_KNOWN_SOURCES: Readonly<Record<KnownSearchSource, boolean>> = Object.freeze({
-  documents: false,
-  downloads: false,
-  desktop: false,
-})
+export const UNINITIALIZED_KNOWN_SOURCES: Readonly<Record<KnownSearchSource, boolean>> =
+  Object.freeze({
+    documents: false,
+    downloads: false,
+    desktop: false,
+  })
 
 /** Fast recovery intervals: 1.5s, 5s, 15s, 60s */
 export const FAST_RETRY_INTERVALS_MS: readonly number[] = Object.freeze([1500, 5000, 15000, 60000])
@@ -58,53 +59,6 @@ export const CLEANUP_RETRY_INTERVALS_MS: readonly number[] = Object.freeze([500,
 
 /** Maximum cleanup retry attempts */
 export const MAX_CLEANUP_RETRIES = 3
-
-/** Native path probe cache for coalescing concurrent filesystem stat calls on the same target */
-export const nativePathProbes = new Map<string, Promise<boolean>>()
-
-export function getOrCreateNativePathProbe(targetPath: string): Promise<boolean> {
-  const path = resolve(targetPath)
-  const existing = nativePathProbes.get(path)
-  if (existing) {
-    return existing
-  }
-  const nativeProbe: Promise<boolean> = stat(path)
-    .then((stats) => stats.isDirectory())
-    .catch(() => false)
-    .finally(() => {
-      if (nativePathProbes.get(path) === nativeProbe) {
-        nativePathProbes.delete(path)
-      }
-    })
-  nativePathProbes.set(path, nativeProbe)
-  return nativeProbe
-}
-
-/**
- * Asynchronously probes whether targetPath exists and is a directory.
- * Bounded by deadlineMs (default: 3000ms) to never freeze the Electron main thread.
- * Coalesces concurrent in-flight probes on the same resolved path using nativePathProbes to avoid I/O stampede.
- * Caller deadline timeout does NOT evict native probe from cache.
- */
-export function probePathAvailable(
-  targetPath: string,
-  deadlineMs: number = PROBE_PATH_DEADLINE_MS,
-): Promise<boolean> {
-  const path = resolve(targetPath)
-  const nativeProbe = getOrCreateNativePathProbe(path)
-
-  let timer: NodeJS.Timeout | undefined
-  const timeoutPromise = new Promise<false>((resolvePromise) => {
-    timer = setTimeout(() => {
-      resolvePromise(false)
-    }, deadlineMs)
-    timer.unref?.()
-  })
-
-  return Promise.race([nativeProbe, timeoutPromise]).finally(() => {
-    if (timer) clearTimeout(timer)
-  })
-}
 
 export function isKnownSearchSource(value: unknown): value is KnownSearchSource {
   return value === 'documents' || value === 'downloads' || value === 'desktop'
@@ -154,9 +108,7 @@ export function parseKnownSourcesFullSettings(
           ? candidate.downloads
           : DEFAULT_KNOWN_SOURCES.downloads,
       desktop:
-        typeof candidate.desktop === 'boolean'
-          ? candidate.desktop
-          : DEFAULT_KNOWN_SOURCES.desktop,
+        typeof candidate.desktop === 'boolean' ? candidate.desktop : DEFAULT_KNOWN_SOURCES.desktop,
     },
     initialized: true,
     version,
@@ -471,11 +423,7 @@ export class KnownSourcesManager {
     generation: number,
     enabled: boolean,
   ): boolean {
-    return (
-      !this.closed &&
-      this.state[id] === enabled &&
-      this.generationOf(id) === generation
-    )
+    return !this.closed && this.state[id] === enabled && this.generationOf(id) === generation
   }
 
   public async reconcileOneSource(
@@ -604,7 +552,11 @@ export class KnownSourcesManager {
               this.retryCounts.delete(id)
               return
             } catch (err: unknown) {
-              if (this.closed || !this.state[id] || generation !== (this.sourceGeneration.get(id) ?? 0)) {
+              if (
+                this.closed ||
+                !this.state[id] ||
+                generation !== (this.sourceGeneration.get(id) ?? 0)
+              ) {
                 return
               }
               const message = err instanceof Error ? err.message : String(err)

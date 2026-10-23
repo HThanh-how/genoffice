@@ -609,6 +609,7 @@ export interface HomeApi extends ForkHomeApi, FileManagementBridge {
   setAnalyticsEnabled(enabled: boolean): Promise<boolean>
   /** Read local document memory settings, index counts and recent files. */
   getDocumentMemoryStatus(): Promise<DocumentMemoryStatus>
+  checkDocumentIndexSources?(): Promise<void>
   getIndexingActivity(): Promise<HomeIndexingActivity>
   getDocumentIndexIssues(
     root: string,
@@ -949,6 +950,7 @@ export const HOME_CHANNELS = {
   getDocumentIndexSnapshot: 'home:get-document-index-snapshot',
   getIndexingActivity: 'home:get-indexing-activity',
   getDocumentIndexIssues: 'home:get-document-index-issues',
+  checkDocumentIndexSources: 'home:check-document-index-sources',
   retryDocumentIndex: 'home:retry-document-index',
   revealDocumentIndexFile: 'home:reveal-document-index-file',
   getDocumentFolderScanStatus: 'home:get-document-folder-scan-status',

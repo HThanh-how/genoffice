@@ -1,3 +1,4 @@
+import { sourceRetrySeconds } from './ocr-source-errors'
 /**
  * Storage for text that the scanned-PDF reader (Antigravity) transcribed, kept beside the
  * document index in the same SQLite file.
@@ -51,8 +52,11 @@ CREATE TABLE IF NOT EXISTS ocr_local_failures (
   size_bytes INTEGER NOT NULL,
   attempts INTEGER NOT NULL,
   code TEXT NOT NULL,
+  detail TEXT,
   updated_at INTEGER NOT NULL DEFAULT (unixepoch())
 ) WITHOUT ROWID;
+CREATE TABLE IF NOT EXISTS ocr_source_recoveries (path TEXT PRIMARY KEY) WITHOUT ROWID;
+CREATE INDEX IF NOT EXISTS ocr_local_failures_code ON ocr_local_failures(code);
 -- which pages of a PDF have no text layer of their own (written by the index worker's result)
 CREATE TABLE IF NOT EXISTS pdf_scan_info (
   path TEXT PRIMARY KEY,
@@ -187,6 +191,11 @@ export class OcrSidecar {
 
   static ensureSchema(db: DatabaseSync): void {
     db.exec(OCR_SCHEMA)
+    const failureColumns = db.prepare('PRAGMA table_info(ocr_local_failures)').all() as Array<{
+      name: string
+    }>
+    if (!failureColumns.some((column) => column.name === 'detail'))
+      db.exec('ALTER TABLE ocr_local_failures ADD COLUMN detail TEXT')
     // databases created before the quality tier existed get the columns added in place
     const have = new Set(
       (db.prepare('PRAGMA table_info(ocr_pages)').all() as unknown as Array<{ name: string }>).map(
@@ -341,19 +350,34 @@ export class OcrSidecar {
     meta: { mtimeMs: number; sizeBytes: number },
     code: string,
     permanent = false,
+    detail: string | null = null,
   ): void {
+    // Offline is a root condition, never a per-file attempt or permanent verdict.
+    if (code === 'offline') return
+    const source = ['missing', 'source-permission', 'source-busy'].includes(code)
     this.db
       .prepare(
-        `INSERT INTO ocr_local_failures(path, mtime_ms, size_bytes, attempts, code) VALUES (?, ?, ?, ?, ?)
+        `INSERT INTO ocr_local_failures(path, mtime_ms, size_bytes, attempts, code, detail) VALUES (?, ?, ?, ?, ?, ?)
          ON CONFLICT(path) DO UPDATE SET
-           attempts = CASE WHEN ocr_local_failures.mtime_ms = excluded.mtime_ms
+           attempts = CASE WHEN excluded.code IN ('missing', 'source-permission') THEN 0
+                            WHEN excluded.code = 'source-busy' AND ocr_local_failures.code = excluded.code
+                              AND ocr_local_failures.mtime_ms = excluded.mtime_ms
+                              AND ocr_local_failures.size_bytes = excluded.size_bytes THEN ocr_local_failures.attempts + 1
+                            WHEN ocr_local_failures.mtime_ms = excluded.mtime_ms
                             AND ocr_local_failures.size_bytes = excluded.size_bytes
                            THEN min(ocr_local_failures.attempts + excluded.attempts, ${LOCAL_OCR_MAX_ATTEMPTS})
                            ELSE excluded.attempts END,
-           mtime_ms = excluded.mtime_ms, size_bytes = excluded.size_bytes, code = excluded.code,
+           mtime_ms = excluded.mtime_ms, size_bytes = excluded.size_bytes, code = excluded.code, detail = excluded.detail,
            updated_at = unixepoch()`,
       )
-      .run(path, meta.mtimeMs, meta.sizeBytes, permanent ? LOCAL_OCR_MAX_ATTEMPTS : 1, code)
+      .run(
+        path,
+        meta.mtimeMs,
+        meta.sizeBytes,
+        source ? (code === 'source-busy' ? 1 : 0) : permanent ? LOCAL_OCR_MAX_ATTEMPTS : 1,
+        code,
+        detail,
+      )
   }
 
   localFailure(
@@ -366,6 +390,61 @@ export class OcrSidecar {
     return row
       ? { attempts: row.attempts, code: row.code, mtimeMs: row.mtime_ms, sizeBytes: row.size_bytes }
       : null
+  }
+
+  /** Source faults never enter the engine's three-strikes policy. */
+  sourceRetryAllowed(path: string, meta: { mtimeMs: number; sizeBytes: number }): boolean {
+    const failure = this.localFailure(path)
+    if (!failure || failure.mtimeMs !== meta.mtimeMs || failure.sizeBytes !== meta.sizeBytes)
+      return true
+    if (!['missing', 'offline', 'source-permission', 'source-busy'].includes(failure.code))
+      return true
+    const row = this.db
+      .prepare('SELECT updated_at FROM ocr_local_failures WHERE path = ?')
+      .get(path) as { updated_at: number }
+    const delay = failure.code === 'source-busy' ? sourceRetrySeconds(failure.attempts) : 86400
+    return Date.now() / 1000 >= row.updated_at + delay
+  }
+
+  /** A scan/watcher already stat'ed this file. Seeing it again invalidates a missing verdict. */
+  sourceSeen(path: string, meta: { mtimeMs: number; sizeBytes: number }): boolean {
+    const failure = this.localFailure(path)
+    if (
+      !failure ||
+      !['missing', 'offline', 'source-busy', 'source-permission'].includes(failure.code)
+    )
+      return false
+    if (
+      !['missing', 'offline'].includes(failure.code) &&
+      failure.mtimeMs === meta.mtimeMs &&
+      failure.sizeBytes === meta.sizeBytes
+    )
+      return false
+    this.db.exec('SAVEPOINT ocr_source_seen')
+    try {
+      this.db.prepare('DELETE FROM ocr_local_failures WHERE path = ?').run(path)
+      this.db.prepare('INSERT OR IGNORE INTO ocr_source_recoveries(path) VALUES (?)').run(path)
+      this.db
+        .prepare(
+          "UPDATE documents SET status = 'pending', error = NULL WHERE path = ? AND excluded = 0 AND status IN ('empty', 'error')",
+        )
+        .run(path)
+      this.db.exec('RELEASE ocr_source_seen')
+    } catch (error) {
+      this.db.exec('ROLLBACK TO ocr_source_seen; RELEASE ocr_source_seen')
+      throw error
+    }
+    return true
+  }
+
+  hasRecoverableSources(manual = false): boolean {
+    return (
+      !!this.db
+        .prepare(
+          `SELECT 1 FROM ocr_local_failures WHERE code IN ('missing', 'offline'${manual ? ", 'source-busy', 'source-permission'" : ''}) LIMIT 1`,
+        )
+        .get() || !!this.db.prepare('SELECT 1 FROM ocr_source_recoveries LIMIT 1').get()
+    )
   }
 
   /** Remember (or forget, when `info` is null) which pages of the file lack a text layer. */
@@ -388,6 +467,7 @@ export class OcrSidecar {
   }
 
   remove(path: string): void {
+    this.db.prepare('DELETE FROM ocr_source_recoveries WHERE path = ?').run(path)
     this.db.prepare('DELETE FROM ocr_pages WHERE path = ?').run(path)
     this.db.prepare('DELETE FROM pdf_scan_info WHERE path = ?').run(path)
     this.db.prepare('DELETE FROM ocr_local_failures WHERE path = ?').run(path)
@@ -411,6 +491,7 @@ export class OcrSidecar {
     this.db.exec('DELETE FROM ocr_pages')
     this.db.exec('DELETE FROM pdf_scan_info')
     this.db.exec('DELETE FROM ocr_local_failures')
+    this.db.exec('DELETE FROM ocr_source_recoveries')
   }
 
   /**
@@ -494,7 +575,24 @@ export class OcrSidecar {
       // The local pass reads them too (on this device only).
       if (!local && !options.includeSensitive && isSensitiveName(basename(row.path), row.path))
         continue
-      if (local && (row.failed_attempts ?? 0) >= LOCAL_OCR_MAX_ATTEMPTS) continue
+      const failure = row.failed_attempts === null ? null : this.localFailure(row.path)
+      if (
+        mode !== 'cloud-all' &&
+        failure &&
+        failure.mtimeMs === row.mtime_ms &&
+        failure.sizeBytes === row.size_bytes
+      ) {
+        if (
+          !this.sourceRetryAllowed(row.path, { mtimeMs: row.mtime_ms, sizeBytes: row.size_bytes })
+        )
+          continue
+        if (
+          !['missing', 'offline', 'source-permission', 'source-busy'].includes(failure.code) &&
+          local &&
+          failure.attempts >= LOCAL_OCR_MAX_ATTEMPTS
+        )
+          continue
+      }
       const base = {
         id: row.id,
         path: row.path,

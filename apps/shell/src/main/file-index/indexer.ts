@@ -1,3 +1,4 @@
+import { rootAvailability } from '../document-memory/root-availability'
 import { traceOp } from '../trace-op'
 import { Worker } from 'node:worker_threads'
 import { readdir, stat } from 'node:fs/promises'
@@ -41,29 +42,9 @@ export interface IndexerSources {
 }
 
 const RESCAN_DEBOUNCE_MS = 1500
-/** a root that does not answer a stat within this is treated as offline for the scan */
-const ROOT_PROBE_TIMEOUT_MS = 3000
 /** work done per turn while absorbing a worker's scan slices on the main thread */
 const SCAN_PART_SLICE_MS = 8
 
-/** Reachability check that cannot hang the caller: a stalled mount only ties up a pool thread. */
-async function probeRoot(root: string, timeoutMs = ROOT_PROBE_TIMEOUT_MS): Promise<boolean> {
-  let timer: NodeJS.Timeout | undefined
-  try {
-    return await Promise.race([
-      stat(root).then(
-        () => true,
-        () => false,
-      ),
-      new Promise<boolean>((resolve) => {
-        timer = setTimeout(() => resolve(false), timeoutMs)
-        timer.unref?.()
-      }),
-    ])
-  } finally {
-    if (timer) clearTimeout(timer)
-  }
-}
 /** New names per write request to the worker: ~20 ms of insertion there, no message large enough to stall this thread. */
 const PENDING_BATCH = 500
 /**
@@ -170,6 +151,7 @@ export class FileIndexer {
   private policySyncFailures = 0
   private readonly stopPolicyWatch: () => void
   private readonly stopIgnorePolicyWatch: () => void
+  private readonly stopRootWatch: () => void
 
   constructor(
     private readonly store: FileIndexStore,
@@ -185,6 +167,10 @@ export class FileIndexer {
     private readonly workerWritesDb?: string,
     private readonly workerIdleMs = WORKER_IDLE_MS,
   ) {
+    this.stopRootWatch = rootAvailability.onRecovered((root) => {
+      if (this.sources.roots().some((source) => isInside(root, source) || isInside(source, root)))
+        this.refresh()
+    })
     this.stopPolicyWatch = subscribeIndexingPolicy((policy) => {
       if (!policy.paused) void this.drain()
       if (this.worker)
@@ -305,7 +291,8 @@ export class FileIndexer {
       const completeRoots: string[] = []
       for (const root of roots) {
         if (this.stopped) return
-        if (!(await probeRoot(root))) {
+        rootAvailability.register(root)
+        if (!(await rootAvailability.check(root))) {
           // offline: nothing to walk, and no sync disk check may run against it on the main thread
           markIgnoreRootUnreachable(root)
           continue
@@ -379,6 +366,7 @@ export class FileIndexer {
     for (const p of extras) {
       if (this.stopped) return
       if (seen.has(p) || !isSupportedIndexFile(p) || isPathIgnored(p)) continue
+      if (!(await rootAvailability.checkPath(p))) continue
       const st = await asyncFileStat(p)
       if (st.kind === 'file' && !isPathIgnored(p)) seen.set(p, st.file)
     }
@@ -389,6 +377,7 @@ export class FileIndexer {
     for (const path of known.keys()) {
       // every iteration may yield (an unchanged path is a `continue`, and a million of those are one long task otherwise)
       await yieldIfNeeded()
+      if (!(await rootAvailability.checkPath(path))) continue
       if (isPathIgnored(path)) {
         gone.push(path)
         continue
@@ -416,7 +405,10 @@ export class FileIndexer {
     }
     for (let offset = 0; offset < gone.length; offset += 100) {
       if (this.stopped) return
-      const batch = gone.slice(offset, offset + 100)
+      const batch: string[] = []
+      for (const path of gone.slice(offset, offset + 100)) {
+        if (await rootAvailability.confirmPath(path)) batch.push(path)
+      }
       await this.removeRows(batch)
       for (const path of batch) this.preserveCachedBody.delete(path)
       await yieldIfNeeded()
@@ -518,6 +510,7 @@ export class FileIndexer {
     while (this.queue.length && !this.stopped && !this.scanning && !isIndexingPaused()) {
       const f = this.queue.shift()!
       this.queued.delete(f.path)
+      if (!(await rootAvailability.checkPath(f.path))) continue
       if (isPathIgnored(f.path)) {
         await this.removeRows([f.path])
         this.preserveCachedBody.delete(f.path)
@@ -526,7 +519,11 @@ export class FileIndexer {
       // the file may have changed again while queued; index what is on disk now
       const state = await asyncFileStat(f.path)
       if (state.kind !== 'file') {
-        if (state.kind === 'missing' && (await parentConfirmsMissing(f.path))) {
+        if (
+          state.kind === 'missing' &&
+          (await parentConfirmsMissing(f.path)) &&
+          (await rootAvailability.confirmPath(f.path))
+        ) {
           this.store.remove([f.path])
           this.preserveCachedBody.delete(f.path)
         }
@@ -781,6 +778,7 @@ export class FileIndexer {
     this.stopped = true
     this.stopPolicyWatch()
     this.stopIgnorePolicyWatch()
+    this.stopRootWatch()
     if (this.rescanTimer) clearTimeout(this.rescanTimer)
     if (this.idleTimer) clearTimeout(this.idleTimer)
     this.queue.length = 0

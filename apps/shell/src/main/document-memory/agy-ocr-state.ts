@@ -257,6 +257,22 @@ export class OcrStateStore {
     return this.data
   }
 
+  /** Only the source-missing verdict is invalidated by a successful recovery stat. */
+  clearMissingSources(paths: readonly string[]): boolean {
+    if (!paths.length) return !this.hasPersistenceFailure()
+    this.update((data) => {
+      for (const path of paths) {
+        const file = data.files[path]
+        if (
+          file?.nonRetryable &&
+          (file.reason === 'missing' || file.reason === 'The file is no longer there')
+        )
+          delete data.files[path]
+      }
+    })
+    return !this.hasPersistenceFailure()
+  }
+
   /** Counters of the current local day (a new day starts again at zero). */
   today(): OcrDayCounters {
     const day = localDateKey(this.now(), this.offset)
@@ -277,7 +293,10 @@ export class OcrStateStore {
       const keep = nonRetryable.concat(others).slice(0, MAX_FILE_RECORDS)
       this.data.files = Object.fromEntries(keep)
     }
-    if (Array.isArray(this.data.pendingReindexPaths) && this.data.pendingReindexPaths.length > 4000) {
+    if (
+      Array.isArray(this.data.pendingReindexPaths) &&
+      this.data.pendingReindexPaths.length > 4000
+    ) {
       this.data.pendingReindexPaths = this.data.pendingReindexPaths.slice(-4000)
     }
     if (Array.isArray(this.data.manualQueue) && this.data.manualQueue.length > 2000) {

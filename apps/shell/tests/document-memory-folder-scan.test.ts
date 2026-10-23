@@ -3,6 +3,7 @@ import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { FolderScanManager } from '../src/main/document-memory/folder-scan'
+import { rootAvailability } from '../src/main/document-memory/root-availability'
 
 let dir: string
 let scanners: FolderScanManager[]
@@ -605,9 +606,8 @@ describe('FolderScanManager', () => {
     mkdirSync(folderB, { recursive: true })
     writeFileSync(join(folderB, 'docB.txt'), 'contentB')
 
-    // Chu kỳ startup reconciliation / retry chạy
-    const retriedRoots = instance.retryUnavailable()
-    expect(retriedRoots).toContain(resolve(folderB))
+    // A due probe or resume/focus signal confirms recovery and restarts the scan automatically.
+    await rootAvailability.check(folderB, true)
 
     // Chờ B quét xong thành công
     await until(

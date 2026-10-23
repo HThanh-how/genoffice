@@ -24,6 +24,51 @@ const T0 = Date.UTC(2026, 9, 1, 3, 0, 0) // 10:00 in Vietnam
 const VIETNAM = () => -420
 
 describe('OCR queue resilience', () => {
+  it('a legacy cloud missing verdict expires and a successful retry clears the flag', async () => {
+    const r = rig()
+    r.host.add('/returned.pdf', 1)
+    r.state.update((data) => {
+      data.files['/returned.pdf'] = {
+        attempts: 3,
+        nonRetryable: true,
+        reason: 'The file is no longer there',
+        updatedAt: r.clock.now,
+      }
+    })
+    await r.job.tick()
+    expect(r.recognizeCalls).toHaveLength(0)
+    r.clock.now += DAY + 1
+    await r.job.tick()
+    expect(r.recognizeCalls).toHaveLength(1)
+    expect(r.state.get().files['/returned.pdf']?.nonRetryable).toBeUndefined()
+    r.job.stop()
+  })
+
+  it.each(['offline', 'missing', 'source-permission', 'source-busy'] as const)(
+    '%s source failures never create a permanent cloud verdict or spend an OCR call',
+    async (code) => {
+      const r = rig()
+      r.host.add('/synthetic-source.pdf', 1)
+      const record = vi.fn()
+      ;(r.host as OcrJobHost).recordSourceFailure = record
+      vi.spyOn(r.host, 'render').mockResolvedValue({
+        ok: false,
+        code,
+        detail: 'ENOENT',
+        message: 'synthetic source failure',
+      })
+      for (let day = 0; day < 21; day++) {
+        await r.job.tick()
+        r.clock.now += DAY
+      }
+      expect(r.recognizeCalls).toHaveLength(0)
+      expect(r.state.get().files['/synthetic-source.pdf']?.nonRetryable).not.toBe(true)
+      if (code === 'offline') expect(record).not.toHaveBeenCalled()
+      else expect(record).toHaveBeenCalled()
+      r.job.stop()
+    },
+  )
+
   it('removes exhausted manual work instead of retrying paid calls forever', async () => {
     const r = rig({ enabled: false })
     r.host.add('/busy.pdf', 1)

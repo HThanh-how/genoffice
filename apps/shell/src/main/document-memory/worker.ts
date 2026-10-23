@@ -1,3 +1,7 @@
+import {
+  recoverOcrSourcesPage,
+  acknowledgeSourceRecovery,
+} from './storage/repositories/ocr-source-recovery-repository'
 /** CPU extraction and real multilingual embeddings, isolated from Electron's UI thread. */
 export type {
   WorkerRequest,
@@ -376,6 +380,11 @@ onIndexRequest(
     dpi?: number
     maxEdge?: number
     degrees?: QuarterTurn
+    paths?: string[]
+    root?: string
+    roots?: string[]
+    rootStates?: Array<{ root: string; online: boolean }>
+    manual?: boolean
     afterId?: number
     backupPath?: string
     dbPath?: string
@@ -403,7 +412,14 @@ onIndexRequest(
               request.ocr ?? { count: 1, maxPages: 1000, done: [] },
             ),
           )
-        else if (request.type === 'ocr-reconcile-page')
+        else if (request.type === 'ocr-source-recovery')
+          result = await withBackgroundBudget(() =>
+            recoverOcrSourcesPage(getWorkerStore().rawDb, request.afterId ?? 0, request),
+          )
+        else if (request.type === 'ocr-source-recovery-ack') {
+          acknowledgeSourceRecovery(getWorkerStore().rawDb, request.paths ?? [])
+          result = true
+        } else if (request.type === 'ocr-reconcile-page')
           result = await withBackgroundBudget(async () =>
             readOcrRecoveryPage(getWorkerStore().rawDb, request.afterId ?? 0),
           )

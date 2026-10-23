@@ -697,6 +697,9 @@ const homeApi: HomeApi = {
   async getDocumentIndexIssues(root, offset = 0, reason) {
     return ipcRenderer.invoke(HOME_CHANNELS.getDocumentIndexIssues, root, offset, reason)
   },
+  async checkDocumentIndexSources() {
+    await ipcRenderer.invoke(HOME_CHANNELS.checkDocumentIndexSources)
+  },
   async retryDocumentIndex(documentId) {
     return ipcRenderer.invoke(HOME_CHANNELS.retryDocumentIndex, documentId)
   },
@@ -1139,3 +1142,7 @@ installRendererDialogs()
 contextBridge.exposeInMainWorld('agyChat', createAgyChatPreloadApi(ipcRenderer))
 
 contextBridge.exposeInMainWorld('appActions', createAppActionPreload(ipcRenderer, false))
+
+window.addEventListener('online', () => {
+  void ipcRenderer.invoke(HOME_CHANNELS.checkDocumentIndexSources).catch(() => {})
+})

@@ -1,3 +1,5 @@
+import { watchRootAvailability } from './document-memory/runtime/root-lifecycle'
+import { powerMonitor as rootPowerMonitor } from 'electron'
 import { installIpcTracing, traceOp } from './trace-op'
 import { registerAppActionIpc } from './app-action-ipc'
 import { showAppMessageBox, setFeedbackThemeGetter } from './app-message-box'
@@ -4908,6 +4910,7 @@ function attachDocumentMemory(
     storageStartup.set('unavailable')
     return
   }
+  watchRootAvailability(app, rootPowerMonitor)
   startLegacyConverter()
   folderScan = new FolderScanManager(userDataDir, documentMemory)
   if (knownSources) void knownSources.reconcileDesiredSources()

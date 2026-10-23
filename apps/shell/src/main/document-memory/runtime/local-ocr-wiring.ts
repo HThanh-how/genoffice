@@ -151,6 +151,8 @@ export class LocalOcrRunner {
       db: d.db,
       settings,
       registry: this.registry,
+      sourceAvailable: d.hostInput.sourceAvailable,
+      sourceOffline: d.hostInput.sourceOffline,
       render: (path, request) => this.host.render(path, request),
       savePages: (path, meta, pages) => this.host.savePages(path, meta, pages),
       reindex: (path) => this.host.reindex(path),

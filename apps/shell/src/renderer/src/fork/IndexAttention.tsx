@@ -10,6 +10,7 @@ import { runIndexMutation } from './index-mutation'
 import { isLegacyConvertState } from './todo-model'
 import { IndexIssueFiles } from './IndexIssueFiles'
 import { IconChevron } from './index-icons'
+import { ocrSourceCopy } from '../i18n/strings-ocr-source'
 
 /** Kinds of trouble listed before the rest fold behind "Show N more". */
 const TOP_GROUPS = 3
@@ -78,7 +79,9 @@ export const IndexAttention = forwardRef<
   const skipped = [...sections.skipped, ...(sections.auto ? [sections.auto] : [])]
   const skippedTotal = skipped.reduce((n, row) => n + row.count, 0)
   const showLegacy = !!legacy && (legacy.running || legacy.pending > 0 || legacy.failed > 0)
-  if (needs.length === 0 && skipped.length === 0 && !showLegacy) return null
+  const offline = attention?.offlineRoots ?? []
+  const sourceCopy = ocrSourceCopy[lang] ?? ocrSourceCopy.en!
+  if (needs.length === 0 && skipped.length === 0 && !showLegacy && !offline.length) return null
 
   const retry = async (row: IssueSectionRow) => {
     if (inFlight.current) return
@@ -154,6 +157,30 @@ export const IndexAttention = forwardRef<
 
   return (
     <section className="ix-section" ref={ref} aria-labelledby="ix-attention-h">
+      {offline.map((source) => (
+        <div className="ix-note" role="status" key={source.root}>
+          <p>
+            {fill(sourceCopy.waiting, {
+              root: source.root,
+              date: new Date(source.since).toLocaleString(dateLocale),
+              n: num(source.waiting),
+            })}
+          </p>
+          {api.checkDocumentIndexSources && (
+            <button
+              type="button"
+              className="ix-btn is-small"
+              onClick={() => {
+                void api.checkDocumentIndexSources!()
+                  .then(onChanged)
+                  .catch(() => setNote(d.actionFailed))
+              }}
+            >
+              {sourceCopy.check}
+            </button>
+          )}
+        </div>
+      ))}
       {(needs.length > 0 || showLegacy) && (
         <div className="ix-section-head">
           <h2 id="ix-attention-h">{s.attention}</h2>
@@ -194,7 +221,9 @@ export const IndexAttention = forwardRef<
               </div>
             </li>
           )}
-          {(showAll ? needs : needs.slice(0, TOP_GROUPS)).map((row) => rowView(row, false))}
+          {(showAll ? needs : needs.slice(0, TOP_GROUPS)).map((row) =>
+            rowView(row, row.id === 'gone'),
+          )}
         </ul>
       )}
       {needs.length > TOP_GROUPS && (

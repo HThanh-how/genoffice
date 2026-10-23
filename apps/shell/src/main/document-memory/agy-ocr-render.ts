@@ -1,3 +1,4 @@
+import { classifyOcrSourceError } from './ocr-source-errors'
 /**
  * Renders PDF pages to small grayscale JPEGs for the scanned-PDF reader. Runs inside the index
  * child process (see worker.ts), never on the Electron main thread: PDFium (WebAssembly, the
@@ -71,7 +72,15 @@ export interface OcrPdfium {
 }
 
 export type OcrRenderFailure =
-  'password' | 'corrupt' | 'unsupported' | 'too-large' | 'missing' | 'render'
+  | 'password'
+  | 'corrupt'
+  | 'unsupported'
+  | 'too-large'
+  | 'missing'
+  | 'offline'
+  | 'source-busy'
+  | 'source-permission'
+  | 'render'
 
 export interface OcrRenderedPage {
   /** 1-based page number */
@@ -93,9 +102,11 @@ export type OcrRenderResult =
       totalPages: number
       pages: OcrRenderedPage[]
     }
-  | { ok: false; code: OcrRenderFailure; message: string }
+  | { ok: false; code: OcrRenderFailure; message: string; detail?: string }
 
 export interface OcrRenderRequest {
+  /** Indexed root, supplied by the main-process selector (may be a mounted folder). */
+  sourceRoot?: string
   /** pages already transcribed (1-based) */
   done: number[]
   /** only the first N pages of a file are ever read */
@@ -424,6 +435,7 @@ export function encodeWithinBudget(
 }
 
 export interface OcrRenderDeps {
+  probeRoot?(root: string): Promise<boolean>
   loadPdfium(): Promise<OcrPdfium>
   readFile(path: string): Promise<Uint8Array>
   stat(path: string): Promise<{ size: number; mtimeMs: number }>
@@ -445,7 +457,11 @@ export async function renderPdfPagesForOcr(
   try {
     before = await deps.stat(path)
   } catch (error) {
-    return { ok: false, code: 'missing', message: errorText(error) }
+    return {
+      ok: false,
+      ...(await classifyOcrSourceError(path, error, deps.probeRoot, request.sourceRoot)),
+      message: errorText(error),
+    }
   }
   if (before.size > OCR_MAX_PDF_BYTES)
     return { ok: false, code: 'too-large', message: 'The PDF is too large to read with OCR' }
@@ -453,7 +469,11 @@ export async function renderPdfPagesForOcr(
   try {
     bytes = await deps.readFile(path)
   } catch (error) {
-    return { ok: false, code: 'missing', message: errorText(error) }
+    return {
+      ok: false,
+      ...(await classifyOcrSourceError(path, error, deps.probeRoot, request.sourceRoot)),
+      message: errorText(error),
+    }
   }
   const hash = createHash('sha256').update(bytes).digest('hex')
   let m: OcrPdfium
@@ -466,7 +486,11 @@ export async function renderPdfPagesForOcr(
   try {
     currentStat = await deps.stat(path)
   } catch (error) {
-    return { ok: false, code: 'missing', message: errorText(error) }
+    return {
+      ok: false,
+      ...(await classifyOcrSourceError(path, error, deps.probeRoot, request.sourceRoot)),
+      message: errorText(error),
+    }
   }
   if (currentStat.size !== before.size || currentStat.mtimeMs !== before.mtimeMs) {
     return { ok: false, code: 'corrupt', message: 'PDF file changed during render preparation' }

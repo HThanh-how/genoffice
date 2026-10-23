@@ -27,6 +27,7 @@ export const ISSUE_PAGE_SIZE = 10
 const MAX_REASON_PAIRS = 5_000
 
 export interface IndexIssueSummary {
+  offlineRoots?: Array<{ root: string; since: number; waiting: number }>
   /** files with a problem (status error or empty) below the selected folder */
   total: number
   groups: IssueGroupCount[]

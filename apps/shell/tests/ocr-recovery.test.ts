@@ -172,7 +172,7 @@ describe('one startup traversal of stuck empty documents', () => {
 
   it('failed local renders remain cloud candidates and escalated pages remain durable cloud work', () => {
     const failed = scan('unreadable.pdf')
-    store.ocr.recordLocalFailure(failed.path, failed.meta, 'missing', true)
+    store.ocr.recordLocalFailure(failed.path, failed.meta, 'corrupt', true)
     expect(store.ocr.localFailure(failed.path)?.attempts).toBe(3)
     expect(store.ocr.candidates(5, { mode: 'local' }).map((r) => r.path)).not.toContain(failed.path)
     expect(
