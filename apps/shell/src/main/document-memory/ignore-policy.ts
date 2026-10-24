@@ -8,7 +8,7 @@ import {
   statSync,
   writeFileSync,
 } from 'node:fs'
-import { dirname, extname, resolve } from 'node:path'
+import { dirname, extname, isAbsolute, resolve } from 'node:path'
 import { createHash } from 'node:crypto'
 import type { IpcMain } from 'electron'
 import {
@@ -2159,6 +2159,23 @@ export function registerIgnoreIpcHandlers(
 
   // Fork-only: single-tick read-modify-write so the Home tree cannot clobber
   // concurrent edits from the indexing rules Studio (which replaces the list).
+  // Index explicitly offers excluding an enrolled root too; Home's ancestor guard remains intact.
+  ipcMain.handle(DOCUMENT_INDEX_CHANNELS.addIndexIgnore, (_event, path: unknown) => {
+    if (typeof path !== 'string' || !path.trim() || !isAbsolute(path))
+      return { ok: false, error: 'invalid-path' }
+    const target = resolve(path)
+    const next = addFolderIgnoreToRules(
+      getActiveIgnoreRules(),
+      target,
+      process.platform === 'win32',
+    )
+    if (!next) return { ok: false, error: 'invalid-path' }
+    if (!next.changed) return { ok: true, changed: false }
+    if (!setActiveIgnoreRules(next.rules)) return { ok: false, error: 'save-failed' }
+    onInvalidate?.()
+    return { ok: true, changed: true }
+  })
+
   ipcMain.handle(DOCUMENT_INDEX_CHANNELS.addFolderIgnore, (_event, path: unknown) => {
     if (typeof path !== 'string' || path.trim().length === 0)
       return { ok: false, error: 'invalid-path' }

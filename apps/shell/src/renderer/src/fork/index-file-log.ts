@@ -1,4 +1,5 @@
 import type { IndexFileDetail } from '../../../shared/fork/document-index-api'
+import { indexV2Words } from '../i18n/strings-index-v2'
 
 /**
  * The processing story of one indexed file, worked out from what the index knows about it, and
@@ -100,9 +101,11 @@ export function deriveFileSteps(detail: IndexFileDetail, lang: string): FileStep
   const w = logWords(lang)
   const steps: FileStep[] = []
   steps.push(
-    detail.exists
-      ? { key: 'found', state: 'ok', text: '' }
-      : { key: 'found', state: 'fail', text: w.foundGone },
+    detail.sourceOffline
+      ? { key: 'found', state: 'wait', text: indexV2Words(lang).offlineHint }
+      : detail.exists
+        ? { key: 'found', state: 'ok', text: '' }
+        : { key: 'found', state: 'fail', text: w.foundGone },
   )
   const ready = detail.status === 'ready'
   const scanned = !!detail.pdf && (detail.status === 'empty' || detail.pdf.ocrPages > 0)
@@ -115,8 +118,10 @@ export function deriveFileSteps(detail: IndexFileDetail, lang: string): FileStep
   else if (detail.status === 'error')
     steps.push({
       key: 'read',
-      state: 'fail',
-      text: fill(w.readFail, { e: detail.error ?? '' }),
+      state: detail.sourceOffline ? 'wait' : 'fail',
+      text: detail.sourceOffline
+        ? indexV2Words(lang).offlineHint
+        : fill(w.readFail, { e: detail.error ?? '' }),
     })
   else if (detail.status === 'empty')
     steps.push({

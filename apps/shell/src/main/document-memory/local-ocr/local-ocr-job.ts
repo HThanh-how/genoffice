@@ -17,6 +17,7 @@
  * `persistOcrPagesGated` (storage admission + budget) and `gate` = `evaluateOcrGate`.
  */
 import { createHash } from 'node:crypto'
+import { folderPauses } from '../folder-pause'
 import { readFile, stat } from 'node:fs/promises'
 import { basename } from 'node:path'
 import { totalmem } from 'node:os'
@@ -163,6 +164,7 @@ export class LocalOcrJob {
     try {
       let budget = maxFiles
       for (const row of pdfs) {
+        if (folderPauses.paused(row.path)) continue
         if (this.deps.sourceAvailable && !(await this.deps.sourceAvailable(row.path))) continue
         if (budget-- <= 0) break
         const outcome = await this.guarded(options.signal)
@@ -175,6 +177,7 @@ export class LocalOcrJob {
         if (result) return stop(result)
       }
       for (const image of images) {
+        if (folderPauses.paused(image.path)) continue
         if (this.deps.sourceAvailable && !(await this.deps.sourceAvailable(image.path))) continue
         if (!this.ocr.sourceRetryAllowed(image.path, image)) continue
         if (budget-- <= 0) break

@@ -7,6 +7,12 @@ export interface IndexProgressReading {
   passagesPerMinute: number | null
   quiet: boolean
 }
+const IDLE_READING: IndexProgressReading = {
+  eta: null,
+  filesPerMinute: null,
+  passagesPerMinute: null,
+  quiet: false,
+}
 
 /** File completion and passage completion are separate signals: a large file can take minutes. */
 export class IndexProgressTracker {
@@ -32,8 +38,7 @@ export class IndexProgressTracker {
       this.changedAt = at
       this.identity = identity
     }
-    if (!active || !progress)
-      return { eta: null, filesPerMinute: null, passagesPerMinute: null, quiet: false }
+    if (!active || !progress) return IDLE_READING
     // readyFiles includes empty files; adding emptyFiles would count them twice.
     const current = {
       at,

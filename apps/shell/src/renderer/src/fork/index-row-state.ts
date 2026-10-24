@@ -25,7 +25,9 @@ export function indexRowActions(
       !item.offline &&
       !cloudWork &&
       !localActive &&
-      (item.status === 'ready' || (item.reason !== undefined && isRetryableReason(item.reason))),
+      (item.status === 'ready' ||
+        item.status === 'released' ||
+        (item.reason !== undefined && isRetryableReason(item.reason))),
     ocr:
       !item.offline &&
       !cloudWork &&

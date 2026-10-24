@@ -4,6 +4,7 @@ import { join, resolve } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { FolderScanManager } from '../src/main/document-memory/folder-scan'
 import { rootAvailability } from '../src/main/document-memory/root-availability'
+import { folderPauses } from '../src/main/document-memory/folder-pause'
 
 let dir: string
 let scanners: FolderScanManager[]
@@ -13,6 +14,7 @@ beforeEach(() => {
 })
 afterEach(() => {
   for (const scanner of scanners) scanner.close()
+  folderPauses.replace([])
   rmSync(dir, { recursive: true, force: true })
 })
 
@@ -31,6 +33,26 @@ function scanner(userData: string, indexer: (path: string) => boolean) {
 }
 
 describe('FolderScanManager', () => {
+  it('persists a folder pause, keeps it out of automatic recovery, and resumes only on request', async () => {
+    const root = join(dir, 'paused-root')
+    mkdirSync(root)
+    const file = join(root, 'seed.md')
+    writeFileSync(file, '# Synthetic pause fixture')
+    const first = scanner(dir, () => true)
+    first.start(root)
+    await until(() => first.folders()[0]?.state === 'complete')
+    expect(first.pauseFolder(root)).toBe(true)
+    expect(folderPauses.paused(file)).toBe(true)
+    expect(first.watchedRoots()).not.toContain(root)
+    first.close()
+    const second = scanner(dir, () => true)
+    expect(second.folders()[0]?.paused).toBe(true)
+    expect(second.retryUnavailable()).toEqual([])
+    expect(folderPauses.paused(file)).toBe(true)
+    await second.rescanExisting(root)
+    expect(folderPauses.paused(file)).toBe(false)
+    await until(() => second.folders()[0]?.state === 'complete')
+  })
   it('never reconciles deletions from a partial unavailable inventory', async () => {
     const root = join(dir, 'company')
     mkdirSync(root, { recursive: true })

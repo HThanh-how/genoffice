@@ -1,4 +1,5 @@
 import { rootAvailability } from './root-availability'
+import { folderPauses } from './folder-pause'
 import { setImmediate as yieldToEventLoop } from 'node:timers/promises'
 import { opendir, lstat, stat } from 'node:fs/promises'
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs'
@@ -167,6 +168,7 @@ function hasManualOwner(job: ScanJob): boolean {
 }
 
 export interface ScanJob {
+  paused?: boolean
   root: string
   owners?: FolderOwner[]
   startedAt?: number
@@ -211,6 +213,7 @@ export interface ScanRun {
 
 /** One folder as the settings list shows it. */
 export interface FolderSummary {
+  paused?: boolean
   root: string
   owners?: FolderOwner[]
   state: 'running' | 'complete' | 'stopped'
@@ -279,6 +282,7 @@ export class FolderScanManager {
         this.retryUnavailable()
     })
     this.manifest = readManifest(this.manifestPath)
+    folderPauses.replace(this.manifest.jobs.filter((job) => job.paused).map((job) => job.root))
     for (const job of this.manifest.jobs) rootAvailability.register(job.root)
     memory.onCleared?.(() => this.unregisterAll())
     if (memory.onWriteReadyChange) {
@@ -652,6 +656,8 @@ export class FolderScanManager {
     if (!job) {
       return { ok: false, error: 'Unknown folder' }
     }
+    delete job.paused
+    folderPauses.replace(this.manifest.jobs.filter((job) => job.paused).map((job) => job.root))
 
     const existingOwners =
       job.owners && job.owners.length > 0 ? [...job.owners] : (['manual'] as FolderOwner[])
@@ -694,6 +700,18 @@ export class FolderScanManager {
     return this.start(root, owner)
   }
 
+  pauseFolder(root: string): boolean {
+    const job = this.jobFor(resolve(root))
+    if (!job) return false
+    if (this.activeRoot === job.root) this.stop()
+    this.removeFromWaiting(job.root)
+    job.paused = true
+    job.state = 'stopped'
+    this.save()
+    this.emitRootsChanged()
+    return true
+  }
+
   stop(): FolderScanStatus {
     this.stopRequested = true
     if (this.activeRoot) {
@@ -726,6 +744,7 @@ export class FolderScanManager {
   }
 
   private emitRootsChanged(): void {
+    folderPauses.replace(this.manifest.jobs.filter((job) => job.paused).map((job) => job.root))
     for (const listener of this.rootListeners) {
       try {
         listener()
@@ -1143,6 +1162,7 @@ export class FolderScanManager {
     return this.manifest.jobs
       .map((job) => ({
         root: job.root,
+        paused: job.paused === true,
         owners:
           job.owners && job.owners.length > 0 ? [...job.owners] : (['manual'] as FolderOwner[]),
         state: job.state,
@@ -1174,6 +1194,7 @@ export class FolderScanManager {
     const retried: string[] = []
     for (const job of this.manifest.jobs) {
       if (
+        !job.paused &&
         job.state === 'stopped' &&
         (job.unavailable ||
           job.deferred ||

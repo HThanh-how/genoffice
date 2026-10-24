@@ -163,6 +163,29 @@ export class StatusAggregates {
   }
 
   private searchRunning = false
+  async issueIds(root: string, reason?: import('../issues').IndexIssueReason): Promise<number[]> {
+    return (await this.fetcher.call({ op: 'issueIds', root, reason })) as number[]
+  }
+  async browse(
+    query: import('../../../shared/fork/index-browser').IndexBrowserQuery,
+  ): Promise<import('../../../shared/fork/index-browser').IndexBrowserPage> {
+    return (await this.fetcher.call({
+      op: 'browse',
+      query,
+    })) as import('../../../shared/fork/index-browser').IndexBrowserPage
+  }
+
+  async detail(
+    id: number,
+  ): Promise<Omit<
+    import('../../../shared/fork/document-index-api').IndexFileDetail,
+    'exists'
+  > | null> {
+    return (await this.fetcher.call({ op: 'detail', id })) as Omit<
+      import('../../../shared/fork/document-index-api').IndexFileDetail,
+      'exists'
+    > | null
+  }
   private searchWaiting: { query: string; resolve: (hits: IndexedFileHit[]) => void } | null = null
 
   /**

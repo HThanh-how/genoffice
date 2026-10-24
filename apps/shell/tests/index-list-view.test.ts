@@ -3,6 +3,7 @@ import {
   groupViewFiles,
   sortViewFiles,
   sourceOffline,
+  createIndexSourceLookup,
 } from '../src/renderer/src/fork/index-list-view'
 
 const files = [
@@ -30,6 +31,25 @@ const files = [
   },
 ]
 describe('Index list view', () => {
+  it('prepares source lookup once while preserving deepest-root and path-boundary behavior', () => {
+    const roots = [
+      { root: 'D:/', unavailable: true },
+      { root: 'D:/company', unavailable: false },
+      { root: '//SERVER/share', unavailable: true },
+      { root: '/mnt/company', unavailable: true },
+    ]
+    const lookup = createIndexSourceLookup(roots)
+    for (const path of [
+      'd:\\Company\\a.pdf',
+      'D:/company-old/a.pdf',
+      '//server/share/a.pdf',
+      '//server/share-old/a.pdf',
+      '/mnt/company/a.pdf',
+      '/mnt/Company/a.pdf',
+      '/a.pdf',
+    ])
+      expect(lookup(path)).toBe(sourceOffline(path, roots))
+  })
   it('sorts naturally and keeps offline files last without mutating the source order', () => {
     expect(sortViewFiles(files, 'name', false, 'vi', null).map((file) => file.id)).toEqual([
       3, 2, 1,

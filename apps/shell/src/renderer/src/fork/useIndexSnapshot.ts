@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import type { HomeApi, HomeIndexingActivity, DocumentMemoryStatus } from '../../../shared/home-api'
 import type { IndexingNow, StorageBudgetSnapshot } from '../../../shared/fork/document-index-api'
 import type { IndexingModeState } from '../../../shared/fork/indexing-mode'
@@ -147,5 +147,6 @@ export function useIndexSnapshot(api: HomeApi) {
     }
   }, [api])
 
-  return { snap, attention, statusFailed, loaded, kick: () => pollKick.current() }
+  const kick = useCallback(() => pollKick.current(), [])
+  return { snap, attention, statusFailed, loaded, kick }
 }

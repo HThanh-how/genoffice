@@ -44,6 +44,30 @@ describe('document-index ignore policy (Phase 4)', () => {
       // safe cleanup
     }
   })
+  it('adds exact file or enrolled-root exclusions atomically from Index while preserving Home guards', async () => {
+    const roots = [join(tempDir, 'root-a'), join(tempDir, 'root-b')]
+    const handlers = new Map<string, (_event: unknown, path: unknown) => unknown>()
+    registerIgnoreIpcHandlers(
+      { handle: (channel, handler) => handlers.set(channel, handler) },
+      undefined,
+      () => roots,
+    )
+    setActiveIgnoreRules([])
+    const add = handlers.get(DOCUMENT_INDEX_CHANNELS.addIndexIgnore)!
+    expect(await add({}, roots[0])).toMatchObject({ ok: true })
+    expect(isPathIgnored(join(roots[0]!, 'seed.md'), roots[0])).toBe(true)
+    expect(isPathIgnored(join(roots[1]!, 'seed.md'), roots[1])).toBe(false)
+    expect(
+      await handlers.get(DOCUMENT_INDEX_CHANNELS.addFolderIgnore)!({}, roots[0]),
+    ).toMatchObject({ ok: false })
+    setActiveIgnoreRules([])
+    const exact = join(roots[0]!, 'seed [1].md')
+    expect(await add({}, exact)).toMatchObject({ ok: true })
+    expect(isPathIgnored(exact, roots[0])).toBe(true)
+    expect(isPathIgnored(join(roots[0]!, 'seed 2.md'), roots[0])).toBe(false)
+    expect(await add({}, join(tempDir, 'opened-without-a-root.md'))).toMatchObject({ ok: true })
+    expect(await add({}, '../outside.md')).toMatchObject({ ok: false, error: 'invalid-path' })
+  })
 
   it('correctly matches glob patterns for temporary and lock files', () => {
     expect(isPathIgnored('/docs/notes.tmp')).toBe(true)

@@ -12,14 +12,13 @@ import { IndexAdvanced } from './IndexAdvanced'
 import { AddFolderButton, IndexEmpty } from './IndexAddFolder'
 import { IndexMenu, MenuItem, MenuSeparator } from './IndexMenu'
 import { IconBack, IconMore } from './index-icons'
-import { withoutModel } from './index-issue-groups'
 import './index-dashboard.css'
 import './index-screen.css'
+import '../settings.css'
+import './index-v2.css'
+import { IndexActivity } from './IndexActivity'
+import { IndexRuntime } from './IndexRuntime'
 
-/**
- * The Index screen is one page, top to bottom: what is happening now (and the one control for it),
- * what needs a person, the folders being read, and, folded away, the rules and settings.
- */
 export function IndexDashboard({ api, onClose }: { api: HomeApi; onClose: () => void }) {
   const { lang } = useI18n()
   const d = TEXT[lang] ?? EN
@@ -79,8 +78,10 @@ export function IndexDashboard({ api, onClose }: { api: HomeApi; onClose: () => 
       advancedRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' }),
     )
   }
-  const toAttention = () =>
-    attentionRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' })
+  const toAttention = useCallback(
+    () => attentionRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' }),
+    [],
+  )
 
   // One notice at a time, the most important first.
   let notice: { text: string; tone?: 'warn'; dismiss?: boolean } | null = null
@@ -93,94 +94,100 @@ export function IndexDashboard({ api, onClose }: { api: HomeApi; onClose: () => 
     }
   else if (statusFailed && loaded && hasData) notice = { text: s.statusStale }
 
-  // a failing search model is already the headline; it is not listed a second time
-  const modelShown = (activity?.memory.modelState ?? memory?.modelState) === 'error'
-  const empty = loaded && folders !== null && folders.length === 0 && !running
+  const hasContent = !!(
+    memory?.documents ||
+    memory?.pending ||
+    activity?.folderProgress?.totalFiles ||
+    attention?.total
+  )
+  const empty = loaded && !statusFailed && folders?.length === 0 && !running && !hasContent
   const close = () => setMenuOpen(false)
 
   return (
     <main className="content ix-page">
-      <div className="ix-col">
-        <header className="ix-head">
-          <button type="button" className="ix-icon-btn" onClick={onClose} aria-label={d.back}>
-            <IconBack />
-          </button>
-          <h1>{s.title}</h1>
-          <div className="ix-head-actions">
-            {!empty && (
-              <AddFolderButton api={api} disabled={busy} onChoose={choose} onChanged={changed} />
-            )}
-            <button
-              type="button"
-              ref={setMenuAnchor}
-              className="ix-icon-btn"
-              aria-label={d.more}
-              title={d.more}
-              aria-haspopup="menu"
-              aria-expanded={menuOpen}
-              onClick={() => setMenuOpen((v) => !v)}
-            >
-              <IconMore />
+      <IndexRuntime.Provider
+        value={{ now: snap.now, sources: folders ?? [], offlineRoots: attention?.offlineRoots }}
+      >
+        <div className="ix-col">
+          <header className="ix-head">
+            <button type="button" className="ix-icon-btn" onClick={onClose} aria-label={d.back}>
+              <IconBack />
             </button>
-            {menuOpen && (
-              <IndexMenu anchor={menuAnchor} onClose={close} label={d.more}>
-                <MenuItem
-                  disabled={busy || !folders?.length}
-                  onClick={() => {
-                    close()
-                    void rescanAll()
-                  }}
-                >
-                  {s.scanAll}
-                </MenuItem>
-                {running && (
+            <h1>{s.title}</h1>
+            <div className="ix-head-actions">
+              {!empty && (
+                <AddFolderButton api={api} disabled={busy} onChoose={choose} onChanged={changed} />
+              )}
+              <button
+                type="button"
+                ref={setMenuAnchor}
+                className="ix-icon-btn"
+                aria-label={d.more}
+                title={d.more}
+                aria-haspopup="menu"
+                aria-expanded={menuOpen}
+                onClick={() => setMenuOpen((v) => !v)}
+              >
+                <IconMore />
+              </button>
+              {menuOpen && (
+                <IndexMenu anchor={menuAnchor} onClose={close} label={d.more}>
                   <MenuItem
-                    disabled={busy}
+                    disabled={busy || !folders?.length}
                     onClick={() => {
                       close()
-                      void stopScan()
+                      void rescanAll()
                     }}
                   >
-                    {s.stopScan}
+                    {s.scanAll}
                   </MenuItem>
-                )}
-                <MenuSeparator />
-                <MenuItem
-                  onClick={() => {
-                    close()
-                    openAdvanced('ignore')
-                  }}
-                >
-                  {s.ignoreRules}
-                </MenuItem>
-                <MenuItem
-                  onClick={() => {
-                    close()
-                    openAdvanced()
-                  }}
-                >
-                  {s.settings}
-                </MenuItem>
-              </IndexMenu>
-            )}
-          </div>
-        </header>
+                  {running && (
+                    <MenuItem
+                      disabled={busy}
+                      onClick={() => {
+                        close()
+                        void stopScan()
+                      }}
+                    >
+                      {s.stopScan}
+                    </MenuItem>
+                  )}
+                  <MenuSeparator />
+                  <MenuItem
+                    onClick={() => {
+                      close()
+                      openAdvanced('ignore')
+                    }}
+                  >
+                    {s.ignoreRules}
+                  </MenuItem>
+                  <MenuItem
+                    onClick={() => {
+                      close()
+                      openAdvanced()
+                    }}
+                  >
+                    {s.settings}
+                  </MenuItem>
+                </IndexMenu>
+              )}
+            </div>
+          </header>
 
-        {notice && (
-          <div className={`ix-notice${notice.tone ? ` is-${notice.tone}` : ''}`} role="status">
-            <span>{notice.text}</span>
-            {notice.dismiss && (
-              <button type="button" className="ix-link" onClick={() => setNote('')}>
-                {d.dismissNote}
-              </button>
-            )}
-          </div>
-        )}
+          {notice && (
+            <div className={`ix-notice${notice.tone ? ` is-${notice.tone}` : ''}`} role="status">
+              <span>{notice.text}</span>
+              {notice.dismiss && (
+                <button type="button" className="ix-link" onClick={() => setNote('')}>
+                  {d.dismissNote}
+                </button>
+              )}
+            </div>
+          )}
 
-        {empty ? (
-          <IndexEmpty api={api} busy={busy} onChoose={choose} onChanged={changed} />
-        ) : (
-          <>
+          {empty ? (
+            <IndexEmpty api={api} busy={busy} onChoose={choose} onChanged={changed} />
+          ) : (
             <IndexStatus
               api={api}
               memory={memory}
@@ -197,13 +204,16 @@ export function IndexDashboard({ api, onClose }: { api: HomeApi; onClose: () => 
               onRefresh={kick}
               onChanged={changed}
             />
-            <IndexAttention
-              ref={attentionRef}
-              api={api}
-              attention={modelShown ? withoutModel(attention) : attention}
-              onChanged={changed}
-            />
-            {folders === null ? (
+          )}
+          <IndexAttention
+            ref={attentionRef}
+            api={api}
+            attention={attention}
+            onChanged={changed}
+            now={snap.now}
+          />
+          {!empty &&
+            (folders === null ? (
               <div className="ix-section" aria-busy="true">
                 <span className="ix-skel ix-skel-row" />
                 <span className="ix-skel ix-skel-row" />
@@ -217,21 +227,21 @@ export function IndexDashboard({ api, onClose }: { api: HomeApi; onClose: () => 
                 onNote={setNote}
                 onAttention={toAttention}
               />
-            )}
-          </>
-        )}
+            ))}
 
-        <IndexAdvanced
-          ref={advancedRef}
-          api={api}
-          open={advancedOpen}
-          focus={advancedFocus}
-          onToggle={() => {
-            setAdvancedFocus(undefined)
-            setAdvancedOpen((v) => !v)
-          }}
-        />
-      </div>
+          <IndexActivity api={api} onChanged={changed} onViewAll={onClose} />
+          <IndexAdvanced
+            ref={advancedRef}
+            api={api}
+            open={advancedOpen}
+            focus={advancedFocus}
+            onToggle={() => {
+              setAdvancedFocus(undefined)
+              setAdvancedOpen((v) => !v)
+            }}
+          />
+        </div>
+      </IndexRuntime.Provider>
     </main>
   )
 }

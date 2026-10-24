@@ -74,6 +74,7 @@ export function registerFolderAndModelHandlers(
         ...folder,
         unavailable: !rootAvailability.selectable(folder.root),
         totalFiles: counts?.totalFiles ?? 0,
+        sizeBytes: counts?.sizeBytes ?? 0,
         readyFiles: counts?.readyFiles ?? 0,
         pendingFiles: counts?.pendingFiles ?? 0,
         waitingFiles: counts?.waitingFiles ?? counts?.pendingFiles ?? 0,
@@ -102,6 +103,9 @@ export function registerFolderAndModelHandlers(
     const res = await scan.rescanExisting(knownRoot(root))
     invalidateCounts()
     return res
+  })
+  ipcMain.handle(DOCUMENT_INDEX_CHANNELS.pauseIndexedFolder, (_event, root: unknown) => {
+    return getFolderScan()?.pauseFolder(knownRoot(root)) ?? false
   })
 
   ipcMain.handle(DOCUMENT_INDEX_CHANNELS.forgetIndexedFolder, async (_event, root: unknown) => {
