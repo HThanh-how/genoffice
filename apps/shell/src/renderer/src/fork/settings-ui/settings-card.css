@@ -26,7 +26,8 @@
   text-transform: none;
 }
 
-.settings-card .set-group-icon {
+.settings-card .set-group-icon,
+.ix-card-heading .set-group-icon {
   display: grid;
   place-items: center;
   flex: none;
@@ -44,7 +45,8 @@
   object-fit: contain;
 }
 
-.settings-card .set-group-text {
+.settings-card .set-group-text,
+.ix-card-heading .set-group-text {
   display: flex;
   flex: 1;
   flex-direction: column;
@@ -53,7 +55,8 @@
   overflow-wrap: anywhere;
 }
 
-.settings-card .set-group-hint {
+.settings-card .set-group-hint,
+.ix-card-heading .set-group-hint {
   color: var(--text-secondary);
   font-size: 12px;
   font-weight: 400;

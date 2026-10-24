@@ -75,13 +75,13 @@ function scanFolder(path: string, prefixRoot: string) {
     const row = db
       .prepare(
         `WITH per_document AS (
-          SELECT d.id, d.status, d.truncated, count(c.id) AS total_chunks,
+          SELECT d.id, d.status, d.truncated, d.size_bytes, count(c.id) AS total_chunks,
             ${completedChunksSql} AS completed_chunks
           FROM documents d LEFT JOIN chunks c ON c.document_id = d.id
           WHERE d.excluded = 0 AND (d.path = ? OR substr(d.path, 1, length(?)) = ?)
           GROUP BY d.id
         )
-        SELECT count(*) AS total_files,
+        SELECT count(*) AS total_files, coalesce(sum(size_bytes), 0) AS total_size_bytes,
           sum(CASE WHEN status IN ('ready', 'empty') THEN 1 ELSE 0 END) AS ready_files,
           sum(CASE WHEN status IN ('pending', 'text-only') THEN 1 ELSE 0 END) AS pending_files,
           sum(CASE WHEN status = 'error' THEN 1 ELSE 0 END) AS error_files,
@@ -98,6 +98,7 @@ function scanFolder(path: string, prefixRoot: string) {
       .get(prefixRoot, prefix, prefix) as Record<string, number>
     return {
       totalFiles: row.total_files ?? 0,
+      sizeBytes: row.total_size_bytes ?? 0,
       readyFiles: row.ready_files ?? 0,
       pendingFiles: row.pending_files ?? 0,
       errorFiles: row.error_files ?? 0,
