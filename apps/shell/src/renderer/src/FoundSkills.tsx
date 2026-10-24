@@ -1,3 +1,4 @@
+import { SettingsCard, SettingsRow } from './fork/settings-ui/SettingsCard'
 import { useCallback, useEffect, useState } from 'react'
 import type { StringKey, TFunc } from './locale'
 import type { FoundSkill, RecommendedSkill } from '../../shared/found-skill'
@@ -99,127 +100,127 @@ export function FoundSkills({ t }: { t: TFunc }) {
   return (
     <>
       <h3 className="set-pane-title">{t('setSecSkills')}</h3>
-      <div className="set-field-desc set-intg-lead">{t('intgSkillsDesc')}</div>
-
-      <div className="set-intg-head">
-        {categories.length > 0 ? (
-          <div className="set-intg-tabs set-intg-sections" role="tablist">
-            {sectionTab('mine', `${t('intgSkillsMine')} (${skills.length})`)}
-            {sectionTab('recommended', t('intgSkillsRecommended'))}
-          </div>
-        ) : (
-          <div className="set-field-label">{t('intgSkillsMine')}</div>
-        )}
-        <div className="set-intg-actions">
-          <button
-            className="set-btn"
-            disabled={busy}
-            onClick={() =>
-              void doImport(
-                () =>
-                  api()?.importSkillZip?.(t('intgSkillsImportZipTitle')) ?? Promise.resolve(null),
-              )
-            }
-          >
-            {t('intgSkillsImportZip')}
-          </button>
-          <button
-            className="set-btn"
-            disabled={busy}
-            onClick={() =>
-              void doImport(
-                () =>
-                  api()?.importSkillFolder?.(t('intgSkillsImportFolderTitle')) ??
-                  Promise.resolve(null),
-              )
-            }
-          >
-            {t('intgSkillsImportFolder')}
-          </button>
-        </div>
-      </div>
-
-      {notice && (
-        <div
-          className={
-            notice.kind === 'failed'
-              ? 'set-field-desc set-intg-warn'
-              : 'set-field-desc set-intg-notice'
-          }
-        >
-          {notice.kind === 'failed'
-            ? t('intgSkillsImportFailed', { reason: notice.reason })
-            : notice.kind === 'done'
-              ? t('intgSkillsImportDone', { name: notice.name })
-              : t('intgSkillsRemoved', { name: notice.name })}
-        </div>
-      )}
-
-      {shown === 'mine' && skills.length === 0 && (
-        <div className="set-field-desc set-intg-lead">{t('intgSkillsEmpty')}</div>
-      )}
-
-      {shown === 'mine' && skills.length > 0 && (
-        <div className="set-intg-list">
-          {skills.map((skill) => (
-            <SkillRow
-              key={skill.path}
-              t={t}
-              skill={skill}
-              action={
-                <button className="set-btn" disabled={busy} onClick={() => void doRemove(skill)}>
-                  {t('intgSkillsRemove')}
-                </button>
+      <SettingsCard title={t('setSecSkills')} subtitle={t('intgSkillsDesc')} icon="skills">
+        <div className="set-intg-head">
+          {categories.length > 0 ? (
+            <div className="set-intg-tabs set-intg-sections" role="tablist">
+              {sectionTab('mine', `${t('intgSkillsMine')} (${skills.length})`)}
+              {sectionTab('recommended', t('intgSkillsRecommended'))}
+            </div>
+          ) : (
+            <div className="set-field-label">{t('intgSkillsMine')}</div>
+          )}
+          <div className="set-intg-actions">
+            <button
+              className="set-btn"
+              disabled={busy}
+              onClick={() =>
+                void doImport(
+                  () =>
+                    api()?.importSkillZip?.(t('intgSkillsImportZipTitle')) ?? Promise.resolve(null),
+                )
               }
-            />
-          ))}
+            >
+              {t('intgSkillsImportZip')}
+            </button>
+            <button
+              className="set-btn"
+              disabled={busy}
+              onClick={() =>
+                void doImport(
+                  () =>
+                    api()?.importSkillFolder?.(t('intgSkillsImportFolderTitle')) ??
+                    Promise.resolve(null),
+                )
+              }
+            >
+              {t('intgSkillsImportFolder')}
+            </button>
+          </div>
         </div>
-      )}
 
-      {shown === 'recommended' && categories.length > 0 && (
-        <div className="set-intg-list">
-          <div className="set-intg-tabs" role="tablist" aria-label={t('intgSkillsRecommended')}>
-            {categories.map((c) => (
-              <button
-                key={c}
-                type="button"
-                role="tab"
-                aria-selected={c === current}
-                className={c === current ? 'set-intg-tab active' : 'set-intg-tab'}
-                onClick={() => setTab(c)}
-              >
-                {t(CATEGORY_LABELS[c])}
-              </button>
+        {notice && (
+          <div
+            className={
+              notice.kind === 'failed'
+                ? 'set-field-desc set-intg-warn'
+                : 'set-field-desc set-intg-notice'
+            }
+          >
+            {notice.kind === 'failed'
+              ? t('intgSkillsImportFailed', { reason: notice.reason })
+              : notice.kind === 'done'
+                ? t('intgSkillsImportDone', { name: notice.name })
+                : t('intgSkillsRemoved', { name: notice.name })}
+          </div>
+        )}
+
+        {shown === 'mine' && skills.length === 0 && (
+          <div className="set-field-desc set-intg-lead">{t('intgSkillsEmpty')}</div>
+        )}
+
+        {shown === 'mine' && skills.length > 0 && (
+          <div className="set-intg-list">
+            {skills.map((skill) => (
+              <SkillRow
+                key={skill.path}
+                t={t}
+                skill={skill}
+                action={
+                  <button className="set-btn" disabled={busy} onClick={() => void doRemove(skill)}>
+                    {t('intgSkillsRemove')}
+                  </button>
+                }
+              />
             ))}
           </div>
-          <div role="tabpanel">
-            {recommended
-              .filter((s) => categoryOf(s) === current)
-              .map((skill) => (
-                <SkillRow
-                  key={skill.path}
-                  t={t}
-                  skill={skill}
-                  action={
-                    skill.state === 'installed' ? (
-                      <span className="set-intg-state">{t('intgSkillsInstalledTag')}</span>
-                    ) : (
-                      <button
-                        className="set-btn"
-                        disabled={busy}
-                        onClick={() => void doInstall(skill)}
-                      >
-                        {skill.state === 'outdated'
-                          ? t('intgSkillsUpdate')
-                          : t('intgSkillsInstall')}
-                      </button>
-                    )
-                  }
-                />
+        )}
+
+        {shown === 'recommended' && categories.length > 0 && (
+          <div className="set-intg-list">
+            <div className="set-intg-tabs" role="tablist" aria-label={t('intgSkillsRecommended')}>
+              {categories.map((c) => (
+                <button
+                  key={c}
+                  type="button"
+                  role="tab"
+                  aria-selected={c === current}
+                  className={c === current ? 'set-intg-tab active' : 'set-intg-tab'}
+                  onClick={() => setTab(c)}
+                >
+                  {t(CATEGORY_LABELS[c])}
+                </button>
               ))}
+            </div>
+            <div role="tabpanel">
+              {recommended
+                .filter((s) => categoryOf(s) === current)
+                .map((skill) => (
+                  <SkillRow
+                    key={skill.path}
+                    t={t}
+                    skill={skill}
+                    action={
+                      skill.state === 'installed' ? (
+                        <span className="set-intg-state">{t('intgSkillsInstalledTag')}</span>
+                      ) : (
+                        <button
+                          className="set-btn"
+                          disabled={busy}
+                          onClick={() => void doInstall(skill)}
+                        >
+                          {skill.state === 'outdated'
+                            ? t('intgSkillsUpdate')
+                            : t('intgSkillsInstall')}
+                        </button>
+                      )
+                    }
+                  />
+                ))}
+            </div>
           </div>
-        </div>
-      )}
+        )}
+      </SettingsCard>
     </>
   )
 }
@@ -275,7 +276,7 @@ function SkillRow({ t, skill, action }: { t: TFunc; skill: FoundSkill; action?: 
 
   return (
     <div className="set-intg-row set-intg-skill">
-      <div className="set-field">
+      <SettingsRow className="set-field">
         <div className="set-field-text">
           <div className="set-field-stack">
             <div className="set-field-label">{skill.name}</div>
@@ -283,7 +284,7 @@ function SkillRow({ t, skill, action }: { t: TFunc; skill: FoundSkill; action?: 
           </div>
         </div>
         {action && <div className="set-intg-actions">{action}</div>}
-      </div>
+      </SettingsRow>
       <details
         className="set-intg-details"
         onToggle={(e) => {

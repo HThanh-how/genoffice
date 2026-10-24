@@ -1,0 +1,22 @@
+export const copy = {
+  appearance: '外观',
+  ai: 'AI 面板',
+  files: '文件与保存',
+  legacy: '旧版 Office 文件',
+  legacyHint: '.doc 和 .ppt 转换',
+  privacy: '隐私与剪贴板',
+  opening: '打开动画',
+  openingHint: '打开文件时播放的场景',
+  appearanceHint: '语言、主题与阅读舒适度',
+  aiHint: '让助手适应你的工作方式',
+  filesHint: '默认文件夹与自动保存',
+  privacyHint: '选择应用记忆和共享的数据',
+  modelHint: '选择提供商并配置连接',
+  searchHint: '选择助手查找信息来源的方式',
+  mediaProviderHint: '为此功能选择提供商和模型',
+  aboutTitle: '应用与更新',
+  aboutHint: '版本、更新来源与发布通道',
+  studioHint: '选择、预览和自定义打开卡片',
+  advancedHint: '导入并预览自己的 HTML 场景',
+} as const
+export { copy as zh }

@@ -1,3 +1,4 @@
+import { SettingsRow } from './settings-ui/SettingsCard'
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { Dropdown } from '@genoffice/ui'
 import { useI18n } from '../locale'
@@ -90,7 +91,7 @@ export function AgyMediaFields({
           {agyMediaString(lang, 'agyMediaTest')}
         </button>
       </div>
-      <div className="set-field">
+      <SettingsRow className="set-field">
         <div className="set-field-text">
           <label className="set-field-label">{t('setAiModelId')}</label>
         </div>
@@ -101,8 +102,8 @@ export function AgyMediaFields({
           options={models.map((m) => ({ value: m, label: m }))}
           onPick={(m) => update({ [modelField]: m })}
         />
-      </div>
-      <div className="set-field">
+      </SettingsRow>
+      <SettingsRow className="set-field">
         <div className="set-field-text">
           <div className="set-field-stack">
             <label className="set-field-label" htmlFor={`${idPrefix}-agy-path`}>
@@ -128,7 +129,7 @@ export function AgyMediaFields({
           onChange={(e) => update({ cliPath: e.target.value.trim() })}
           onBlur={(e) => void check(agyEffectiveCliPath(e.target.value, chatCliPath))}
         />
-      </div>
+      </SettingsRow>
     </>
   )
 }

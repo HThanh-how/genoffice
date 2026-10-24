@@ -1047,67 +1047,6 @@
   text-align: left;
 }
 
-/* ---- grouped General pane: each topic is one card under a small heading ---- */
-.set-group {
-  margin: 0 0 22px;
-}
-
-.set-group-title {
-  display: flex;
-  align-items: baseline;
-  gap: 10px;
-  margin: 0 0 8px;
-  padding: 0 2px;
-  font-size: 12px;
-  font-weight: 600;
-  letter-spacing: 0.04em;
-  text-transform: uppercase;
-  color: var(--text-secondary);
-}
-
-.set-group-hint {
-  font-weight: 400;
-  letter-spacing: 0;
-  text-transform: none;
-  opacity: 0.8;
-}
-
-.set-group-body,
-.set-memory {
-  padding: 0 16px;
-  border: 1px solid var(--border-subtle);
-  border-radius: 10px;
-  background: var(--surface);
-}
-
-.set-group-fold > summary {
-  cursor: pointer;
-  list-style: none;
-  user-select: none;
-}
-
-.set-group-fold > summary::-webkit-details-marker {
-  display: none;
-}
-
-.set-group-fold > summary::before {
-  content: '▸';
-  display: inline-block;
-  width: 10px;
-  transition: transform 0.12s;
-}
-
-.set-group-fold[open] > summary::before {
-  transform: rotate(90deg);
-}
-
-/* the document-memory block brings its own headings: make it a card like the others */
-.set-memory {
-  margin: 0 0 22px;
-  padding-top: 14px;
-  padding-bottom: 6px;
-}
-
 .set-memory > h4.set-field-label {
   margin: 0 0 4px;
   font-size: 14px;
@@ -1449,63 +1388,6 @@
 .set-pane-actions {
   flex-wrap: wrap;
 }
-.set-group {
-  margin-bottom: 16px;
-  border: 1px solid var(--border-subtle);
-  border-radius: 12px;
-  background: var(--surface);
-}
-.set-group-title {
-  align-items: center;
-  gap: 12px;
-  margin: 0;
-  padding: 16px;
-  font-size: 13.5px;
-  letter-spacing: 0;
-  text-transform: none;
-  color: var(--text-primary);
-}
-.set-group-icon {
-  display: grid;
-  place-items: center;
-  flex: none;
-  width: 34px;
-  height: 34px;
-  border-radius: 9px;
-  background: var(--accent-soft, var(--bg-hover));
-  color: var(--accent);
-}
-.set-group-brand-icon {
-  width: 20px;
-  height: 20px;
-  border-radius: 5px;
-  display: block;
-  object-fit: contain;
-}
-.set-group-text {
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-  min-width: 0;
-}
-.set-group-hint {
-  font-size: 12px;
-  line-height: 1.5;
-  color: var(--text-secondary);
-  opacity: 1;
-}
-.set-group-body {
-  padding: 0 16px 6px;
-  border: 0;
-  border-top: 1px solid var(--border-subtle);
-  border-radius: 0 0 12px 12px;
-}
-.set-group-fold > summary::before {
-  order: 3;
-  margin-left: auto;
-  width: auto;
-  color: var(--text-tertiary);
-}
 .set-field {
   gap: 14px;
   padding: 13px 0;
@@ -1520,9 +1402,6 @@
 }
 .set-field-stack {
   gap: 5px;
-}
-.set-memory {
-  border-radius: 12px;
 }
 .set-dialog button:focus-visible,
 .set-group-fold > summary:focus-visible {
@@ -1581,9 +1460,6 @@
   }
 }
 @media (prefers-reduced-motion: reduce) {
-  .set-group-fold > summary::before {
-    transition: none;
-  }
 }
 
 /* Common Sources Section in IndexedFolders */

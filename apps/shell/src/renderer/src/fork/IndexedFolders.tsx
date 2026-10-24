@@ -1,3 +1,4 @@
+import { SettingsCard } from './settings-ui/SettingsCard'
 import { useCallback, useEffect, useRef, useState } from 'react'
 import type {
   IndexedFolder,
@@ -570,12 +571,8 @@ export function IndexedFolders({ api, onOpenIssues }: IndexedFoldersProps = {}) 
   const closeMenu = (target: HTMLElement) => target.closest('details')?.removeAttribute('open')
 
   return (
-    <div className="set-folders">
+    <SettingsCard className="settings-folders" title={dict.title} subtitle={dict.desc} icon="files">
       <div className="idx-sources-head">
-        <div className="idx-custom-sources-header">
-          <h4 className="set-field-label">{dict.title}</h4>
-          <p className="set-field-desc">{dict.desc}</p>
-        </div>
         {/* Common locations are a shortcut, not a section of their own. */}
         <details className="idx-quick-add idx-common-sources-section">
           <summary className="idx-btn" title={dict.quickAddTitle}>
@@ -788,6 +785,6 @@ export function IndexedFolders({ api, onOpenIssues }: IndexedFoldersProps = {}) 
           </div>
         )
       })}
-    </div>
+    </SettingsCard>
   )
 }

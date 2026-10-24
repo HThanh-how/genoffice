@@ -1,3 +1,4 @@
+import { SettingsCard, SettingsRow } from './settings-ui/SettingsCard'
 import { useCallback, useEffect, useRef, useState } from 'react'
 import type { Lang } from '@genoffice/i18n'
 import { useI18n } from '../locale'
@@ -308,11 +309,8 @@ export function AgyOcrSettings() {
 
   const lines = status ? statusLines(lang, status) : []
   return (
-    <div className="set-agyocr">
-      <h4 className="set-field-label">{t('title')}</h4>
-      <p className="set-field-desc">{t('desc')}</p>
-
-      <div className="set-field set-field-top">
+    <SettingsCard className="set-agyocr" title={t('title')} subtitle={t('desc')} icon="media">
+      <SettingsRow className="set-field set-field-top">
         <div className="set-field-text">
           <div className="set-field-stack">
             <div className="set-field-label">{t('enable')}</div>
@@ -325,9 +323,9 @@ export function AgyOcrSettings() {
           disabled={disabled}
           onToggle={() => settings && save({ enabled: !settings.enabled })}
         />
-      </div>
+      </SettingsRow>
 
-      <div className="set-field set-field-top">
+      <SettingsRow className="set-field set-field-top">
         <div className="set-field-text">
           <div className="set-field-stack">
             <div className="set-field-label">{t('model')}</div>
@@ -357,7 +355,7 @@ export function AgyOcrSettings() {
             ))}
           </select>
         </label>
-      </div>
+      </SettingsRow>
 
       <section
         className="set-agyocr-overview"
@@ -606,7 +604,7 @@ export function AgyOcrSettings() {
             ? 'Mức dùng được đo từ thay đổi hạn mức do Antigravity trả về; có thể cập nhật trễ hoặc gồm việc dùng tài khoản cùng lúc. Không biết trước chính xác chi phí của một lượt đọc, nên lượt cuối có thể vượt ngưỡng; khi đủ ngân sách sẽ không bắt đầu lượt tự động tiếp theo.'
             : 'Usage is measured from Antigravity quota changes, which may be delayed or include simultaneous account use. A call has no known upfront cost, so the last call may cross the threshold; no further automatic call starts once the budget is spent.'}
         </p>
-        <div className="set-field">
+        <SettingsRow className="set-field">
           <div className="set-field-text">
             <div className="set-field-stack">
               <div className="set-field-label">
@@ -629,7 +627,7 @@ export function AgyOcrSettings() {
             disabled={disabled || !!settings?.autoUnlimited}
             onCommit={(autoWeeklyDailyBudgetPercent) => save({ autoWeeklyDailyBudgetPercent })}
           />
-        </div>
+        </SettingsRow>
         <button
           type="button"
           className="idx-btn"
@@ -640,7 +638,7 @@ export function AgyOcrSettings() {
         >
           {lang === 'vi' ? 'Đặt lại mức chia sẻ mặc định' : 'Restore default sharing'}
         </button>
-        <div className="set-field set-field-top">
+        <SettingsRow className="set-field set-field-top">
           <div className="set-field-text">
             <div className="set-field-stack">
               <div className="set-field-label">{t('maxPdfsPerDay')}</div>
@@ -655,9 +653,9 @@ export function AgyOcrSettings() {
             disabled={disabled}
             onCommit={(maxPdfsPerDay) => save({ maxPdfsPerDay })}
           />
-        </div>
+        </SettingsRow>
 
-        <div className="set-field set-field-top">
+        <SettingsRow className="set-field set-field-top">
           <div className="set-field-text">
             <div className="set-field-stack">
               <div className="set-field-label">{t('maxPagesPerFile')}</div>
@@ -672,9 +670,9 @@ export function AgyOcrSettings() {
             disabled={disabled}
             onCommit={(maxPagesPerFile) => save({ maxPagesPerFile })}
           />
-        </div>
+        </SettingsRow>
 
-        <div className="set-field set-field-top">
+        <SettingsRow className="set-field set-field-top">
           <div className="set-field-text">
             <div className="set-field-stack">
               <div className="set-field-label">{t('onlyAC')}</div>
@@ -687,9 +685,9 @@ export function AgyOcrSettings() {
             disabled={disabled}
             onToggle={() => settings && save({ onlyOnAC: !settings.onlyOnAC })}
           />
-        </div>
+        </SettingsRow>
 
-        <div className="set-field set-field-top">
+        <SettingsRow className="set-field set-field-top">
           <div className="set-field-text">
             <div className="set-field-stack">
               <div className="set-field-label">{t('onlyIdle')}</div>
@@ -702,7 +700,7 @@ export function AgyOcrSettings() {
             disabled={disabled}
             onToggle={() => settings && save({ onlyWhenIdle: !settings.onlyWhenIdle })}
           />
-        </div>
+        </SettingsRow>
       </details>
       <ul className="set-agyocr-status" role="status" aria-live="polite">
         {lines.map((line) => (
@@ -711,6 +709,6 @@ export function AgyOcrSettings() {
           </li>
         ))}
       </ul>
-    </div>
+    </SettingsCard>
   )
 }

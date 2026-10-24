@@ -1,3 +1,4 @@
+import { SettingsCard, SettingsRow } from './settings-ui/SettingsCard'
 import { useCallback, useEffect, useRef, useState } from 'react'
 import {
   AGY_CHAT_DEFAULT_MODEL,
@@ -133,7 +134,7 @@ export function AgyChatModelsSettings() {
     const last = on && (catalog?.enabled.length ?? 0) === 1
     const speed = model.speed === 'fast' ? d.fast : model.speed === 'slow' ? d.slow : d.balanced
     return (
-      <div className="set-field" key={model.id}>
+      <SettingsRow className="set-field" key={model.id}>
         <div className="set-field-text">
           <div className="set-field-stack">
             <div className="set-field-label">
@@ -156,7 +157,7 @@ export function AgyChatModelsSettings() {
           disabled={last}
           onClick={() => void toggle(model.id)}
         />
-      </div>
+      </SettingsRow>
     )
   }
 
@@ -165,9 +166,7 @@ export function AgyChatModelsSettings() {
   const others = all.filter((model) => model.family !== 'gemini')
 
   return (
-    <div className="set-chatmodels">
-      <h4 className="set-field-label">{d.title}</h4>
-      <p className="set-field-desc">{d.desc}</p>
+    <SettingsCard title={d.title} subtitle={d.desc} icon="ai">
       {!catalog && !failed && <p className="set-field-desc">{d.loading}</p>}
       {failed && <p className="set-field-desc">{d.unavailable}</p>}
       {gemini.length > 0 && <div className="set-group-body">{gemini.map(row)}</div>}
@@ -178,6 +177,6 @@ export function AgyChatModelsSettings() {
           <div className="set-group-body">{others.map(row)}</div>
         </details>
       )}
-    </div>
+    </SettingsCard>
   )
 }

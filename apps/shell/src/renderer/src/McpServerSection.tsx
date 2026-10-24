@@ -1,3 +1,4 @@
+import { SettingsRow } from './fork/settings-ui/SettingsCard'
 import { useCallback, useEffect, useRef, useState } from 'react'
 import type { ReactNode } from 'react'
 import type { McpStatus } from '../../shared/home-api'
@@ -22,13 +23,13 @@ export function mcpConfigExample(port: string): string {
 
 function Field({ label, value, action }: { label: string; value: string; action?: ReactNode }) {
   return (
-    <div className="set-field">
+    <SettingsRow className="set-field">
       <div className="set-field-text">
         <div className="set-field-label">{label}</div>
         <div className="set-field-value">{value}</div>
       </div>
       {action}
-    </div>
+    </SettingsRow>
   )
 }
 
@@ -145,7 +146,7 @@ export function McpServerSection({ t }: { t: TFunc }) {
 
   return (
     <div className="set-mcp-server">
-      <div className="set-field set-field-top">
+      <SettingsRow className="set-field set-field-top">
         <div className="set-field-text">
           <div className="set-field-stack">
             <div className="set-field-label">{t('setMcp')}</div>
@@ -167,8 +168,8 @@ export function McpServerSection({ t }: { t: TFunc }) {
           disabled={saving}
           onClick={() => apply({ enabled: !enabled })}
         />
-      </div>
-      <div className="set-field">
+      </SettingsRow>
+      <SettingsRow className="set-field">
         <div className="set-field-text">
           <div className="set-field-stack">
             <label className="set-field-label" htmlFor="set-mcp-port">
@@ -195,8 +196,8 @@ export function McpServerSection({ t }: { t: TFunc }) {
             apply({ port: next })
           }}
         />
-      </div>
-      <div className="set-field set-field-top">
+      </SettingsRow>
+      <SettingsRow className="set-field set-field-top">
         <div className="set-field-text">
           <div className="set-field-stack">
             <div className="set-field-label">{t('setMcpBg')}</div>
@@ -211,7 +212,7 @@ export function McpServerSection({ t }: { t: TFunc }) {
           disabled={saving}
           onClick={() => apply({ background: !background })}
         />
-      </div>
+      </SettingsRow>
       <div className="set-config-block">
         <div className="set-config-head">
           <div className="set-field-stack">
@@ -240,7 +241,7 @@ export function McpServerSection({ t }: { t: TFunc }) {
           value={url('health')}
           action={<CopyTextButton t={t} text={url('health')} />}
         />
-        <div className="set-field set-field-top">
+        <SettingsRow className="set-field set-field-top">
           <div className="set-field-text">
             <div className="set-field-stack">
               <div className="set-field-label">{t('setMcpLog')}</div>
@@ -255,7 +256,7 @@ export function McpServerSection({ t }: { t: TFunc }) {
             disabled={saving}
             onClick={() => apply({ logging: !logging })}
           />
-        </div>
+        </SettingsRow>
         {logging && (
           <div className="set-config-block">
             <div className="set-config-head">

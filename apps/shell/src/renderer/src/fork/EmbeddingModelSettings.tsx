@@ -1,3 +1,4 @@
+import { SettingsCard } from './settings-ui/SettingsCard'
 import { appConfirm } from '../ui-feedback'
 import { Fragment, useCallback, useEffect, useRef, useState } from 'react'
 import type {
@@ -33,8 +34,10 @@ const EN = {
   recommended: 'Recommended here',
   legacyMissing:
     'The Standard search model is not downloaded on this computer and its download source is no longer available, so semantic search is off. Switch to "{name}" (recommended here) to turn it on; text search keeps working.',
-  limitMemory: 'This computer has less memory than the larger models need, so a smaller one is advised.',
-  limitCpu: 'The larger models would be very slow with this few processor threads; a smaller one is advised.',
+  limitMemory:
+    'This computer has less memory than the larger models need, so a smaller one is advised.',
+  limitCpu:
+    'The larger models would be very slow with this few processor threads; a smaller one is advised.',
   confirmSwitch:
     'Switch to this search model?\n\nIt downloads about {download} MB and re-reads all indexed files in the background. Search keeps working meanwhile.',
   confirmHeavy:
@@ -102,9 +105,11 @@ const ZH: typeof EN = {
   base: '轻量',
   baseDesc: '最快最小，适合约 4 GB 内存的电脑（下载约 {download} MB，占用约 {memory} MB 内存）。',
   balanced: '均衡',
-  balancedDesc: '为约 8 GB 内存的电脑提供更好的越南语搜索（下载约 {download} MB，占用约 {memory} MB 内存）。',
+  balancedDesc:
+    '为约 8 GB 内存的电脑提供更好的越南语搜索（下载约 {download} MB，占用约 {memory} MB 内存）。',
   mid: '高质量',
-  midDesc: '同等速度下质量最好，适合 16 GB 内存的电脑（下载约 {download} MB，占用约 {memory} MB 内存）。',
+  midDesc:
+    '同等速度下质量最好，适合 16 GB 内存的电脑（下载约 {download} MB，占用约 {memory} MB 内存）。',
   plus: '最高',
   plusDesc:
     '与“高质量”使用相同的模型和相同的索引，为 32 GB 内存的电脑提供更多并行处理和更长的段落。两者之间切换不需要重新读取文件。',
@@ -128,9 +133,23 @@ const ZH: typeof EN = {
 }
 const DICTS: Record<string, typeof EN> = { en: EN, vi: VI, zh: ZH }
 
-const CHOICES: readonly EmbeddingProfileChoice[] = ['base', 'balanced', 'mid', 'plus', 'standard', 'high']
+const CHOICES: readonly EmbeddingProfileChoice[] = [
+  'base',
+  'balanced',
+  'mid',
+  'plus',
+  'standard',
+  'high',
+]
 /** Bigger = heavier; used to warn when a model is above what this computer is advised to run. */
-const RANK: Record<EmbeddingProfileChoice, number> = { base: 0, standard: 0, balanced: 1, mid: 2, high: 2, plus: 3 }
+const RANK: Record<EmbeddingProfileChoice, number> = {
+  base: 0,
+  standard: 0,
+  balanced: 1,
+  mid: 2,
+  high: 2,
+  plus: 3,
+}
 const isChoice = (value: unknown): value is EmbeddingProfileChoice =>
   typeof value === 'string' && (CHOICES as readonly string[]).includes(value)
 
@@ -263,9 +282,7 @@ export function EmbeddingModelSettings() {
   }
 
   return (
-    <div className="set-model">
-      <h4 className="set-field-label">{d.title}</h4>
-      <p className="set-field-desc">{d.desc}</p>
+    <SettingsCard className="set-model" title={d.title} subtitle={d.desc} icon="search">
       {loadFailed && (
         <p className="set-field-desc" role="status">
           {d.loadFailed}{' '}
@@ -282,11 +299,18 @@ export function EmbeddingModelSettings() {
             ? ` ${d.limitCpu}`
             : ''}
       </p>
-      {state.profile === 'standard' && state.modelCached === false && state.recommended !== 'standard' && (
-        <p className="set-field-desc" role="status">
-          {fill(d.legacyMissing, { name: d[state.recommended as 'base' | 'balanced' | 'mid' | 'plus'] ?? state.profiles[state.recommended]?.name ?? '' })}
-        </p>
-      )}
+      {state.profile === 'standard' &&
+        state.modelCached === false &&
+        state.recommended !== 'standard' && (
+          <p className="set-field-desc" role="status">
+            {fill(d.legacyMissing, {
+              name:
+                d[state.recommended as 'base' | 'balanced' | 'mid' | 'plus'] ??
+                state.profiles[state.recommended]?.name ??
+                '',
+            })}
+          </p>
+        )}
       <div className="set-model-options" role="radiogroup" aria-label={d.title}>
         {(['base', 'balanced', 'mid', 'plus'] as const).map((id) => (
           <Fragment key={id}>{option(id, d[id], d[`${id}Desc`])}</Fragment>
@@ -300,6 +324,6 @@ export function EmbeddingModelSettings() {
           {note}
         </p>
       )}
-    </div>
+    </SettingsCard>
   )
 }

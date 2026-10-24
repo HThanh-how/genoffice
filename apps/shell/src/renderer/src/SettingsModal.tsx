@@ -68,6 +68,12 @@ import { AgyChatModelsSettings } from './fork/AgyChatModelsSettings'
 import { agyMediaTestConfig } from './fork/agy-media-state'
 import { agyString } from './fork/agy-strings'
 import { FoundSkills } from './FoundSkills'
+import {
+  SettingsCard as SetGroup,
+  SettingsCard,
+  SettingsRow,
+} from './fork/settings-ui/SettingsCard'
+import { groupText, groupHint, settingsCardCopy } from './i18n/strings-settings-card'
 import './settings.css'
 
 // ── Settings modal (opened from the account menu) ─────────
@@ -99,131 +105,6 @@ const LANG_OPTIONS = [
   { value: 'zh', label: '简体中文' },
   { value: 'zh-TW', label: '繁體中文' },
 ] as const
-
-type GroupKey =
-  'appearance' | 'ai' | 'files' | 'legacy' | 'legacyHint' | 'privacy' | 'opening' | 'openingHint'
-const GROUP_TEXT: Record<string, Record<GroupKey, string>> = {
-  en: {
-    appearance: 'Appearance',
-    ai: 'AI panel',
-    files: 'Files & saving',
-    legacy: 'Legacy Office files',
-    legacyHint: '.doc and .ppt conversion',
-    privacy: 'Privacy & clipboard',
-    opening: 'Opening effects',
-    openingHint: 'A scene while a file opens',
-  },
-  vi: {
-    appearance: 'Giao diện',
-    ai: 'Bảng AI',
-    files: 'Tệp & lưu',
-    legacy: 'Tệp Office cũ',
-    legacyHint: 'Chuyển đổi .doc và .ppt',
-    privacy: 'Riêng tư & clipboard',
-    opening: 'Hiệu ứng mở tệp',
-    openingHint: 'Cảnh chạy khi mở một tệp',
-  },
-  zh: {
-    appearance: '外观',
-    ai: 'AI 面板',
-    files: '文件与保存',
-    legacy: '旧版 Office 文件',
-    legacyHint: '.doc 和 .ppt 转换',
-    privacy: '隐私与剪贴板',
-    opening: '打开动画',
-    openingHint: '打开文件时播放的场景',
-  },
-  'zh-TW': {
-    appearance: '外觀',
-    ai: 'AI 面板',
-    files: '檔案與儲存',
-    legacy: '舊版 Office 檔案',
-    legacyHint: '.doc 與 .ppt 轉換',
-    privacy: '隱私與剪貼簿',
-    opening: '開啟動畫',
-    openingHint: '開啟檔案時播放的場景',
-  },
-}
-function groupText(lang: string, key: GroupKey): string {
-  return (GROUP_TEXT[lang] ?? GROUP_TEXT.en!)[key]
-}
-
-type GroupIconId = 'appearance' | 'ai' | 'files' | 'privacy' | 'legacy' | 'opening'
-const GROUP_ICONS: Record<GroupIconId, string> = {
-  appearance: 'M12 3a9 9 0 1 0 9 9h-9zM12 3v9h9',
-  ai: 'M4 4h16v13H9l-5 4zM8 9h8m-8 4h5',
-  files: 'M3 6h7l2 3h9v11H3z',
-  privacy: 'M12 3 4 6v6c0 4 8 9 8 9s8-5 8-9V6zM9 12l2 2 4-4',
-  legacy: 'M7 3h7l4 4v14H7zM14 3v5h4M10 13h5m-5 4h5',
-  opening: 'm12 3 2.5 6.5L21 12l-6.5 2.5L12 21l-2.5-6.5L3 12l6.5-2.5z',
-}
-function groupHint(lang: string, key: 'appearance' | 'ai' | 'files' | 'privacy'): string {
-  const hints = {
-    appearance: ['Language, theme and reading comfort', 'Ngôn ngữ, màu giao diện và cách hiển thị'],
-    ai: ['Make the assistant fit your workflow', 'Điều chỉnh trợ lý theo cách bạn làm việc'],
-    files: ['Default folders and automatic saving', 'Thư mục mặc định và lưu tự động'],
-    privacy: [
-      'Choose what the app remembers and shares',
-      'Chọn dữ liệu ứng dụng ghi nhớ và chia sẻ',
-    ],
-  }
-  return hints[key][lang === 'vi' ? 1 : 0]!
-}
-
-/** Related settings share one card; advanced cards are collapsed by default. */
-function SetGroup({
-  title,
-  hint,
-  fold,
-  icon = 'ai',
-  brandIcon,
-  children,
-}: {
-  title: string
-  hint?: string
-  fold?: boolean
-  icon?: GroupIconId
-  brandIcon?: boolean
-  children: ReactNode
-}) {
-  const heading = (
-    <>
-      <span className="set-group-icon" aria-hidden="true">
-        {brandIcon ? (
-          <img src={appIcon} alt="" width="20" height="20" className="set-group-brand-icon" />
-        ) : (
-          <svg width="18" height="18" viewBox="0 0 24 24">
-            <path
-              d={GROUP_ICONS[icon]}
-              fill="none"
-              stroke="currentColor"
-              strokeWidth="1.6"
-              strokeLinecap="round"
-              strokeLinejoin="round"
-            />
-          </svg>
-        )}
-      </span>
-      <span className="set-group-text">
-        <span>{title}</span>
-        {hint && <span className="set-group-hint">{hint}</span>}
-      </span>
-    </>
-  )
-  if (fold)
-    return (
-      <details className="set-group set-group-fold">
-        <summary className="set-group-title">{heading}</summary>
-        <div className="set-group-body">{children}</div>
-      </details>
-    )
-  return (
-    <section className="set-group" aria-label={title}>
-      <h4 className="set-group-title">{heading}</h4>
-      <div className="set-group-body">{children}</div>
-    </section>
-  )
-}
 
 // GenMail's option order: follow-system first, then the manual picks
 const THEME_OPTIONS = [
@@ -443,7 +324,7 @@ function Field({
   action?: ReactNode
 }) {
   return (
-    <div className="set-field">
+    <SettingsRow className="set-field">
       <div className="set-field-text">
         <div className="set-field-label">{label}</div>
         <div className="set-field-value" data-tip={valueTitle}>
@@ -451,7 +332,7 @@ function Field({
         </div>
       </div>
       {action}
-    </div>
+    </SettingsRow>
   )
 }
 
@@ -471,6 +352,7 @@ function foldModels(providerId: string, models: string[]) {
 
 /** AI model pane: provider / model / key / base URL, saved to userData/ai-settings.json */
 function AiModelPane({ t }: { t: TFunc }) {
+  const { lang } = useI18n()
   const [catalog, setCatalog] = useState<AiCatalogEntry[]>(() =>
     (window.aiOffice.getAiProviders?.() ?? []).filter((entry) => entry.id !== 'genspark'),
   )
@@ -835,440 +717,448 @@ function AiModelPane({ t }: { t: TFunc }) {
           </button>
         </div>
       </div>
-      <div className="set-field">
-        <div className="set-field-text">
-          <label className="set-field-label">{t('setAiProvider')}</label>
-        </div>
-        <Dropdown
-          className="set-dd"
-          value={provider}
-          ariaLabel={t('setAiProvider')}
-          options={catalog.map((c) => ({
-            value: c.id,
-            label: c.label,
-            render: (
-              <>
-                <ProviderLogo id={c.id} />
-                {c.label}
-              </>
-            ),
-          }))}
-          onPick={(v) => selectProvider(v as AiSettings['provider'])}
-        />
-      </div>
-      <div className="set-field-desc set-ai-note">
-        <ProviderNote provider={provider} t={t} />
-      </div>
-      {meta?.needsBaseUrl && (
-        <>
-          <div className="set-field">
-            <div className="set-field-text">
-              <div className="set-field-stack">
-                <label className="set-field-label">{t('setAiEndpoint')}</label>
-                <div className="set-field-desc">{t('setAiEndpointHint')}</div>
-              </div>
-            </div>
-            <div className="set-ai-endpoint-row">
-              {endpoint && (
-                <Dropdown
-                  className="set-dd"
-                  value={endpoint.id}
-                  ariaLabel={t('setAiEndpoint')}
-                  options={(settings.customEndpoints ?? []).map((e) => ({
-                    value: e.id,
-                    label: customEndpointLabel(e, meta.label),
-                  }))}
-                  onPick={pickEndpoint}
-                />
-              )}
-              <button className="set-btn" type="button" onClick={addEndpoint}>
-                {t('setAiEndpointAdd')}
-              </button>
-              {endpoint && (
-                <button className="set-btn" type="button" onClick={deleteEndpoint}>
-                  {t('setAiEndpointRemove')}
-                </button>
-              )}
-            </div>
+      <SettingsCard
+        title={t('setAiProvider')}
+        subtitle={settingsCardCopy(lang).modelHint}
+        icon="ai"
+      >
+        <SettingsRow className="set-field">
+          <div className="set-field-text">
+            <label className="set-field-label">{t('setAiProvider')}</label>
           </div>
-          {endpoint && (
-            <div className="set-field">
-              <div className="set-field-text">
-                <label className="set-field-label" htmlFor="set-ai-endpoint-name">
-                  {t('setAiEndpointName')}
-                </label>
-              </div>
-              <input
-                id="set-ai-endpoint-name"
-                className="set-input"
-                type="text"
-                value={endpoint.name}
-                placeholder={customEndpointLabel(endpoint, meta.label)}
-                spellCheck={false}
-                onChange={(e) => renameEndpoint(e.target.value)}
-              />
-            </div>
-          )}
-        </>
-      )}
-      <div className="set-field">
-        <div className="set-field-text">
-          <label className="set-field-label">{t('setAiModelId')}</label>
-        </div>
-        {!manualModel && meta && meta.models.length > 0 ? (
           <Dropdown
             className="set-dd"
-            value={config.model || meta.defaultModel}
-            ariaLabel={t('setAiModelId')}
-            options={meta.models.map((m) => ({
-              value: m,
-              label: m,
+            value={provider}
+            ariaLabel={t('setAiProvider')}
+            options={catalog.map((c) => ({
+              value: c.id,
+              label: c.label,
+              render: (
+                <>
+                  <ProviderLogo id={c.id} />
+                  {c.label}
+                </>
+              ),
             }))}
-            onPick={(m) => updateConfig({ model: m })}
-            searchPlaceholder={meta.models.length > 12 ? t('setAiModelSearch') : undefined}
+            onPick={(v) => selectProvider(v as AiSettings['provider'])}
           />
-        ) : (
-          <input
-            id="set-ai-model"
-            className="set-input"
-            type="text"
-            value={config.model}
-            placeholder="model-id"
-            spellCheck={false}
-            onChange={(e) => updateConfig({ model: e.target.value })}
-          />
+        </SettingsRow>
+        <div className="set-field-desc set-ai-note">
+          <ProviderNote provider={provider} t={t} />
+        </div>
+        {meta?.needsBaseUrl && (
+          <>
+            <SettingsRow className="set-field">
+              <div className="set-field-text">
+                <div className="set-field-stack">
+                  <label className="set-field-label">{t('setAiEndpoint')}</label>
+                  <div className="set-field-desc">{t('setAiEndpointHint')}</div>
+                </div>
+              </div>
+              <div className="set-ai-endpoint-row">
+                {endpoint && (
+                  <Dropdown
+                    className="set-dd"
+                    value={endpoint.id}
+                    ariaLabel={t('setAiEndpoint')}
+                    options={(settings.customEndpoints ?? []).map((e) => ({
+                      value: e.id,
+                      label: customEndpointLabel(e, meta.label),
+                    }))}
+                    onPick={pickEndpoint}
+                  />
+                )}
+                <button className="set-btn" type="button" onClick={addEndpoint}>
+                  {t('setAiEndpointAdd')}
+                </button>
+                {endpoint && (
+                  <button className="set-btn" type="button" onClick={deleteEndpoint}>
+                    {t('setAiEndpointRemove')}
+                  </button>
+                )}
+              </div>
+            </SettingsRow>
+            {endpoint && (
+              <SettingsRow className="set-field">
+                <div className="set-field-text">
+                  <label className="set-field-label" htmlFor="set-ai-endpoint-name">
+                    {t('setAiEndpointName')}
+                  </label>
+                </div>
+                <input
+                  id="set-ai-endpoint-name"
+                  className="set-input"
+                  type="text"
+                  value={endpoint.name}
+                  placeholder={customEndpointLabel(endpoint, meta.label)}
+                  spellCheck={false}
+                  onChange={(e) => renameEndpoint(e.target.value)}
+                />
+              </SettingsRow>
+            )}
+          </>
         )}
-      </div>
-      {!isCodex && !isGenspark && !isAgy && (
-        <div className="set-field-desc set-model-discovery" aria-live="polite">
-          <span>
-            {modelListState === 'loading'
-              ? t('setAiModelsLoading')
-              : modelListState === 'live'
-                ? t('setAiModelsLive', { n: modelListCount })
-                : modelListState === 'fallback'
-                  ? t('setAiModelsFallback')
-                  : t('setAiModelsHint')}
-          </span>
-          <button
-            className="set-btn"
-            type="button"
-            disabled={modelListState === 'loading'}
-            onClick={() => setModelRefresh((value) => value + 1)}
-          >
-            {t('setAiModelsRefresh')}
-          </button>
-          {meta && meta.models.length > 0 && (
+        <SettingsRow className="set-field">
+          <div className="set-field-text">
+            <label className="set-field-label">{t('setAiModelId')}</label>
+          </div>
+          {!manualModel && meta && meta.models.length > 0 ? (
+            <Dropdown
+              className="set-dd"
+              value={config.model || meta.defaultModel}
+              ariaLabel={t('setAiModelId')}
+              options={meta.models.map((m) => ({
+                value: m,
+                label: m,
+              }))}
+              onPick={(m) => updateConfig({ model: m })}
+              searchPlaceholder={meta.models.length > 12 ? t('setAiModelSearch') : undefined}
+            />
+          ) : (
+            <input
+              id="set-ai-model"
+              className="set-input"
+              type="text"
+              value={config.model}
+              placeholder="model-id"
+              spellCheck={false}
+              onChange={(e) => updateConfig({ model: e.target.value })}
+            />
+          )}
+        </SettingsRow>
+        {!isCodex && !isGenspark && !isAgy && (
+          <div className="set-field-desc set-model-discovery" aria-live="polite">
+            <span>
+              {modelListState === 'loading'
+                ? t('setAiModelsLoading')
+                : modelListState === 'live'
+                  ? t('setAiModelsLive', { n: modelListCount })
+                  : modelListState === 'fallback'
+                    ? t('setAiModelsFallback')
+                    : t('setAiModelsHint')}
+            </span>
             <button
               className="set-btn"
               type="button"
-              onClick={() => setManualModel((value) => !value)}
+              disabled={modelListState === 'loading'}
+              onClick={() => setModelRefresh((value) => value + 1)}
             >
-              {manualModel ? t('setAiModelsChoose') : t('setAiModelsManual')}
+              {t('setAiModelsRefresh')}
             </button>
-          )}
-        </div>
-      )}
-      {isCodex ? (
-        <div className="set-field">
+            {meta && meta.models.length > 0 && (
+              <button
+                className="set-btn"
+                type="button"
+                onClick={() => setManualModel((value) => !value)}
+              >
+                {manualModel ? t('setAiModelsChoose') : t('setAiModelsManual')}
+              </button>
+            )}
+          </div>
+        )}
+        {isCodex ? (
+          <SettingsRow className="set-field">
+            <div className="set-field-text">
+              <div className="set-field-stack">
+                <label className="set-field-label" htmlFor="set-ai-cli-path">
+                  {t('setAiCodexPath')}
+                </label>
+                <div className="set-field-desc">{t('setAiCodexPathHint')}</div>
+              </div>
+            </div>
+            <input
+              id="set-ai-cli-path"
+              className="set-input"
+              type="text"
+              value={config.cliPath ?? ''}
+              placeholder={t('setAiCodexAutoPlaceholder')}
+              spellCheck={false}
+              autoComplete="off"
+              onChange={(e) => updateConfig({ cliPath: e.target.value.trim() })}
+              onBlur={(e) => {
+                const cliPath = e.target.value.trim()
+                void refreshCodexModels(cliPath, config.model).catch(() => undefined)
+              }}
+            />
+          </SettingsRow>
+        ) : isAgy ? (
+          <>
+            <AgyProviderFields config={config} update={updateConfig} setCatalog={setCatalog} />
+          </>
+        ) : !isGenspark ? (
+          <>
+            <SettingsRow className="set-field">
+              <div className="set-field-text">
+                <div className="set-field-stack">
+                  <label className="set-field-label" htmlFor="set-ai-key">
+                    {t('setAiApiKey')}
+                  </label>
+                  <div className="set-field-desc">{t('setAiKeyHint')}</div>
+                </div>
+              </div>
+              <input
+                id="set-ai-key"
+                className="set-input"
+                type="password"
+                value={config.apiKey}
+                placeholder={meta?.keyPlaceholder ?? 'API Key'}
+                spellCheck={false}
+                autoComplete="off"
+                onChange={(e) => updateConfig({ apiKey: e.target.value.trim() })}
+              />
+            </SettingsRow>
+            <SettingsRow className="set-field">
+              <div className="set-field-text">
+                <div className="set-field-stack">
+                  <label className="set-field-label" htmlFor="set-ai-base-url">
+                    {t('setAiBaseUrl')}
+                  </label>
+                  {!meta?.needsBaseUrl && (
+                    <div className="set-field-desc">{t('setAiBaseUrlHint')}</div>
+                  )}
+                </div>
+              </div>
+              <input
+                id="set-ai-base-url"
+                className="set-input"
+                type="text"
+                value={config.baseUrl ?? ''}
+                placeholder={meta?.needsBaseUrl ? 'https://…/v1' : meta?.defaultBaseUrl}
+                spellCheck={false}
+                onChange={(e) => updateConfig({ baseUrl: e.target.value.trim() })}
+              />
+            </SettingsRow>
+
+            {endpoint && (
+              <>
+                <SettingsRow className="set-field">
+                  <div className="set-field-text">
+                    <div className="set-field-stack">
+                      <label className="set-field-label">{t('setAiApiProtocol')}</label>
+                      <div className="set-field-desc">{t('setAiApiProtocolHint')}</div>
+                    </div>
+                  </div>
+                  <Dropdown
+                    className="set-dd"
+                    value={endpoint.api ?? 'openai-compatible'}
+                    ariaLabel={t('setAiApiProtocol')}
+                    options={AI_CUSTOM_PROTOCOLS.map((api) => ({
+                      value: api,
+                      label: t(PROTOCOL_LABEL_KEYS[api]),
+                    }))}
+                    onPick={(api) => updateEndpointProfile({ api: api as AiCustomProtocol })}
+                  />
+                </SettingsRow>
+                <SettingsRow className="set-field set-ai-profile-field">
+                  <div className="set-field-text">
+                    <div className="set-field-stack">
+                      <label className="set-field-label">{t('setAiCompatTitle')}</label>
+                      <div className="set-field-desc">{t('setAiCompatEchoHint')}</div>
+                    </div>
+                  </div>
+                  <div className="set-ai-profile-switches">
+                    <ProfileSwitch
+                      label={t('setAiCompatOmitTemp')}
+                      value={endpointCompat.omitTemperature}
+                      onChange={(on) =>
+                        updateEndpointProfile({
+                          compat: applySwitch(endpointCompat, 'omitTemperature', on),
+                        })
+                      }
+                      texts={{
+                        on: t('setAiSwitchOn'),
+                        off: t('setAiSwitchOff'),
+                        auto: t('setAiSwitchAuto'),
+                      }}
+                    />
+                    <ProfileSwitch
+                      label={t('setAiCompatEchoReasoning')}
+                      value={endpointCompat.echoReasoning}
+                      onChange={(on) =>
+                        updateEndpointProfile({
+                          compat: applySwitch(endpointCompat, 'echoReasoning', on),
+                        })
+                      }
+                      texts={{
+                        on: t('setAiSwitchOn'),
+                        off: t('setAiSwitchOff'),
+                        auto: t('setAiSwitchAuto'),
+                      }}
+                    />
+                    <ProfileSwitch
+                      label={t('setAiCompatMaxCompletion')}
+                      value={endpointCompat.useMaxCompletionTokens}
+                      onChange={(on) =>
+                        updateEndpointProfile({
+                          compat: applySwitch(endpointCompat, 'useMaxCompletionTokens', on),
+                        })
+                      }
+                      texts={{
+                        on: t('setAiSwitchOn'),
+                        off: t('setAiSwitchOff'),
+                        auto: t('setAiSwitchAuto'),
+                      }}
+                    />
+                    <div className="set-ai-profile-row">
+                      <span className="set-ai-profile-label">{t('setAiCompatVision')}</span>
+                      <Dropdown
+                        className="set-dd"
+                        value={
+                          endpointVision === undefined ? 'auto' : endpointVision ? 'yes' : 'no'
+                        }
+                        ariaLabel={t('setAiCompatVision')}
+                        options={[
+                          { value: 'auto', label: t('setAiCompatVisionAuto') },
+                          { value: 'yes', label: t('setAiCompatVisionYes') },
+                          { value: 'no', label: t('setAiCompatVisionNo') },
+                        ]}
+                        onPick={(v) =>
+                          updateEndpointProfile({
+                            compat: applySwitch(
+                              endpointCompat,
+                              'vision',
+                              v === 'auto' ? undefined : v === 'yes',
+                            ),
+                          })
+                        }
+                      />
+                    </div>
+                  </div>
+                </SettingsRow>
+                <ProfileBlobField
+                  fieldId="set-ai-endpoint-headers"
+                  label={t('setAiEndpointHeaders')}
+                  hint={t('setAiEndpointHeadersHint')}
+                  bad={t('setAiEndpointHeadersBad')}
+                  text={headersText}
+                  placeholder={'X-Tenant: office'}
+                  multiline
+                  onCommit={(text) => {
+                    const headers = parseHeaderLines(text)
+                    if (!headers) return false
+                    updateEndpointProfile({ headers })
+                    return true
+                  }}
+                />
+                <SettingsRow className="set-field">
+                  <div className="set-field-text">
+                    <div className="set-field-stack">
+                      <label className="set-field-label" htmlFor="set-ai-endpoint-idle">
+                        {t('setAiEndpointIdleTimeout')}
+                      </label>
+                      <div className="set-field-desc">{t('setAiEndpointIdleTimeoutHint')}</div>
+                    </div>
+                  </div>
+                  <input
+                    id="set-ai-endpoint-idle"
+                    className="set-input set-num-input"
+                    type="number"
+                    min={1}
+                    max={600}
+                    step={10}
+                    value={
+                      endpoint.idleTimeoutMs === undefined
+                        ? ''
+                        : Math.round(endpoint.idleTimeoutMs / 1000)
+                    }
+                    placeholder="180"
+                    onChange={(e) => {
+                      const raw = e.target.value.trim()
+                      if (!raw) {
+                        clearEndpointProfileKey('idleTimeoutMs')
+                        return
+                      }
+                      const seconds = Number.parseInt(raw, 10)
+                      if (!Number.isFinite(seconds)) return
+                      updateEndpointProfile({
+                        idleTimeoutMs: Math.max(1, Math.min(600, seconds)) * 1000,
+                      })
+                    }}
+                  />
+                </SettingsRow>
+                <SettingsRow className="set-field">
+                  <div className="set-field-text">
+                    <div className="set-field-stack">
+                      <label className="set-field-label" htmlFor="set-ai-endpoint-key-env">
+                        {t('setAiEndpointKeyEnv')}
+                      </label>
+                      <div className="set-field-desc">{t('setAiEndpointKeyEnvHint')}</div>
+                    </div>
+                  </div>
+                  <input
+                    id="set-ai-endpoint-key-env"
+                    className="set-input"
+                    type="text"
+                    value={endpoint.apiKeyEnv ?? ''}
+                    placeholder="GW_API_KEY"
+                    spellCheck={false}
+                    autoComplete="off"
+                    onChange={(e) => {
+                      const name = e.target.value.trim()
+                      if (!name) {
+                        clearEndpointProfileKey('apiKeyEnv')
+                        return
+                      }
+                      updateEndpointProfile({ apiKeyEnv: name })
+                    }}
+                  />
+                </SettingsRow>
+                <ProfileBlobField
+                  fieldId="set-ai-endpoint-models"
+                  label={t('setAiEndpointModels')}
+                  hint={
+                    probedProfilesRef.current?.length
+                      ? t('setAiEndpointModelsProbed')
+                      : t('setAiEndpointModelsHint')
+                  }
+                  bad={t('setAiEndpointModelsBad')}
+                  text={modelsText}
+                  placeholder={MODEL_DECLARATION_PLACEHOLDER}
+                  multiline
+                  onCommit={(text) => {
+                    if (!text.trim()) {
+                      clearEndpointProfileKey('modelProfiles')
+                      return true
+                    }
+                    try {
+                      const parsed = JSON.parse(text)
+                      if (!Array.isArray(parsed)) return false
+                      updateEndpointProfile({
+                        modelProfiles: parsed as AiCustomEndpoint['modelProfiles'],
+                      })
+                      return true
+                    } catch {
+                      return false
+                    }
+                  }}
+                />
+              </>
+            )}
+          </>
+        ) : null}
+        <SettingsRow className="set-field">
           <div className="set-field-text">
             <div className="set-field-stack">
-              <label className="set-field-label" htmlFor="set-ai-cli-path">
-                {t('setAiCodexPath')}
+              <label className="set-field-label" htmlFor="set-ai-max-tokens">
+                {t('setAiMaxTokens')}
               </label>
-              <div className="set-field-desc">{t('setAiCodexPathHint')}</div>
+              <div className="set-field-desc">{t('setAiMaxTokensDesc')}</div>
             </div>
           </div>
           <input
-            id="set-ai-cli-path"
+            id="set-ai-max-tokens"
             className="set-input"
-            type="text"
-            value={config.cliPath ?? ''}
-            placeholder={t('setAiCodexAutoPlaceholder')}
-            spellCheck={false}
-            autoComplete="off"
-            onChange={(e) => updateConfig({ cliPath: e.target.value.trim() })}
-            onBlur={(e) => {
-              const cliPath = e.target.value.trim()
-              void refreshCodexModels(cliPath, config.model).catch(() => undefined)
-            }}
+            type="number"
+            min={MIN_MAX_OUTPUT_TOKENS}
+            max={MAX_MAX_OUTPUT_TOKENS}
+            step={1024}
+            value={maxTokensDraft ?? String(settings.maxOutputTokens ?? DEFAULT_MAX_OUTPUT_TOKENS)}
+            onChange={(e) => setMaxTokensDraft(e.target.value)}
+            onBlur={commitMaxTokens}
           />
-        </div>
-      ) : isAgy ? (
-        <>
-          <AgyProviderFields config={config} update={updateConfig} setCatalog={setCatalog} />
-          <AgyChatModelsSettings />
-        </>
-      ) : !isGenspark ? (
-        <>
-          <div className="set-field">
-            <div className="set-field-text">
-              <div className="set-field-stack">
-                <label className="set-field-label" htmlFor="set-ai-key">
-                  {t('setAiApiKey')}
-                </label>
-                <div className="set-field-desc">{t('setAiKeyHint')}</div>
-              </div>
-            </div>
-            <input
-              id="set-ai-key"
-              className="set-input"
-              type="password"
-              value={config.apiKey}
-              placeholder={meta?.keyPlaceholder ?? 'API Key'}
-              spellCheck={false}
-              autoComplete="off"
-              onChange={(e) => updateConfig({ apiKey: e.target.value.trim() })}
-            />
-          </div>
-          <div className="set-field">
-            <div className="set-field-text">
-              <div className="set-field-stack">
-                <label className="set-field-label" htmlFor="set-ai-base-url">
-                  {t('setAiBaseUrl')}
-                </label>
-                {!meta?.needsBaseUrl && (
-                  <div className="set-field-desc">{t('setAiBaseUrlHint')}</div>
-                )}
-              </div>
-            </div>
-            <input
-              id="set-ai-base-url"
-              className="set-input"
-              type="text"
-              value={config.baseUrl ?? ''}
-              placeholder={meta?.needsBaseUrl ? 'https://…/v1' : meta?.defaultBaseUrl}
-              spellCheck={false}
-              onChange={(e) => updateConfig({ baseUrl: e.target.value.trim() })}
-            />
-          </div>
-
-          {endpoint && (
-            <>
-              <div className="set-field">
-                <div className="set-field-text">
-                  <div className="set-field-stack">
-                    <label className="set-field-label">{t('setAiApiProtocol')}</label>
-                    <div className="set-field-desc">{t('setAiApiProtocolHint')}</div>
-                  </div>
-                </div>
-                <Dropdown
-                  className="set-dd"
-                  value={endpoint.api ?? 'openai-compatible'}
-                  ariaLabel={t('setAiApiProtocol')}
-                  options={AI_CUSTOM_PROTOCOLS.map((api) => ({
-                    value: api,
-                    label: t(PROTOCOL_LABEL_KEYS[api]),
-                  }))}
-                  onPick={(api) => updateEndpointProfile({ api: api as AiCustomProtocol })}
-                />
-              </div>
-              <div className="set-field set-ai-profile-field">
-                <div className="set-field-text">
-                  <div className="set-field-stack">
-                    <label className="set-field-label">{t('setAiCompatTitle')}</label>
-                    <div className="set-field-desc">{t('setAiCompatEchoHint')}</div>
-                  </div>
-                </div>
-                <div className="set-ai-profile-switches">
-                  <ProfileSwitch
-                    label={t('setAiCompatOmitTemp')}
-                    value={endpointCompat.omitTemperature}
-                    onChange={(on) =>
-                      updateEndpointProfile({
-                        compat: applySwitch(endpointCompat, 'omitTemperature', on),
-                      })
-                    }
-                    texts={{
-                      on: t('setAiSwitchOn'),
-                      off: t('setAiSwitchOff'),
-                      auto: t('setAiSwitchAuto'),
-                    }}
-                  />
-                  <ProfileSwitch
-                    label={t('setAiCompatEchoReasoning')}
-                    value={endpointCompat.echoReasoning}
-                    onChange={(on) =>
-                      updateEndpointProfile({
-                        compat: applySwitch(endpointCompat, 'echoReasoning', on),
-                      })
-                    }
-                    texts={{
-                      on: t('setAiSwitchOn'),
-                      off: t('setAiSwitchOff'),
-                      auto: t('setAiSwitchAuto'),
-                    }}
-                  />
-                  <ProfileSwitch
-                    label={t('setAiCompatMaxCompletion')}
-                    value={endpointCompat.useMaxCompletionTokens}
-                    onChange={(on) =>
-                      updateEndpointProfile({
-                        compat: applySwitch(endpointCompat, 'useMaxCompletionTokens', on),
-                      })
-                    }
-                    texts={{
-                      on: t('setAiSwitchOn'),
-                      off: t('setAiSwitchOff'),
-                      auto: t('setAiSwitchAuto'),
-                    }}
-                  />
-                  <div className="set-ai-profile-row">
-                    <span className="set-ai-profile-label">{t('setAiCompatVision')}</span>
-                    <Dropdown
-                      className="set-dd"
-                      value={endpointVision === undefined ? 'auto' : endpointVision ? 'yes' : 'no'}
-                      ariaLabel={t('setAiCompatVision')}
-                      options={[
-                        { value: 'auto', label: t('setAiCompatVisionAuto') },
-                        { value: 'yes', label: t('setAiCompatVisionYes') },
-                        { value: 'no', label: t('setAiCompatVisionNo') },
-                      ]}
-                      onPick={(v) =>
-                        updateEndpointProfile({
-                          compat: applySwitch(
-                            endpointCompat,
-                            'vision',
-                            v === 'auto' ? undefined : v === 'yes',
-                          ),
-                        })
-                      }
-                    />
-                  </div>
-                </div>
-              </div>
-              <ProfileBlobField
-                fieldId="set-ai-endpoint-headers"
-                label={t('setAiEndpointHeaders')}
-                hint={t('setAiEndpointHeadersHint')}
-                bad={t('setAiEndpointHeadersBad')}
-                text={headersText}
-                placeholder={'X-Tenant: office'}
-                multiline
-                onCommit={(text) => {
-                  const headers = parseHeaderLines(text)
-                  if (!headers) return false
-                  updateEndpointProfile({ headers })
-                  return true
-                }}
-              />
-              <div className="set-field">
-                <div className="set-field-text">
-                  <div className="set-field-stack">
-                    <label className="set-field-label" htmlFor="set-ai-endpoint-idle">
-                      {t('setAiEndpointIdleTimeout')}
-                    </label>
-                    <div className="set-field-desc">{t('setAiEndpointIdleTimeoutHint')}</div>
-                  </div>
-                </div>
-                <input
-                  id="set-ai-endpoint-idle"
-                  className="set-input set-num-input"
-                  type="number"
-                  min={1}
-                  max={600}
-                  step={10}
-                  value={
-                    endpoint.idleTimeoutMs === undefined
-                      ? ''
-                      : Math.round(endpoint.idleTimeoutMs / 1000)
-                  }
-                  placeholder="180"
-                  onChange={(e) => {
-                    const raw = e.target.value.trim()
-                    if (!raw) {
-                      clearEndpointProfileKey('idleTimeoutMs')
-                      return
-                    }
-                    const seconds = Number.parseInt(raw, 10)
-                    if (!Number.isFinite(seconds)) return
-                    updateEndpointProfile({
-                      idleTimeoutMs: Math.max(1, Math.min(600, seconds)) * 1000,
-                    })
-                  }}
-                />
-              </div>
-              <div className="set-field">
-                <div className="set-field-text">
-                  <div className="set-field-stack">
-                    <label className="set-field-label" htmlFor="set-ai-endpoint-key-env">
-                      {t('setAiEndpointKeyEnv')}
-                    </label>
-                    <div className="set-field-desc">{t('setAiEndpointKeyEnvHint')}</div>
-                  </div>
-                </div>
-                <input
-                  id="set-ai-endpoint-key-env"
-                  className="set-input"
-                  type="text"
-                  value={endpoint.apiKeyEnv ?? ''}
-                  placeholder="GW_API_KEY"
-                  spellCheck={false}
-                  autoComplete="off"
-                  onChange={(e) => {
-                    const name = e.target.value.trim()
-                    if (!name) {
-                      clearEndpointProfileKey('apiKeyEnv')
-                      return
-                    }
-                    updateEndpointProfile({ apiKeyEnv: name })
-                  }}
-                />
-              </div>
-              <ProfileBlobField
-                fieldId="set-ai-endpoint-models"
-                label={t('setAiEndpointModels')}
-                hint={
-                  probedProfilesRef.current?.length
-                    ? t('setAiEndpointModelsProbed')
-                    : t('setAiEndpointModelsHint')
-                }
-                bad={t('setAiEndpointModelsBad')}
-                text={modelsText}
-                placeholder={MODEL_DECLARATION_PLACEHOLDER}
-                multiline
-                onCommit={(text) => {
-                  if (!text.trim()) {
-                    clearEndpointProfileKey('modelProfiles')
-                    return true
-                  }
-                  try {
-                    const parsed = JSON.parse(text)
-                    if (!Array.isArray(parsed)) return false
-                    updateEndpointProfile({
-                      modelProfiles: parsed as AiCustomEndpoint['modelProfiles'],
-                    })
-                    return true
-                  } catch {
-                    return false
-                  }
-                }}
-              />
-            </>
-          )}
-        </>
-      ) : null}
-      <div className="set-field">
-        <div className="set-field-text">
-          <div className="set-field-stack">
-            <label className="set-field-label" htmlFor="set-ai-max-tokens">
-              {t('setAiMaxTokens')}
-            </label>
-            <div className="set-field-desc">{t('setAiMaxTokensDesc')}</div>
-          </div>
-        </div>
-        <input
-          id="set-ai-max-tokens"
-          className="set-input"
-          type="number"
-          min={MIN_MAX_OUTPUT_TOKENS}
-          max={MAX_MAX_OUTPUT_TOKENS}
-          step={1024}
-          value={maxTokensDraft ?? String(settings.maxOutputTokens ?? DEFAULT_MAX_OUTPUT_TOKENS)}
-          onChange={(e) => setMaxTokensDraft(e.target.value)}
-          onBlur={commitMaxTokens}
-        />
-      </div>
+        </SettingsRow>
+      </SettingsCard>
+      {isAgy && <AgyChatModelsSettings />}
     </>
   )
 }
@@ -1516,12 +1406,6 @@ function AiMediaPane({
       ? { kind: 'ok', text: t('setAiTestOk') }
       : { kind: 'err', text: r.error || t('setAiTestFail') }
   }
-  const subhead = (block: TestedBlock, title: string) => (
-    <div className="set-pane-subhead" ref={block === focusBlock ? scrollToFocused : undefined}>
-      <h4 className="set-pane-subtitle">{title}</h4>
-      <AiStatusPill status={blockStatus(block)} />
-    </div>
-  )
   const failed = testResults
     ? (Object.keys(testResults) as TestedBlock[]).filter((b) => !testResults[b]?.ok)
     : []
@@ -1544,7 +1428,7 @@ function AiMediaPane({
     options: { id: string; label: string }[],
     onPick: (id: string) => void,
   ) => (
-    <div className="set-field">
+    <SettingsRow className="set-field">
       <div className="set-field-text">
         <label className="set-field-label">{t('setAiProvider')}</label>
       </div>
@@ -1564,7 +1448,7 @@ function AiMediaPane({
         }))}
         onPick={onPick}
       />
-    </div>
+    </SettingsRow>
   )
 
   const modelRow = (
@@ -1574,7 +1458,7 @@ function AiMediaPane({
     value: string,
     onChange: (v: string) => void,
   ) => (
-    <div className="set-field">
+    <SettingsRow className="set-field">
       <div className="set-field-text">
         <label className="set-field-label" htmlFor={id}>
           {t('setAiModelId')}
@@ -1599,7 +1483,7 @@ function AiMediaPane({
           onChange={(e) => onChange(e.target.value)}
         />
       )}
-    </div>
+    </SettingsRow>
   )
 
   const keyRow = (
@@ -1608,7 +1492,7 @@ function AiMediaPane({
     placeholder: string,
     onChange: (v: string) => void,
   ) => (
-    <div className="set-field">
+    <SettingsRow className="set-field">
       <div className="set-field-text">
         <div className="set-field-stack">
           <label className="set-field-label" htmlFor={id}>
@@ -1627,7 +1511,7 @@ function AiMediaPane({
         autoComplete="off"
         onChange={(e) => onChange(e.target.value.trim())}
       />
-    </div>
+    </SettingsRow>
   )
 
   /** a plain text row with an i18n label; used for the decision-endpoint extra fields */
@@ -1638,7 +1522,7 @@ function AiMediaPane({
     placeholder: string,
     onChange: (v: string) => void,
   ) => (
-    <div className="set-field">
+    <SettingsRow className="set-field">
       <div className="set-field-text">
         <div className="set-field-stack">
           <label className="set-field-label" htmlFor={id}>
@@ -1656,7 +1540,7 @@ function AiMediaPane({
         autoComplete="off"
         onChange={(e) => onChange(e.target.value.trim())}
       />
-    </div>
+    </SettingsRow>
   )
 
   const baseUrlRow = (
@@ -1665,7 +1549,7 @@ function AiMediaPane({
     value: string,
     onChange: (v: string) => void,
   ) => (
-    <div className="set-field">
+    <SettingsRow className="set-field">
       <div className="set-field-text">
         <div className="set-field-stack">
           <label className="set-field-label" htmlFor={id}>
@@ -1683,7 +1567,7 @@ function AiMediaPane({
         spellCheck={false}
         onChange={(e) => onChange(e.target.value.trim())}
       />
-    </div>
+    </SettingsRow>
   )
 
   /** one media block: provider → model → key → base URL (key/base URL shared per vendor) */
@@ -1722,41 +1606,47 @@ function AiMediaPane({
     }
     const modelField = cap === 'image' ? 'imageModel' : 'analysisModel'
     return (
-      <section key={cap}>
-        {subhead(cap, title)}
-        {providerRow(title, id, options, pick)}
-        <div className="set-field-desc set-ai-note">
-          {id === 'genspark' ? t('setAiMediaGensparkHint') : meta.description}
-        </div>
-        {id === 'agy' && (
-          <AgyMediaFields
-            idPrefix={`set-ai-${cap}`}
-            modelField={modelField}
-            config={config}
-            seedModels={cap === 'image' ? meta.imageModels : meta.analysisModels}
-            defaultModel={cap === 'image' ? meta.defaultImageModel : meta.defaultAnalysisModel}
-            chatCliPath={settings.providers.agy?.cliPath}
-            update={(patch) => updateMediaConfig(id, patch)}
-          />
-        )}
-        {id !== 'genspark' && id !== 'agy' && (
-          <>
-            {modelRow(
-              `set-ai-${cap}-model`,
-              cap === 'image' ? meta.imageModels : meta.analysisModels,
-              cap === 'image' ? meta.defaultImageModel : meta.defaultAnalysisModel,
-              config[modelField],
-              (m) => updateMediaConfig(id, { [modelField]: m }),
-            )}
-            {keyRow(`set-ai-${cap}-key`, config.apiKey, meta.keyPlaceholder, (v) =>
-              updateMediaConfig(id, { apiKey: v }),
-            )}
-            {baseUrlRow(`set-ai-${cap}-base-url`, meta, config.baseUrl ?? '', (v) =>
-              updateMediaConfig(id, { baseUrl: v }),
-            )}
-          </>
-        )}
-      </section>
+      <div key={cap} ref={cap === focusBlock ? scrollToFocused : undefined}>
+        <SettingsCard
+          title={title}
+          subtitle={settingsCardCopy(lang).mediaProviderHint}
+          icon="media"
+          action={<AiStatusPill status={blockStatus(cap)} />}
+        >
+          {providerRow(title, id, options, pick)}
+          <div className="set-field-desc set-ai-note">
+            {id === 'genspark' ? t('setAiMediaGensparkHint') : meta.description}
+          </div>
+          {id === 'agy' && (
+            <AgyMediaFields
+              idPrefix={`set-ai-${cap}`}
+              modelField={modelField}
+              config={config}
+              seedModels={cap === 'image' ? meta.imageModels : meta.analysisModels}
+              defaultModel={cap === 'image' ? meta.defaultImageModel : meta.defaultAnalysisModel}
+              chatCliPath={settings.providers.agy?.cliPath}
+              update={(patch) => updateMediaConfig(id, patch)}
+            />
+          )}
+          {id !== 'genspark' && id !== 'agy' && (
+            <>
+              {modelRow(
+                `set-ai-${cap}-model`,
+                cap === 'image' ? meta.imageModels : meta.analysisModels,
+                cap === 'image' ? meta.defaultImageModel : meta.defaultAnalysisModel,
+                config[modelField],
+                (m) => updateMediaConfig(id, { [modelField]: m }),
+              )}
+              {keyRow(`set-ai-${cap}-key`, config.apiKey, meta.keyPlaceholder, (v) =>
+                updateMediaConfig(id, { apiKey: v }),
+              )}
+              {baseUrlRow(`set-ai-${cap}-base-url`, meta, config.baseUrl ?? '', (v) =>
+                updateMediaConfig(id, { baseUrl: v }),
+              )}
+            </>
+          )}
+        </SettingsCard>
+      </div>
     )
   }
 
@@ -1779,117 +1669,131 @@ function AiMediaPane({
         </div>
       </div>
       <div className="set-field-desc set-ai-note">{t('setAiSharedKeyHint')}</div>
-      <section>
-        {subhead('search', t('setAiCapSearch'))}
-        {providerRow(t('setAiCapSearch'), search.provider, searchCatalog, (v) =>
-          setSearch({ ...search, provider: v as AiSearchSettings['provider'] }),
-        )}
-        <div className="set-field-desc set-ai-note">
-          {search.provider === 'agy'
-            ? agyString(lang, 'agySearchNote')
-            : search.provider === 'genspark'
-              ? t('setAiSearchGensparkHint')
-              : search.provider === 'parallel'
-                ? t('setAiSearchParallelHint')
-                : search.provider === 'keenable'
-                  ? t('setAiSearchKeenableHint')
-                  : search.provider === 'serply'
-                    ? t('setAiSearchSerplyHint')
-                    : searchMeta?.imageSearch
-                      ? t('setAiSearchSerperHint')
-                      : t('setAiSearchTavilyHint')}
-        </div>
-        {search.provider !== 'genspark' &&
-          search.provider !== 'agy' &&
-          keyRow('set-ai-search-key', searchKey, searchMeta?.keyPlaceholder ?? 'API Key', (v) =>
-            setSearch({
-              ...search,
-              providers: { ...search.providers, [search.provider]: { apiKey: v } },
-            }),
+      <div ref={focusBlock === 'search' ? scrollToFocused : undefined}>
+        <SettingsCard
+          title={t('setAiCapSearch')}
+          subtitle={settingsCardCopy(lang).searchHint}
+          icon="search"
+          action={<AiStatusPill status={blockStatus('search')} />}
+        >
+          {providerRow(t('setAiCapSearch'), search.provider, searchCatalog, (v) =>
+            setSearch({ ...search, provider: v as AiSearchSettings['provider'] }),
           )}
-      </section>
-      {fileSearch && (
-        <section>
-          {subhead('rerank', t('setAiCapFileSearch'))}
-          <div className="set-field">
-            <div className="set-field-text">
-              <div className="set-field-stack">
-                <div className="set-field-label">{t('setSearchRerank')}</div>
-                <div className="set-field-desc">{t('setSearchRerankDesc')}</div>
-              </div>
-            </div>
-            <button
-              className="set-switch"
-              role="switch"
-              aria-checked={fileSearch.rerank}
-              aria-label={t('setSearchRerank')}
-              onClick={() => setFileSearch({ ...fileSearch, rerank: !fileSearch.rerank })}
-            />
+          <div className="set-field-desc set-ai-note">
+            {search.provider === 'agy'
+              ? agyString(lang, 'agySearchNote')
+              : search.provider === 'genspark'
+                ? t('setAiSearchGensparkHint')
+                : search.provider === 'parallel'
+                  ? t('setAiSearchParallelHint')
+                  : search.provider === 'keenable'
+                    ? t('setAiSearchKeenableHint')
+                    : search.provider === 'serply'
+                      ? t('setAiSearchSerplyHint')
+                      : searchMeta?.imageSearch
+                        ? t('setAiSearchSerperHint')
+                        : t('setAiSearchTavilyHint')}
           </div>
-          {fileSearch.rerank && (
-            <>
-              <div className="set-field">
-                <div className="set-field-text">
-                  <label className="set-field-label">{t('setSearchRerankEndpoint')}</label>
+          {search.provider !== 'genspark' &&
+            search.provider !== 'agy' &&
+            keyRow('set-ai-search-key', searchKey, searchMeta?.keyPlaceholder ?? 'API Key', (v) =>
+              setSearch({
+                ...search,
+                providers: { ...search.providers, [search.provider]: { apiKey: v } },
+              }),
+            )}
+        </SettingsCard>
+      </div>
+      {fileSearch && (
+        <div ref={focusBlock === 'rerank' ? scrollToFocused : undefined}>
+          <SettingsCard
+            title={t('setAiCapFileSearch')}
+            subtitle={t('setSearchRerankDesc')}
+            icon="files"
+            action={<AiStatusPill status={blockStatus('rerank')} />}
+          >
+            <SettingsRow className="set-field">
+              <div className="set-field-text">
+                <div className="set-field-stack">
+                  <div className="set-field-label">{t('setSearchRerank')}</div>
+                  <div className="set-field-desc">{t('setSearchRerankDesc')}</div>
                 </div>
-                <Dropdown
-                  className="set-dd"
-                  value={fileSearch.endpoint}
-                  ariaLabel={t('setSearchRerankEndpoint')}
-                  options={DECISION_ENDPOINTS}
-                  onPick={(v) => setFileSearch({ ...fileSearch, endpoint: v as DecisionEndpoint })}
-                />
               </div>
-              {keyRow(
-                'set-search-jev-key',
-                fileSearch.keys[fileSearch.endpoint],
-                fileSearch.endpoint === 'openrouter' ? 'sk-or-…' : 'API Key',
-                (v) =>
-                  setFileSearch({
-                    ...fileSearch,
-                    keys: { ...fileSearch.keys, [fileSearch.endpoint]: v },
-                  }),
-              )}
-              {fileSearch.endpoint === 'custom' && (
-                <>
-                  {textRow(
-                    'set-search-jev-url',
-                    'setSearchRerankCustomUrl',
-                    fileSearch.customBaseUrl,
-                    'http://127.0.0.1:8009/v1/systemone',
-                    (v) => setFileSearch({ ...fileSearch, customBaseUrl: v }),
-                  )}
-                  {textRow(
-                    'set-search-jev-model',
-                    'setSearchRerankCustomModel',
-                    fileSearch.customModel,
-                    'kev-latest',
-                    (v) => setFileSearch({ ...fileSearch, customModel: v }),
-                  )}
-                </>
-              )}
-              {isCloudflareEndpoint(fileSearch.endpoint) &&
-                textRow(
-                  'set-search-jev-account',
-                  'setSearchRerankAccount',
-                  fileSearch.cloudflareAccountId,
-                  '',
-                  (v) => setFileSearch({ ...fileSearch, cloudflareAccountId: v }),
+              <button
+                className="set-switch"
+                role="switch"
+                aria-checked={fileSearch.rerank}
+                aria-label={t('setSearchRerank')}
+                onClick={() => setFileSearch({ ...fileSearch, rerank: !fileSearch.rerank })}
+              />
+            </SettingsRow>
+            {fileSearch.rerank && (
+              <>
+                <SettingsRow className="set-field">
+                  <div className="set-field-text">
+                    <label className="set-field-label">{t('setSearchRerankEndpoint')}</label>
+                  </div>
+                  <Dropdown
+                    className="set-dd"
+                    value={fileSearch.endpoint}
+                    ariaLabel={t('setSearchRerankEndpoint')}
+                    options={DECISION_ENDPOINTS}
+                    onPick={(v) =>
+                      setFileSearch({ ...fileSearch, endpoint: v as DecisionEndpoint })
+                    }
+                  />
+                </SettingsRow>
+                {keyRow(
+                  'set-search-jev-key',
+                  fileSearch.keys[fileSearch.endpoint],
+                  fileSearch.endpoint === 'openrouter' ? 'sk-or-…' : 'API Key',
+                  (v) =>
+                    setFileSearch({
+                      ...fileSearch,
+                      keys: { ...fileSearch.keys, [fileSearch.endpoint]: v },
+                    }),
                 )}
-              {fileSearch.endpoint === 'cloudflare' && (
-                <>
-                  {textRow(
-                    'set-search-jev-cf-model',
-                    'setSearchRerankCustomModel',
-                    fileSearch.cloudflareModel,
-                    '@cf/cloudflare/clef',
-                    (v) => setFileSearch({ ...fileSearch, cloudflareModel: v }),
+                {fileSearch.endpoint === 'custom' && (
+                  <>
+                    {textRow(
+                      'set-search-jev-url',
+                      'setSearchRerankCustomUrl',
+                      fileSearch.customBaseUrl,
+                      'http://127.0.0.1:8009/v1/systemone',
+                      (v) => setFileSearch({ ...fileSearch, customBaseUrl: v }),
+                    )}
+                    {textRow(
+                      'set-search-jev-model',
+                      'setSearchRerankCustomModel',
+                      fileSearch.customModel,
+                      'kev-latest',
+                      (v) => setFileSearch({ ...fileSearch, customModel: v }),
+                    )}
+                  </>
+                )}
+                {isCloudflareEndpoint(fileSearch.endpoint) &&
+                  textRow(
+                    'set-search-jev-account',
+                    'setSearchRerankAccount',
+                    fileSearch.cloudflareAccountId,
+                    '',
+                    (v) => setFileSearch({ ...fileSearch, cloudflareAccountId: v }),
                   )}
-                </>
-              )}
-            </>
-          )}
-        </section>
+                {fileSearch.endpoint === 'cloudflare' && (
+                  <>
+                    {textRow(
+                      'set-search-jev-cf-model',
+                      'setSearchRerankCustomModel',
+                      fileSearch.cloudflareModel,
+                      '@cf/cloudflare/clef',
+                      (v) => setFileSearch({ ...fileSearch, cloudflareModel: v }),
+                    )}
+                  </>
+                )}
+              </>
+            )}
+          </SettingsCard>
+        </div>
       )}
       {mediaBlock('image')}
       {mediaBlock('analysis')}
@@ -2239,10 +2143,10 @@ export function SettingsModal({
                 <h3 className="set-pane-title">{t('setSecGeneral')}</h3>
                 <SetGroup
                   title={groupText(lang, 'appearance')}
-                  hint={groupHint(lang, 'appearance')}
+                  subtitle={groupHint(lang, 'appearance')}
                   icon="appearance"
                 >
-                  <div className="set-field">
+                  <SettingsRow className="set-field">
                     <div className="set-field-text">
                       <label className="set-field-label">{t('language')}</label>
                     </div>
@@ -2253,8 +2157,8 @@ export function SettingsModal({
                       options={LANG_OPTIONS.map((opt) => ({ value: opt.value, label: opt.label }))}
                       onPick={(v) => setLang(v as typeof lang)}
                     />
-                  </div>
-                  <div className="set-field">
+                  </SettingsRow>
+                  <SettingsRow className="set-field">
                     <div className="set-field-text">
                       <div className="set-field-stack">
                         <label className="set-field-label" htmlFor="set-author-name">
@@ -2280,8 +2184,8 @@ export function SettingsModal({
                         if (e.key === 'Enter') e.currentTarget.blur()
                       }}
                     />
-                  </div>
-                  <div className="set-field">
+                  </SettingsRow>
+                  <SettingsRow className="set-field">
                     <div className="set-field-text">
                       <label className="set-field-label">{t('theme')}</label>
                     </div>
@@ -2295,8 +2199,8 @@ export function SettingsModal({
                       }))}
                       onPick={(v) => applyTheme(v as UiTheme)}
                     />
-                  </div>
-                  <div className="set-field">
+                  </SettingsRow>
+                  <SettingsRow className="set-field">
                     <div className="set-field-text">
                       <label className="set-field-label">{t('documentTheme')}</label>
                     </div>
@@ -2310,8 +2214,8 @@ export function SettingsModal({
                       }))}
                       onPick={(v) => applyDocumentTheme(v as DocTheme)}
                     />
-                  </div>
-                  <div className="set-field">
+                  </SettingsRow>
+                  <SettingsRow className="set-field">
                     <div className="set-field-text">
                       <label className="set-field-label">{t('setAiPanelSide')}</label>
                     </div>
@@ -2325,8 +2229,8 @@ export function SettingsModal({
                       ]}
                       onPick={(side) => updateAiPrefs({ side: side as AiPanelSide })}
                     />
-                  </div>
-                  <div className="set-field">
+                  </SettingsRow>
+                  <SettingsRow className="set-field">
                     <div className="set-field-text">
                       <label className="set-field-label">{t('setAiFontSize')}</label>
                     </div>
@@ -2355,16 +2259,16 @@ export function SettingsModal({
                         )
                       }}
                     />
-                  </div>
+                  </SettingsRow>
                 </SetGroup>
                 <SetGroup
                   title={aiInstructionsTitle(lang).title}
-                  hint={aiInstructionsTitle(lang).hint}
+                  subtitle={aiInstructionsTitle(lang).hint}
                 >
                   <AiInstructionsSettings lang={lang} />
                 </SetGroup>
-                <SetGroup title={groupText(lang, 'ai')} hint={groupHint(lang, 'ai')} icon="ai">
-                  <div className="set-field">
+                <SetGroup title={groupText(lang, 'ai')} subtitle={groupHint(lang, 'ai')} icon="ai">
+                  <SettingsRow className="set-field">
                     <div className="set-field-text">
                       <div className="set-field-stack">
                         <div className="set-field-label">{t('setAiSpellcheck')}</div>
@@ -2378,8 +2282,8 @@ export function SettingsModal({
                       aria-label={t('setAiSpellcheck')}
                       onClick={() => updateAiPrefs({ spellcheck: !aiPrefs.spellcheck })}
                     />
-                  </div>
-                  <div className="set-field">
+                  </SettingsRow>
+                  <SettingsRow className="set-field">
                     <div className="set-field-text">
                       <div className="set-field-stack">
                         <div className="set-field-label">{t('setAiShowSidebar')}</div>
@@ -2393,8 +2297,8 @@ export function SettingsModal({
                       aria-label={t('setAiShowSidebar')}
                       onClick={() => updateAiPrefs({ showAiSidebar: !aiPrefs.showAiSidebar })}
                     />
-                  </div>
-                  <div className="set-field">
+                  </SettingsRow>
+                  <SettingsRow className="set-field">
                     <div className="set-field-text">
                       <div className="set-field-stack">
                         <div className="set-field-label">{t('setAiOpenInNewDocs')}</div>
@@ -2408,15 +2312,15 @@ export function SettingsModal({
                       aria-label={t('setAiOpenInNewDocs')}
                       onClick={() => updateAiPrefs({ openInNewDocs: !aiPrefs.openInNewDocs })}
                     />
-                  </div>
+                  </SettingsRow>
                 </SetGroup>
                 <SetGroup
                   title={groupText(lang, 'files')}
-                  hint={groupHint(lang, 'files')}
+                  subtitle={groupHint(lang, 'files')}
                   icon="files"
                 >
                   {defaultApp && defaultApp.state !== 'unsupported' && (
-                    <div className="set-field">
+                    <SettingsRow className="set-field">
                       <div className="set-field-text">
                         <div className="set-field-stack">
                           <div className="set-field-label">{t('setDefaultApp')}</div>
@@ -2432,7 +2336,7 @@ export function SettingsModal({
                           ? t('setDefaultAppOpenSettings')
                           : t('setDefaultAppSet')}
                       </button>
-                    </div>
+                    </SettingsRow>
                   )}
                   <Field
                     label={t('saveLocation')}
@@ -2445,7 +2349,7 @@ export function SettingsModal({
                     }
                   />
                   <DefaultFolderToggle />
-                  <div className="set-field">
+                  <SettingsRow className="set-field">
                     <div className="set-field-text">
                       <div className="set-field-stack">
                         <div className="set-field-label">{t('setAutoSave')}</div>
@@ -2463,8 +2367,8 @@ export function SettingsModal({
                         void window.aiOffice.setAutoSaveDefault?.(next).catch(() => {})
                       }}
                     />
-                  </div>
-                  <div className="set-field">
+                  </SettingsRow>
+                  <SettingsRow className="set-field">
                     <div className="set-field-text">
                       <div className="set-field-stack">
                         <div className="set-field-label">{t('setTabSleep')}</div>
@@ -2482,15 +2386,15 @@ export function SettingsModal({
                         void window.aiOffice.setTabSleepEnabled?.(next).catch(() => {})
                       }}
                     />
-                  </div>
+                  </SettingsRow>
                 </SetGroup>
                 <SetGroup
                   title={groupText(lang, 'legacy')}
                   icon="legacy"
-                  hint={groupText(lang, 'legacyHint')}
+                  subtitle={groupText(lang, 'legacyHint')}
                   fold
                 >
-                  <div className="set-field">
+                  <SettingsRow className="set-field">
                     <div className="set-field-text">
                       <div className="set-field-stack">
                         <div className="set-field-label">Legacy Office files (.doc, .ppt)</div>
@@ -2516,8 +2420,8 @@ export function SettingsModal({
                         updateLegacyDoc({ mode: mode as LegacyDocSettings['mode'] })
                       }
                     />
-                  </div>
-                  <div className="set-field">
+                  </SettingsRow>
+                  <SettingsRow className="set-field">
                     <div className="set-field-text">
                       <div className="set-field-stack">
                         <div className="set-field-label">
@@ -2542,8 +2446,8 @@ export function SettingsModal({
                       ]}
                       onPick={(value) => updateLegacyDoc({ convertOnOpen: value === 'on' })}
                     />
-                  </div>
-                  <div className="set-field">
+                  </SettingsRow>
+                  <SettingsRow className="set-field">
                     <div className="set-field-text">
                       <div className="set-field-stack">
                         <div className="set-field-label">
@@ -2578,9 +2482,9 @@ export function SettingsModal({
                         })
                       }
                     />
-                  </div>
+                  </SettingsRow>
                   {legacyDoc.mode !== 'text' && (
-                    <div className="set-field">
+                    <SettingsRow className="set-field">
                       <div className="set-field-text">
                         <div className="set-field-stack">
                           <label className="set-field-label" htmlFor="set-legacy-doc-endpoint">
@@ -2603,9 +2507,9 @@ export function SettingsModal({
                         }
                         onBlur={() => updateLegacyDoc({ endpoint: legacyDoc.endpoint.trim() })}
                       />
-                    </div>
+                    </SettingsRow>
                   )}
-                  <div className="set-field set-legacy-recovery">
+                  <SettingsRow className="set-field set-legacy-recovery">
                     <div className="set-field-stack">
                       <div className="set-field-label">
                         {lang === 'vi' ? 'Khôi phục tệp .doc gốc' : 'Recover original .doc files'}
@@ -2656,15 +2560,15 @@ export function SettingsModal({
                         </div>
                       )}
                     </div>
-                  </div>
+                  </SettingsRow>
                 </SetGroup>
                 <SetGroup
                   title={groupText(lang, 'opening')}
                   icon="opening"
-                  hint={groupText(lang, 'openingHint')}
+                  subtitle={groupText(lang, 'openingHint')}
                   fold
                 >
-                  <div className="set-field" style={{ padding: '8px 0' }}>
+                  <SettingsRow className="set-field" style={{ padding: '8px 0' }}>
                     <div className="set-field-text">
                       <div className="set-field-stack">
                         <div className="set-field-label">
@@ -2686,14 +2590,14 @@ export function SettingsModal({
                     >
                       {lang === 'vi' ? 'Mở cài đặt' : 'Open settings'}
                     </button>
-                  </div>
+                  </SettingsRow>
                 </SetGroup>
                 <SetGroup
                   title={groupText(lang, 'privacy')}
-                  hint={groupHint(lang, 'privacy')}
+                  subtitle={groupHint(lang, 'privacy')}
                   icon="privacy"
                 >
-                  <div className="set-field">
+                  <SettingsRow className="set-field">
                     <div className="set-field-text">
                       <div className="set-field-stack">
                         <div className="set-field-label">{t('setAnalytics')}</div>
@@ -2718,7 +2622,7 @@ export function SettingsModal({
                           .finally(() => setAnalyticsSaving(false))
                       }}
                     />
-                  </div>
+                  </SettingsRow>
                   <ClipboardSettingsToggle />
                   <ClipboardHistorySettings />
                 </SetGroup>
@@ -2733,8 +2637,9 @@ export function SettingsModal({
               <>
                 <h3 className="set-pane-title">{t('setSecAbout')}</h3>
                 <SetGroup
-                  title={lang === 'vi' ? 'Ứng dụng & cập nhật' : 'Application & updates'}
-                  brandIcon
+                  title={settingsCardCopy(lang).aboutTitle}
+                  subtitle={settingsCardCopy(lang).aboutHint}
+                  icon={<img src={appIcon} alt="" className="set-group-brand-icon" />}
                 >
                   <Field
                     label={t('versionLabel')}
@@ -2768,7 +2673,7 @@ export function SettingsModal({
                     }
                   />
                   {updateState && (
-                    <div className="set-field">
+                    <SettingsRow className="set-field">
                       <div className="set-field-text">
                         <label className="set-field-label">{t('setUpdateAvailableLabel')}</label>
                       </div>
@@ -2785,9 +2690,9 @@ export function SettingsModal({
                             ? t('setUpdateRestart')
                             : t('setUpdateTo', { version: updateState.version })}
                       </button>
-                    </div>
+                    </SettingsRow>
                   )}
-                  <div className="set-field">
+                  <SettingsRow className="set-field">
                     <label className="set-field-label">{t('updateSourceLabel')}</label>
                     <Dropdown
                       className="set-dd"
@@ -2805,8 +2710,8 @@ export function SettingsModal({
                         })
                       }}
                     />
-                  </div>
-                  <div className="set-field">
+                  </SettingsRow>
+                  <SettingsRow className="set-field">
                     <input
                       className="set-input"
                       aria-label={t('updateSourceLabel')}
@@ -2854,11 +2759,11 @@ export function SettingsModal({
                     >
                       {t('setAiSave')}
                     </button>
-                  </div>
+                  </SettingsRow>
                   <p className="set-field-desc" role="status">
                     {updateNotice || t('updateSourceHint')}
                   </p>
-                  <div className="set-field">
+                  <SettingsRow className="set-field">
                     <div className="set-field-text">
                       <label className="set-field-label">{t('updateChannel')}</label>
                     </div>
@@ -2876,7 +2781,7 @@ export function SettingsModal({
                         void window.aiOffice.setUpdateChannel(next)
                       }}
                     />
-                  </div>
+                  </SettingsRow>
                   <Field
                     label={t('setGithub')}
                     value={
