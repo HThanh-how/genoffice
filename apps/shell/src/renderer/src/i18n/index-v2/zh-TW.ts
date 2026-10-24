@@ -105,4 +105,7 @@ export const zhTW = {
   pauseFolder: '暫停此資料夾',
   resumeFolder: '繼續此資料夾',
   pauseHint: '暫停此資料夾的掃描、監看及排隊讀取。已開始的工作可能仍會完成。',
+  sectionHappened: '發生了什麼',
+  sectionActions: '操作',
+  sectionFacts: '詳細資料',
 } satisfies Record<keyof typeof zh, string>

@@ -106,4 +106,7 @@ export const vi = {
   resumeFolder: 'Tiếp tục thư mục này',
   pauseHint:
     'Tạm dừng quét, theo dõi và đọc các tệp đang chờ trong thư mục này. Công việc đã bắt đầu có thể vẫn hoàn tất.',
+  sectionHappened: 'Điều đã xảy ra',
+  sectionActions: 'Thao tác',
+  sectionFacts: 'Chi tiết',
 } satisfies Record<keyof typeof zh, string>

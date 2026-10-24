@@ -104,4 +104,7 @@ export const zh = {
   pauseFolder: '暂停此文件夹',
   resumeFolder: '恢复此文件夹',
   pauseHint: '暂停此文件夹的扫描、监视和排队读取。已开始的工作可能会完成。',
+  sectionHappened: '发生了什么',
+  sectionActions: '操作',
+  sectionFacts: '详情',
 } as const

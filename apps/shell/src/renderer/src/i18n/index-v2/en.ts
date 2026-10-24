@@ -107,4 +107,7 @@ export const en = {
   resumeFolder: 'Resume this folder',
   pauseHint:
     'Pauses scanning, watching and queued reading for this folder. Work already in progress may finish.',
+  sectionHappened: 'What happened',
+  sectionActions: 'Actions',
+  sectionFacts: 'Details',
 } satisfies Record<keyof typeof zh, string>
