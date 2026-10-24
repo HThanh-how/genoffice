@@ -10,7 +10,11 @@ import {
 } from 'react'
 import { createPortal } from 'react-dom'
 import type { HomeApi } from '../../../shared/home-api'
-import type { IndexFileDetail, IndexingNow, FileImportanceOverride } from '../../../shared/fork/document-index-api'
+import type {
+  IndexFileDetail,
+  IndexingNow,
+  FileImportanceOverride,
+} from '../../../shared/fork/document-index-api'
 import type { IndexIssueReason } from '../../../main/document-memory/issues'
 import { useI18n } from '../locale'
 import { activityCopy, fill } from '../indexing-activity-copy'
@@ -89,6 +93,8 @@ const clock = (since: number): string => {
 
 /** What a row needs to know about a file, whichever list it comes from. */
 export interface FileItem {
+  sizeBytes?: number
+  mtimeMs?: number
   id: number
   path: string
   name: string
@@ -375,6 +381,7 @@ export function useFileActions(
   reasonTitle: (reason: IndexIssueReason) => string,
   onChanged: () => void,
   afterChange: (item: FileItem) => Promise<void> | void,
+  snapshot?: unknown,
 ) {
   const { lang, dateLocale } = useI18n()
   const w = fileWords(lang)
@@ -388,6 +395,10 @@ export function useFileActions(
   const [feedback, setFeedback] = useState<Record<number, { text: string; at: number }>>({})
   const feedbackTimers = useRef(new Map<number, ReturnType<typeof setTimeout>>())
   const detailRequests = useRef(new Map<number, number>())
+  const lastDetailSnapshot = useRef<{ open: number | null; snapshot: unknown }>({
+    open: null,
+    snapshot,
+  })
   const timer = useRef<ReturnType<typeof setTimeout> | null>(null)
   useEffect(() => () => void (timer.current && clearTimeout(timer.current)), [])
 
@@ -448,7 +459,13 @@ export function useFileActions(
     }
   }
   useEffect(() => {
-    if (open === null) return
+    const changedOpen = lastDetailSnapshot.current.open !== open
+    lastDetailSnapshot.current = { open, snapshot }
+    if (open === null || open <= 0) return
+    if (snapshot !== undefined) {
+      if (!changedOpen) void detailOf(open, true)
+      return
+    }
     let alive = true
     let timer: ReturnType<typeof setTimeout>
     const refresh = async () => {
@@ -479,11 +496,14 @@ export function useFileActions(
       alive = false
       clearTimeout(timer)
     }
-  }, [api, open])
+    // detailOf owns request sequencing; its changing closure must not restart a read.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [api, open, snapshot])
   const toggle = (item: FileItem) => {
     const next = open === item.id ? null : item.id
     setOpen(next)
     if (open !== null && open !== next) {
+      detailRequests.current.set(open, (detailRequests.current.get(open) ?? 0) + 1)
       setDetails((current) => {
         const { [open]: _closed, ...rest } = current
         return rest
@@ -494,7 +514,7 @@ export function useFileActions(
         return nextFailures
       })
     }
-    if (next !== null) void detailOf(next)
+    if (next !== null && next > 0) void detailOf(next)
   }
   const withBusy = async (id: number, work: () => Promise<void>) => {
     if (busyIds.current.has(id)) return
@@ -524,7 +544,7 @@ export function useFileActions(
   }
   const copyLog = (item: FileItem) =>
     withBusy(item.id, async () => {
-      const detail = await detailOf(item.id)
+      const detail = item.id > 0 ? await detailOf(item.id) : null
       const text = detail
         ? buildFileLog(detail, lang, dateLocale, item.reason ? reasonTitle(item.reason) : undefined)
         : `${item.path}\n${item.error ?? ''}`
@@ -570,11 +590,19 @@ export function useFileActions(
     })
   const openFile = (item: FileItem) =>
     withBusy(item.id, async () => {
+      if (item.id <= 0) {
+        if (!(await api.openPath(item.path))) say(w.couldNotOpen)
+        return
+      }
       const result = await runIndexMutation(() => api.documentMemoryOpen(item.id))
       if (!result?.ok) say(w.couldNotOpen)
     })
   const reveal = (item: FileItem) =>
     withBusy(item.id, async () => {
+      if (item.id <= 0) {
+        await api.openFolderInFileManager(folderOf(item.path))
+        return
+      }
       await runIndexMutation(() => api.revealDocumentIndexFile(item.id))
     })
   const copyPath = (item: FileItem) =>
@@ -652,6 +680,13 @@ export function useFileActions(
     })
   return {
     open,
+    close: () => {
+      if (open !== null)
+        detailRequests.current.set(open, (detailRequests.current.get(open) ?? 0) + 1)
+      setOpen(null)
+      setDetails({})
+      setDetailFailures(new Set())
+    },
     toggle,
     details,
     detailFailures,
@@ -1374,24 +1409,32 @@ export function FileRow({
                       className="idx-select ixp-importance-select"
                       value={detail.importance?.override ?? 'auto'}
                       disabled={actions.busy.has(item.id)}
-                      onChange={(e) => void actions.setImportance(item, e.target.value as FileImportanceOverride)}
+                      onChange={(e) =>
+                        void actions.setImportance(item, e.target.value as FileImportanceOverride)
+                      }
                     >
                       <option value="auto">{w.importanceAuto}</option>
                       <option value="important">{w.importanceImportant}</option>
                       <option value="low">{w.importanceLow}</option>
                     </select>
-                    {detail.importance?.suggestion && detail.importance.suggestion !== 'unknown' && (
-                      <div className="ixp-importance-suggestion" style={{ fontSize: '0.85em', opacity: 0.8, marginTop: '2px' }}>
-                        <span>
-                          {detail.importance.suggestion === 'important' ? w.importanceImportant : w.importanceAuto}
-                        </span>
-                        {detail.importance.reason && (
-                          <span style={{ display: 'block', fontStyle: 'italic' }}>
-                            {detail.importance.reason}
+                    {detail.importance?.suggestion &&
+                      detail.importance.suggestion !== 'unknown' && (
+                        <div
+                          className="ixp-importance-suggestion"
+                          style={{ fontSize: '0.85em', opacity: 0.8, marginTop: '2px' }}
+                        >
+                          <span>
+                            {detail.importance.suggestion === 'important'
+                              ? w.importanceImportant
+                              : w.importanceAuto}
                           </span>
-                        )}
-                      </div>
-                    )}
+                          {detail.importance.reason && (
+                            <span style={{ display: 'block', fontStyle: 'italic' }}>
+                              {detail.importance.reason}
+                            </span>
+                          )}
+                        </div>
+                      )}
                   </dd>
                 </div>
               </dl>

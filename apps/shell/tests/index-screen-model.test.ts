@@ -8,6 +8,9 @@ import {
   shortPath,
   toFolderRows,
   windowRange,
+  reuseIndexFolders,
+  parseIndexView,
+  indexFileActivity,
   type HeadlineInput,
 } from '../src/renderer/src/fork/index-screen-model'
 import { withoutModel } from '../src/renderer/src/fork/index-issue-groups'
@@ -97,6 +100,42 @@ describe('deriveHeadline', () => {
 })
 
 describe('folder rows', () => {
+  it('keeps old saved view choices and safely discards malformed preferences', () => {
+    expect(parseIndexView('{"sort":"name","grouping":"folder","descending":true}')).toEqual({
+      sort: 'name',
+      grouping: 'folder',
+      descending: true,
+    })
+    expect(parseIndexView('not json').sort).toBe('queue')
+    expect(parseIndexView('{"sort":"unknown","grouping":"folder"}').grouping).toBe('reason')
+  })
+  it('derives live row labels from the existing snapshot', () => {
+    const words = {
+      reading: 'Reading',
+      embedding: 'Embedding',
+      queuePosition: 'Queue {n}',
+      paused: 'Paused',
+    }
+    const now = {
+      extracting: [],
+      embedding: {},
+      positions: { '/seed/a': 3 },
+      pages: {},
+      queued: 3,
+      paused: false,
+    }
+    expect(indexFileActivity('/seed/a', now, words)).toBe('Queue 3')
+    expect(indexFileActivity('/seed/a', { ...now, paused: true }, words)).toBe('Paused')
+    expect(indexFileActivity('/seed/b', now, words)).toBeUndefined()
+  })
+  it('retains unchanged folder identities across snapshot refreshes and replaces only changed roots', () => {
+    const old = [folder('/seed/a'), folder('/seed/b')]
+    expect(reuseIndexFolders(old, structuredClone(old))).toBe(old)
+    const next = reuseIndexFolders(old, [structuredClone(old[0]!), { ...old[1]!, paused: true }])
+    expect(next[0]).toBe(old[0])
+    expect(next[1]).not.toBe(old[1])
+    expect(toFolderRows(next).find((row) => row.root === '/seed/b')?.state).toBe('paused')
+  })
   it('derives one state per folder, offline first', () => {
     const rows = toFolderRows([
       folder('D:\\a', { unavailable: true }),

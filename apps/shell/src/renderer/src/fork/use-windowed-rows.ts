@@ -13,7 +13,7 @@ export function useWindowedRows(
   scrollerSelector: string,
 ) {
   const windowed = count > WINDOW_FROM
-  const [range, setRange] = useState({ start: 0, end: WINDOW_FROM })
+  const [range, setRange] = useState({ start: 0, end: 20 })
   const frame = useRef(0)
   useEffect(() => {
     const list = listRef.current

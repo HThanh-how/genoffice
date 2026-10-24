@@ -1,5 +1,6 @@
 import { DatabaseSync, type StatementSync } from 'node:sqlite'
 import { resolve } from 'node:path'
+import { releasedDocumentSql } from './storage/repositories/progress-repository'
 import type { IndexFileDetail, IndexedFileHit } from '../../shared/fork/document-index-api'
 import {
   groupIssueCounts,
@@ -332,6 +333,7 @@ export class IndexIssueReader {
     const db = this.connection()
     const stmt = (this.detailStmt ??= db.prepare(
       `SELECT id, path, name, status, error, size_bytes, mtime_ms, updated_at, embedding_model,
+        ${releasedDocumentSql(db, 'documents')} AS released,
         truncated, chunk_total, chunk_done,
         importance_override, importance_suggestion, importance_reason, importance_updated_at
        FROM documents WHERE id = ?`,
@@ -342,6 +344,7 @@ export class IndexIssueReader {
           path: string
           name: string
           status: string
+          released: number
           error: string | null
           size_bytes: number | null
           mtime_ms: number | null
@@ -372,6 +375,10 @@ export class IndexIssueReader {
       path: row.path,
       name: row.name,
       status: row.status,
+      indexStatus: row.released ? 'released' : row.status === 'text-only' ? 'pending' : row.status,
+      ...(!row.released && ['pending', 'text-only', 'error', 'empty'].includes(row.status)
+        ? { reason: issueReason(row.error, row.status === 'text-only' ? 'pending' : row.status) }
+        : {}),
       ...(row.error ? { error: row.error } : {}),
       ...(row.size_bytes === null ? {} : { sizeBytes: row.size_bytes }),
       ...(row.mtime_ms === null ? {} : { mtimeMs: row.mtime_ms }),
@@ -412,6 +419,22 @@ export class IndexIssueReader {
           ocrChars: ocr.chars,
           ...(ocr.model ? { ocrModel: ocr.model } : {}),
         }
+    }
+    try {
+      const failure = db
+        .prepare('SELECT attempts, updated_at FROM ocr_local_failures WHERE path = ?')
+        .get(row.path) as { attempts: number; updated_at: number } | undefined
+      if (failure) {
+        detail.localOcrAttempts = failure.attempts
+        detail.localOcrAttemptAt = failure.updated_at * 1000
+      }
+      detail.ocrTiers = (
+        db
+          .prepare("SELECT DISTINCT coalesce(tier, 'cloud') AS tier FROM ocr_pages WHERE path = ?")
+          .all(row.path) as Array<{ tier: string }>
+      ).map((r) => r.tier)
+    } catch {
+      // Older sidecars have no local attempt ledger. Absence is not zero attempts.
     }
     return detail
   }

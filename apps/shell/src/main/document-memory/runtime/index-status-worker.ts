@@ -9,6 +9,7 @@ import { DatabaseSync } from 'node:sqlite'
 import { ProgressRepository } from '../storage/repositories/progress-repository'
 import { IndexIssueReader } from '../issue-reader'
 import type { StatusRequest } from './index-status-types'
+import { readIndexBrowser } from '../index-browser-reader'
 
 let db: DatabaseSync | null = null
 let progress: ProgressRepository | null = null
@@ -28,6 +29,12 @@ function open(): { progress: ProgressRepository; issues: IndexIssueReader; db: D
 function handle(request: StatusRequest): unknown {
   const reader = open()
   switch (request.op) {
+    case 'issueIds':
+      return reader.issues.ids(request.root, request.reason)
+    case 'browse':
+      return readIndexBrowser(reader.db, request.query)
+    case 'detail':
+      return reader.issues.detail(request.id)
     case 'stats':
       return reader.progress.stats(request.space)
     case 'folder':

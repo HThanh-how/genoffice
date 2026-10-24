@@ -1,4 +1,6 @@
 import type { IndexedFolder } from '../../../shared/fork/document-index-api'
+import type { IndexingNow } from '../../../shared/fork/document-index-api'
+import { INDEX_BROWSER_SORTS, type IndexBrowserSort } from '../../../shared/fork/index-browser'
 import type { EtaEstimate } from '../indexing-activity-model'
 import { folderChips, folderDone } from './index-folder-status'
 import type { IndexStatus, PauseWhy } from './index-status'
@@ -61,7 +63,7 @@ export function deriveHeadline(input: HeadlineInput): Headline {
 
 // ---- folders ----------------------------------------------------------------------------------
 
-export type FolderRowState = 'ready' | 'indexing' | 'scanning' | 'stopped' | 'offline'
+export type FolderRowState = 'ready' | 'indexing' | 'scanning' | 'stopped' | 'offline' | 'paused'
 
 export interface FolderRow {
   root: string
@@ -106,6 +108,7 @@ export function foldText(text: string): string {
 }
 
 function stateOf(folder: IndexedFolder): FolderRowState {
+  if (folder.paused && !folder.unavailable) return 'paused'
   const chip = folderChips(folder)[0]
   switch (chip) {
     case 'offline':
@@ -160,6 +163,63 @@ export const FILTER_FROM = 8
 
 /** Rows above this count are drawn through a window; short lists are drawn whole. */
 export const WINDOW_FROM = 60
+
+export function parseIndexView(raw: string | null): {
+  sort: IndexBrowserSort
+  grouping: 'reason' | 'folder' | 'type' | 'none'
+  descending: boolean
+} {
+  const fallback = { sort: 'queue' as const, grouping: 'reason' as const, descending: false }
+  try {
+    const value = JSON.parse(raw ?? 'null')
+    return value &&
+      INDEX_BROWSER_SORTS.includes(value.sort) &&
+      ['reason', 'folder', 'type', 'none'].includes(value.grouping)
+      ? { sort: value.sort, grouping: value.grouping, descending: value.descending === true }
+      : fallback
+  } catch {
+    return fallback
+  }
+}
+
+/** Live labels use the snapshot already on screen; file rows need no clocks or extra requests. */
+export function indexFileActivity(
+  path: string,
+  now: IndexingNow | null,
+  words: { reading: string; embedding: string; queuePosition: string; paused: string },
+): string | undefined {
+  if (!now) return undefined
+  const page = now.pages[path]
+  const vectors = now.embedding[path]
+  const label = now.extracting.some((file) => file.path === path)
+    ? words.reading
+    : now.activeEmbeddingPath === path
+      ? words.embedding
+      : now.positions[path]
+        ? now.paused
+          ? words.paused
+          : words.queuePosition.replace('{n}', String(now.positions[path]))
+        : undefined
+  const progress = page ?? vectors
+  return label && progress ? `${label} · ${progress.done}/${progress.total}` : label
+}
+
+/** Snapshot reads often return identical roots; preserve identities so memoized rows stay asleep. */
+export function reuseIndexFolders(
+  previous: IndexedFolder[] | null,
+  next: IndexedFolder[],
+): IndexedFolder[] {
+  if (!previous) return next
+  const byRoot = new Map(previous.map((folder) => [folder.root, folder]))
+  const shared = next.map((folder) => {
+    const old = byRoot.get(folder.root)
+    return old && JSON.stringify(old) === JSON.stringify(folder) ? old : folder
+  })
+  return shared.length === previous.length &&
+    shared.every((folder, index) => folder === previous[index])
+    ? previous
+    : shared
+}
 
 export interface WindowInput {
   /** how far the top of the list has scrolled above the top of the viewport (negative: not yet) */

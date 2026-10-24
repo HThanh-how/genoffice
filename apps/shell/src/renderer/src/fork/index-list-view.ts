@@ -31,6 +31,25 @@ export function sourceOffline(
   return matches[0]?.unavailable === true
 }
 
+/** Build once per source snapshot instead of normalizing every root for every file. */
+export function createIndexSourceLookup(roots: readonly { root: string; unavailable: boolean }[]) {
+  const key = (value: string) => {
+    const path = value.replace(/\\/g, '/').replace(/\/+$/, '')
+    return /^[a-z]:|^\/\//i.test(path) ? path.toLowerCase() : path
+  }
+  const states = new Map(roots.map((root) => [key(root.root), root.unavailable]))
+  return (path: string): boolean => {
+    if (!states.size) return false
+    let parent = key(path)
+    for (;;) {
+      if (states.has(parent)) return states.get(parent)!
+      const slash = parent.lastIndexOf('/')
+      if (slash < 0) return false
+      parent = parent.slice(0, slash)
+    }
+  }
+}
+
 const activityRank = (item: ViewFile, now: IndexingNow | null): number => {
   if (now?.extracting.some(({ path }) => path === item.path)) return 0
   if (now?.activeEmbeddingPath === item.path) return 1

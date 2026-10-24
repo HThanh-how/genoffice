@@ -13,6 +13,7 @@ export interface DocumentChunkProgress {
 }
 
 export interface FolderChunkProgress {
+  sizeBytes?: number
   totalFiles: number
   readyFiles: number
   /**
@@ -65,7 +66,11 @@ export function releasedDocumentSql(db: DatabaseSync, alias = 'd'): string {
     let strict: boolean
     try {
       const cols = new Set(
-        (db.prepare('PRAGMA table_info(document_vector_evictions)').all() as Array<{ name: string }>).map((c) => c.name),
+        (
+          db.prepare('PRAGMA table_info(document_vector_evictions)').all() as Array<{
+            name: string
+          }>
+        ).map((c) => c.name),
       )
       strict = cols.has('hash') && cols.has('evicted_at')
     } catch {
@@ -77,7 +82,9 @@ export function releasedDocumentSql(db: DatabaseSync, alias = 'd'): string {
         ')',
     )
   }
-  return parts.length ? `(${alias}.status IN ('pending', 'text-only') AND (${parts.join(' OR ')}))` : '0'
+  return parts.length
+    ? `(${alias}.status IN ('pending', 'text-only') AND (${parts.join(' OR ')}))`
+    : '0'
 }
 
 export class ProgressRepository {
@@ -158,8 +165,7 @@ export class ProgressRepository {
         FROM documents d WHERE d.path = ?`,
       )
       .get(targetSpace, targetSpace, targetSpace, resolve(path)) as
-      | (DocRow & { total_chunks: number; completed_chunks: number | null })
-      | undefined
+      (DocRow & { total_chunks: number; completed_chunks: number | null }) | undefined
     const totalChunks = Math.max(0, row?.total_chunks ?? 0)
     const rawCompleted = Math.max(0, row?.completed_chunks ?? 0)
     const completedChunks = Math.min(rawCompleted, totalChunks)
@@ -184,7 +190,7 @@ export class ProgressRepository {
 
       const row = this.db
         .prepare(
-          `SELECT count(*) AS total_files,
+          `SELECT count(*) AS total_files, coalesce(sum(size_bytes), 0) AS total_size_bytes,
             sum(CASE WHEN status IN ('ready', 'empty') THEN 1 ELSE 0 END) AS ready_files,
             sum(CASE WHEN status IN ('pending', 'text-only') AND released = 0 THEN 1 ELSE 0 END) AS pending_files,
             sum(released) AS released_files,
@@ -199,7 +205,7 @@ export class ProgressRepository {
                 THEN min(1.0, max(0.0, done_chunks * 1.0 / total_chunks))
               ELSE 0.0 END), 0.0) AS partial_file_progress
           FROM (
-            SELECT d.status, d.truncated,
+            SELECT d.status, d.truncated, d.size_bytes,
               CASE WHEN EXISTS (SELECT 1 FROM document_media dm WHERE dm.document_id = d.id) THEN 1 ELSE 0 END AS is_media,
               CASE WHEN ${released} THEN 1 ELSE 0 END AS released,
               CASE WHEN d.chunk_counted = 1 THEN d.chunk_total
@@ -225,6 +231,7 @@ export class ProgressRepository {
         ) as
         | {
             total_files: number
+            total_size_bytes: number
             ready_files: number
             pending_files: number
             released_files: number | null
@@ -243,11 +250,13 @@ export class ProgressRepository {
       const completedChunks = Math.min(rawCompleted, totalChunks)
       let semanticCoverage: number | undefined
       if (activeSpaceId !== undefined) {
-        semanticCoverage = totalChunks > 0 ? Math.min(1, Math.max(0, completedChunks) / totalChunks) : 1
+        semanticCoverage =
+          totalChunks > 0 ? Math.min(1, Math.max(0, completedChunks) / totalChunks) : 1
       }
 
       return {
         totalFiles: row?.total_files ?? 0,
+        sizeBytes: row?.total_size_bytes ?? 0,
         readyFiles: row?.ready_files ?? 0,
         pendingFiles: row?.pending_files ?? 0,
         // only present when something was released, so the payload of libraries without released files is unchanged
@@ -323,13 +332,13 @@ export class ProgressRepository {
           FROM documents d WHERE d.excluded = 0`,
         )
         .get(targetSpace, targetSpace, targetSpace) as {
-          docs: number
-          released_docs: number
-          chunks: number
-          wanted_chunks: number
-          vectors: number
-          errors: number
-        }
+        docs: number
+        released_docs: number
+        chunks: number
+        wanted_chunks: number
+        vectors: number
+        errors: number
+      }
 
       const chunks = Math.max(0, row?.chunks ?? 0)
       const vectors = Math.min(Math.max(0, row?.vectors ?? 0), chunks)

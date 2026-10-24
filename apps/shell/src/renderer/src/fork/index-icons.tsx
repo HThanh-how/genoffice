@@ -86,3 +86,27 @@ export const IconRetry = () => (
     <path d="M13 8a5 5 0 1 1-1.6-3.7M13 2.5v3h-3" />
   </Svg>
 )
+export const IconPulse = () => (
+  <Svg>
+    <path d="M2 8.5h2.6l1.9-4.5 3 8 1.9-3.5H14" />
+  </Svg>
+)
+export const IconClock = () => (
+  <Svg>
+    <circle cx="8" cy="8" r="5.5" />
+    <path d="M8 5v3.2l2 1.3" />
+  </Svg>
+)
+export const IconSliders = () => (
+  <Svg>
+    <path d="M3 5h5.5M11.5 5H13M3 11h1.5M7.5 11H13" />
+    <circle cx="10" cy="5" r="1.5" />
+    <circle cx="6" cy="11" r="1.5" />
+  </Svg>
+)
+export const IconFile = () => (
+  <Svg>
+    <path d="M4 2.5h5l3 3v8H4z" />
+    <path d="M9 2.5v3h3" />
+  </Svg>
+)

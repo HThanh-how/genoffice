@@ -189,7 +189,9 @@ describe('Index screen while Windows reports the window hidden', () => {
     const status = container.querySelector('.ix-status')?.textContent ?? ''
     expect(status).not.toMatch(/Ready to search 0 files/)
     // searchable = ready + released (released files keep their text), out of every file
-    expect(status).toContain('33,124 of 42,853 files')
+    expect(container.querySelector('.ix-status-facts')?.textContent).toMatch(
+      /Searchable33,124\s*\/\s*42,853/,
+    )
     // one headline, no tabs and no second progress figure
     expect(container.querySelector('[role="tab"]')).toBeNull()
     expect(status).not.toMatch(/77%/)
@@ -199,7 +201,7 @@ describe('Index screen while Windows reports the window hidden', () => {
     expect(container.textContent).toContain('G:\\Mr Quoc')
 
     // problems are a short list: corrupt (2) + password (14) fold into one group the person can act on
-    const attention = container.querySelector('#ix-attention-h')?.parentElement?.parentElement
+    const attention = container.querySelector('section[aria-label="Needs your attention"]')
     const issuesText = attention?.textContent ?? ''
     expect(issuesText).toMatch(/Damaged or needs a password[^0-9]*16/)
     expect(issuesText).not.toMatch(/Loading file status/)
@@ -234,6 +236,6 @@ describe('Index screen while Windows reports the window hidden', () => {
     expect(status?.textContent ?? '').not.toMatch(/0 files/)
     release()
     await flush()
-    expect(container.querySelector('.ix-status')?.textContent ?? '').toMatch(/of 42,853 files/)
+    expect(container.querySelector('.ix-status')?.textContent ?? '').toContain('33,124 / 42,853')
   })
 })

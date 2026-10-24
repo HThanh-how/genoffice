@@ -21,6 +21,7 @@
  */
 import { basename } from 'node:path'
 import { clampPdfPages, DEFAULT_PDF_PAGES } from './chunks'
+import { folderPauses } from './folder-pause'
 import {
   OCR_MAX_CALLS_PER_RUN,
   ocrPageLimit,
@@ -1062,7 +1063,11 @@ export class AgyOcrJob {
           state.halted?.day === localDateKey(this.deps.now(), this.deps.timezoneOffset)
         )
           break
-        const id = this.queuedIds.values().next().value!
+        const id = [...this.queuedIds].find((id) => {
+          const path = this.deps.host.documentById(id)?.path
+          return !path || !folderPauses.paused(path)
+        })
+        if (id === undefined) break
         const path = this.deps.host.documentById(id)?.path
         if (path && state.files[path]?.nonRetryable) {
           this.queuedIds.delete(id)
@@ -1127,6 +1132,7 @@ export class AgyOcrJob {
       if (state.backoff.until > this.deps.now()) return { ok: false, error: 'backoff' }
     }
     const document = this.deps.host.documentById(documentId)
+    if (document && folderPauses.paused(document.path)) return { ok: false, error: 'paused' }
     if (!document || !/\.pdf$/i.test(document.path)) return { ok: false, error: 'not-pdf' }
     const settings = this.workingSettings()
     const row = this.deps.host

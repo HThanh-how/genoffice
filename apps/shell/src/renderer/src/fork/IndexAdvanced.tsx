@@ -4,6 +4,8 @@ import { useI18n } from '../locale'
 import { TEXT, EN } from './index-dashboard-i18n'
 import { IconChevron } from './index-icons'
 import { IndexSettingsTab } from './IndexSettingsTab'
+import { IndexCardHeading } from './IndexCard'
+import { IconSliders } from './index-icons'
 
 /**
  * Everything that changes how indexing behaves lives behind one quiet row at the bottom, and is only
@@ -22,7 +24,7 @@ export const IndexAdvanced = forwardRef<
   const { lang } = useI18n()
   const s = (TEXT[lang] ?? EN).screen
   return (
-    <section className="ix-section ix-advanced" ref={ref}>
+    <section className="ix-section ix-advanced ix-card" ref={ref}>
       <button
         type="button"
         className="ix-disclosure"
@@ -30,12 +32,9 @@ export const IndexAdvanced = forwardRef<
         aria-controls="ix-advanced-body"
         onClick={onToggle}
       >
+        <IndexCardHeading title={s.advanced} hint={s.advancedHint} icon={<IconSliders />} />
         <span className={`ix-chev${open ? ' is-open' : ''}`} aria-hidden="true">
           <IconChevron />
-        </span>
-        <span className="ix-disclosure-text">
-          <strong>{s.advanced}</strong>
-          <span>{s.advancedHint}</span>
         </span>
       </button>
       {open && (

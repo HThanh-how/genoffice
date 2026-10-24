@@ -28,11 +28,11 @@ function isSensitiveAllow(form: RuleForm): boolean {
   return form.action === 'allow' && isSensitivePattern(form.pattern)
 }
 
-export function IndexingRulesStudio({ api }: { api: HomeApi }) {
+export function IndexingRulesStudio({ api, initialRoot }: { api: HomeApi; initialRoot?: string }) {
   const { lang } = useI18n()
   const d = studioStrings(lang)
 
-  const [view, setView] = useState<StudioView>('overview')
+  const [view, setView] = useState<StudioView>(initialRoot ? 'ignore' : 'overview')
   const [mode, setMode] = useState<IndexPolicyMode>('standard')
   const [rules, setRules] = useState<IgnoreRule[]>([])
   const [fileRules, setFileRules] = useState<IgnoreRule[]>([])
@@ -55,7 +55,7 @@ export function IndexingRulesStudio({ api }: { api: HomeApi }) {
   const [modalOpen, setModalOpen] = useState(false)
   const [editingRule, setEditingRule] = useState<IgnoreRule | null>(null)
 
-  const [editorRoot, setEditorRoot] = useState('')
+  const [editorRoot, setEditorRoot] = useState(initialRoot ?? '')
   const [editorContent, setEditorContent] = useState('')
   const [editorOriginal, setEditorOriginal] = useState('')
   const [editorRevision, setEditorRevision] = useState('')
@@ -71,7 +71,7 @@ export function IndexingRulesStudio({ api }: { api: HomeApi }) {
   const editorLoadSeqRef = useRef(0)
   const editorSaveSeqRef = useRef(0)
   const editorLoadedRootRef = useRef('')
-  const editorRootRef = useRef('')
+  const editorRootRef = useRef(initialRoot ?? '')
   const lastGoodRef = useRef<IgnorePolicyConfig | null>(null)
   const focusTesterRef = useRef(false)
 
@@ -126,7 +126,7 @@ export function IndexingRulesStudio({ api }: { api: HomeApi }) {
           setEditorRoot(list[0]!)
         }
         const status: Record<string, boolean> = {}
-        for (const root of list) {
+        for (const root of initialRoot ? list.filter((root) => root === initialRoot) : list) {
           if (api.getGenOfficeIgnoreFile) {
             try {
               const file = await api.getGenOfficeIgnoreFile(root)
@@ -148,7 +148,7 @@ export function IndexingRulesStudio({ api }: { api: HomeApi }) {
     } catch {
       if (mountedRef.current) appNotify(d.loadFailed, 'warning')
     }
-  }, [api, d])
+  }, [api, d, initialRoot])
 
   useEffect(() => {
     void loadData()
@@ -344,6 +344,12 @@ export function IndexingRulesStudio({ api }: { api: HomeApi }) {
       }
     }
   }
+
+  useEffect(() => {
+    if (initialRoot) void openEditorForRoot(initialRoot)
+    // This read is keyed by the requested root, not each edit to its draft.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [api, initialRoot])
 
   const saveEditor = async (): Promise<boolean> => {
     const submittedRoot = editorRoot

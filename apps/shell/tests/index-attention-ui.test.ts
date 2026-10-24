@@ -29,10 +29,11 @@ function makeApi() {
         if (key === 'then') return undefined
         return (...args: unknown[]) => {
           calls.push([key, args])
-          if (key === 'getDocumentIndexIssues') {
-            const reason = String(args[2])
+          if (key === 'getIndexBrowserPage') {
+            const reason = (args[0] as { reasons: string[] }).reasons[0]
             return Promise.resolve({
               total: 12,
+              sizeBytes: 1200,
               items: Array.from({ length: 10 }, (_, i) => ({
                 id: i + 1,
                 path: `D:\\Work\\Old\\file-${reason}-${i}.docx`,
@@ -93,22 +94,22 @@ describe('Index attention list', () => {
     expect(container.querySelector('.ix-more-groups')?.textContent).toBe('Show fewer')
   })
 
-  it('opens a group as a flat list of files with hover actions and no inner toolbar or cards', async () => {
+  it('opens the shared selectable file browser with filters and detail disclosure', async () => {
     const calls = await render()
     act(() => container.querySelector<HTMLButtonElement>('.ix-issue-main')!.click())
     await flush()
-    expect(calls.some(([name]) => name === 'getDocumentIndexIssues')).toBe(true)
-    const rows = container.querySelectorAll('.ix-file')
+    expect(calls.some(([name]) => name === 'getIndexBrowserPage')).toBe(true)
+    const rows = container.querySelectorAll('.ix-browser-row')
     expect(rows.length).toBeGreaterThan(0)
-    // each row: open, try again, show in folder
-    expect(rows[0]!.querySelectorAll('.ix-file-actions button').length).toBe(3)
-    // nothing from the old nested list
+    expect(rows[0]!.querySelector('input[type="checkbox"]')).not.toBeNull()
+    expect(rows[0]!.querySelector('button[aria-expanded="false"]')).not.toBeNull()
     expect(container.querySelector('.ixp')).toBeNull()
-    expect(container.textContent).not.toMatch(/Expand all|Collapse all|Select shown files/)
-    // the reason text is said once by the group, not per file
-    expect(container.querySelectorAll('.ix-file-text span').length).toBe(rows.length)
-    // 12 files exist and 10 are shown: one control loads the rest
-    expect(container.querySelector('.ix-files-more')?.textContent).toMatch(/Show 2 more files/)
+    // one toolbar for the whole card, "Expand all" behind the overflow, selection links only once selecting
+    expect(container.querySelector('button[aria-label="More actions"]')).not.toBeNull()
+    expect(container.textContent).not.toMatch(/Expand all|Select shown files/)
+    expect(container.querySelectorAll('input[type="search"]')).toHaveLength(1)
+    act(() => rows[0]!.querySelector<HTMLInputElement>('input[type="checkbox"]')!.click())
+    expect(container.textContent).toMatch(/Select shown files/)
   })
 
   it('shows an offline root calmly and checks it on request', async () => {

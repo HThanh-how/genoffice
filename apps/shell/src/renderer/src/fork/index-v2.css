@@ -1,0 +1,897 @@
+/* Appearance-card geometry; all chrome stays on GenOffice's semantic tokens. */
+.ix-page .ix-col {
+  max-width: 1120px;
+  gap: 20px;
+}
+.ix-status {
+  border-radius: 16px;
+  gap: 12px;
+}
+.ix-card .ix-flist {
+  border: 0;
+  border-radius: 0;
+}
+.ix-card .ix-issue-head {
+  border: 0;
+  border-radius: 0;
+  background: none;
+}
+.ix-card {
+  border: 1px solid var(--border-subtle);
+  border-radius: 16px;
+  background: var(--surface);
+  min-width: 0;
+}
+.ix-card-heading {
+  display: flex;
+  padding: 16px 20px;
+  border-bottom: 1px solid var(--border-subtle);
+}
+.ix-card-heading .set-group-text {
+  flex: 1;
+}
+.ix-card-heading strong {
+  font-size: 14px;
+  font-weight: 600;
+}
+.ix-card-heading-actions {
+  display: flex;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+.ix-card > .ix-section-head {
+  padding: 12px 20px;
+}
+.ix-card > .ix-section-head h2 {
+  display: none;
+}
+.ix-card .ix-issues {
+  margin: 0;
+  border: 0;
+  border-radius: 0;
+  overflow: visible;
+}
+.ix-card .ix-issue {
+  border: 0;
+  border-bottom: 1px solid var(--border-subtle);
+  border-radius: 0;
+}
+.ix-card .ix-issue:last-child {
+  border-bottom: 0;
+}
+.ix-card .ix-issue-head {
+  padding: 4px 20px;
+}
+.ix-card .ix-issue-body {
+  padding: 0;
+  border-top: 1px solid var(--border-subtle);
+}
+.ix-card .ix-skipped {
+  margin: 0;
+  padding: 12px 20px;
+  border-top: 1px solid var(--border-subtle);
+}
+.ix-card .ix-skipped .ix-issue-head {
+  padding-right: 0;
+  padding-left: 0;
+}
+.ix-card-disclosure {
+  display: flex;
+  width: 100%;
+  align-items: center;
+  text-align: left;
+  background: none;
+  color: var(--text);
+  border: 0;
+  cursor: pointer;
+  padding: 0 20px 0 0;
+  font: inherit;
+}
+.ix-card-disclosure .ix-card-heading {
+  flex: 1;
+  border: 0;
+}
+.ix-card-disclosure + .ix-card-disclosure {
+  border-top: 1px solid var(--border-subtle);
+}
+.ix-activity-home {
+  margin: 0 20px 16px;
+}
+.ix-activity-row {
+  display: flex;
+  width: 100%;
+  align-items: center;
+  justify-content: space-between;
+  padding: 14px 20px;
+  background: none;
+  color: var(--text);
+  border: 0;
+  border-top: 1px solid var(--border-subtle);
+  font: inherit;
+  font-size: 13px;
+  text-align: left;
+  cursor: pointer;
+}
+.ix-activity-row strong {
+  font-weight: 500;
+}
+.ix-file-toolbar {
+  display: flex;
+  gap: 12px;
+  align-items: center;
+  padding: 12px 20px;
+  min-width: 0;
+}
+.ix-file-toolbar .ix-filter {
+  flex: 1;
+  width: auto;
+  max-width: none;
+}
+.ix-filter-menu {
+  position: relative;
+  flex: none;
+}
+.ix-filter-menu > summary {
+  list-style: none;
+}
+.ix-filter-menu > div {
+  position: absolute;
+  z-index: 12;
+  right: 0;
+  top: calc(100% + 6px);
+  width: 260px;
+  padding: 12px;
+  display: grid;
+  gap: 12px;
+  border: 1px solid var(--border-strong);
+  border-radius: 12px;
+  background: var(--surface);
+  box-shadow: var(--shadow-menu);
+}
+.ix-filter-menu label {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  color: var(--text);
+  font-size: 13px;
+}
+.ix-filter-menu input:not([type='checkbox']),
+.ix-filter-menu select {
+  min-width: 0;
+  max-width: 150px;
+  width: 150px;
+  border: 1px solid var(--border);
+  background: var(--surface);
+  color: var(--text);
+  border-radius: 6px;
+  padding: 6px;
+  font: inherit;
+}
+.ix-card > .ix-section-head .ix-filter {
+  margin-right: 120px;
+  width: auto;
+  flex: 1;
+}
+.ix-folder-main {
+  background: none;
+  border: 0;
+  color: var(--text);
+  text-align: left;
+  font: inherit;
+  cursor: pointer;
+}
+.ix-browser {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  min-width: 0;
+}
+.ix-browser.has-detail {
+  grid-template-columns: minmax(0, 1fr) minmax(300px, 38%);
+}
+.ix-browser-list {
+  min-width: 0;
+}
+.ix-browser-tools {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 16px;
+  padding: 0 20px 10px;
+}
+.ix-browser-scroll {
+  max-height: 352px;
+  overflow: auto;
+  overscroll-behavior: contain;
+}
+.ix-browser-rows {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+.ix-browser-row,
+.ix-browser-group {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  height: 56px;
+  padding: 0 20px;
+  border-top: 1px solid var(--border-subtle);
+  box-sizing: border-box;
+}
+.ix-browser-row > input {
+  flex: none;
+  margin: 0;
+  accent-color: var(--accent);
+  opacity: 0;
+}
+.ix-browser-row:hover > input,
+.ix-browser-row:focus-within > input,
+.ix-browser-row.is-picked > input {
+  opacity: 1;
+}
+.ix-browser-row > button {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+  flex: 1;
+  height: 100%;
+  border: 0;
+  background: none;
+  color: var(--text);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.ix-browser-row .ix-file-text {
+  flex: 1;
+  min-width: 0;
+}
+.ix-browser-row .ix-file-text strong {
+  font-size: 13px;
+  font-weight: 500;
+}
+.ix-browser-row .ix-file-text span {
+  font-size: 12px;
+  color: var(--text-secondary);
+}
+.ix-browser-state {
+  font-size: 12px;
+  color: var(--text-secondary);
+  max-width: 150px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.ix-browser-progress {
+  font-size: 12px;
+  color: var(--text-secondary);
+  font-variant-numeric: tabular-nums;
+  flex: none;
+}
+.ix-browser-row:hover {
+  background: var(--hover);
+}
+.ix-browser-row.is-active,
+.ix-browser-row.is-picked {
+  background: var(--bg-hover);
+}
+.ix-browser-group {
+  justify-content: space-between;
+  background: var(--bg-content);
+}
+.ix-browser-footer {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  padding: 12px 20px;
+  border-top: 1px solid var(--border-subtle);
+  color: var(--text-secondary);
+  font-size: 12px;
+}
+.ix-browser-footer > span {
+  flex: 1;
+  font-variant-numeric: tabular-nums;
+}
+.ix-bulk {
+  position: sticky;
+  top: 0;
+  z-index: 4;
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  padding: 10px 20px;
+  background: var(--bg-content);
+  border-block: 1px solid var(--border-subtle);
+}
+.ix-bulk > details {
+  position: relative;
+}
+.ix-bulk-more {
+  position: absolute;
+  top: 100%;
+  right: 0;
+  display: grid;
+  gap: 6px;
+  width: 220px;
+  padding: 10px;
+  background: var(--surface);
+  border: 1px solid var(--border-strong);
+  border-radius: 10px;
+  z-index: 14;
+}
+.ix-detail {
+  min-width: 0;
+  padding: 16px 20px;
+  border-left: 1px solid var(--border-subtle);
+  background: var(--bg-content);
+  max-height: 620px;
+  overflow: auto;
+}
+.ix-detail > header,
+.ix-folder-detail > header {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  align-items: flex-start;
+}
+.ix-detail-path,
+.ix-detail-reason {
+  font-size: 13px;
+  line-height: 1.6;
+  overflow-wrap: anywhere;
+}
+.ix-folder-history summary {
+  font-size: 13px;
+  cursor: pointer;
+  padding-block: 8px;
+}
+.ix-detail-steps {
+  padding-left: 18px;
+  font-size: 12px;
+  line-height: 1.7;
+  color: var(--text-secondary);
+}
+.ix-detail-steps strong {
+  color: var(--text);
+  font-weight: 500;
+}
+.ix-folder-history {
+  margin-top: 12px;
+}
+.ix-folder-history ol {
+  list-style: none;
+  padding: 0;
+  font-size: 12px;
+}
+.ix-folder-history li {
+  display: flex;
+  justify-content: space-between;
+  gap: 20px;
+  padding: 10px 0;
+  border-top: 1px solid var(--border-subtle);
+}
+.ix-advanced.ix-card .ix-disclosure {
+  width: 100%;
+  padding: 0 20px 0 0;
+}
+.ix-advanced.ix-card .ix-card-heading {
+  flex: 1;
+  border: 0;
+  text-align: left;
+}
+.ix-advanced.ix-card .ix-advanced-body {
+  border-top: 1px solid var(--border-subtle);
+  padding: 0 20px 16px;
+}
+.ix-advanced .ixs-list {
+  border: 0;
+  border-radius: 0;
+}
+.ix-advanced .ixs .ixs-list > .idx-details > summary .ixs-section-text,
+.ix-advanced .ixs-group > summary .ixs-section-text {
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 4px;
+}
+.ix-advanced .ixs-section-text > strong {
+  font-weight: 600;
+}
+.ix-advanced .ixs .ixs-list > .idx-details > summary .ixs-section-text > span,
+.ix-advanced .ixs-group > summary .ixs-section-text > span {
+  max-width: 100%;
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+.ix-advanced .ixs-danger {
+  border: 0;
+  border-top: 1px solid var(--border-subtle);
+  border-radius: 0;
+  padding: 16px 0;
+}
+.ix-sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+.ix-page .ix-note {
+  overflow-wrap: anywhere;
+}
+.ix-page button:focus-visible,
+.ix-page summary:focus-visible,
+.ix-page input:focus-visible,
+.ix-page select:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+/* ---- calmer layer: quiet text controls, shared rows, Settings-style panels ---- */
+.ix-page .ix-link {
+  color: var(--text-secondary);
+  font-size: 12px;
+}
+.ix-page .ix-link:hover {
+  color: var(--text);
+}
+.ix-status.ix-card {
+  gap: 0;
+  padding: 0;
+}
+.ix-status .ix-card-heading {
+  border-bottom: 0;
+  padding-bottom: 12px;
+}
+.ix-status-body {
+  display: grid;
+  gap: 12px;
+  padding: 0 20px 16px;
+}
+.ix-status-now {
+  margin: 0;
+}
+.ix-status-line {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 4px 16px;
+  font-size: 13px;
+}
+.ix-status-facts {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 16px;
+  margin: 0;
+}
+.ix-status-facts > div {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+}
+.ix-status-facts dt {
+  color: var(--text-secondary);
+}
+.ix-status-facts dd {
+  margin: 0;
+  color: var(--text);
+  font-weight: 500;
+  font-variant-numeric: tabular-nums;
+}
+.ix-facts-total {
+  color: var(--text-secondary);
+  font-weight: 400;
+}
+.ix-status-line .ix-link {
+  margin-left: auto;
+}
+.ix-status-queue {
+  margin: 0 -20px -16px;
+  border-top: 1px solid var(--border-subtle);
+}
+
+/* one chevron, always at the right edge, for every row that opens */
+.ix-chev svg {
+  width: 16px;
+  height: 16px;
+}
+.ix-issue-head,
+.ix-frow {
+  position: relative;
+}
+.ix-issue-head > .ix-row-chev,
+.ix-frow > .ix-row-chev {
+  position: absolute;
+  top: 50%;
+  right: 20px;
+  margin-top: -8px;
+  pointer-events: none;
+}
+.ix-browser-row .ix-row-chev {
+  width: 16px;
+}
+.ix-card .ix-issue-head {
+  padding: 4px 48px 4px 20px;
+}
+.ix-card .ix-issue-main {
+  padding: 12px 0;
+}
+.ix-frow {
+  padding: 0 48px 0 20px;
+  column-gap: 12px;
+}
+.ix-frow.is-active,
+.ix-browser-row.is-active {
+  background: var(--hover);
+}
+.ix-fname strong,
+.ix-browser-row .ix-file-text strong {
+  font-size: 13px;
+  font-weight: 500;
+}
+.ix-fpath,
+.ix-browser-row .ix-file-text span {
+  font-size: 12px;
+  color: var(--text-secondary);
+}
+.ix-fstate,
+.ix-browser-state,
+.ix-issue-count {
+  font-size: 12px;
+  color: var(--text-secondary);
+}
+.ix-fneed {
+  font-size: 12px;
+  color: var(--text-secondary);
+}
+.ix-card .ix-skipped {
+  padding: 0;
+}
+.ix-card .ix-skipped-toggle {
+  display: flex;
+  flex-direction: row-reverse;
+  justify-content: space-between;
+  align-items: center;
+  width: 100%;
+  padding: 14px 20px;
+  font-size: 13px;
+}
+.ix-card .ix-skipped .ix-issue-head {
+  padding: 4px 48px 4px 20px;
+}
+.ix-more-groups {
+  margin: 0;
+  padding: 12px 20px;
+  border-top: 1px solid var(--border-subtle);
+}
+
+/* file rows: the checkbox takes the icon's place on hover, so every list shares one left edge */
+.ix-browser-row {
+  position: relative;
+}
+.ix-browser-row > input {
+  position: absolute;
+  left: 22px;
+  top: 50%;
+  z-index: 1;
+  width: 16px;
+  height: 16px;
+  margin: -8px 0 0;
+}
+.ix-browser-row > button img {
+  transition: opacity var(--transition-fast);
+}
+.ix-browser-row:hover > button img,
+.ix-browser-row:focus-within > button img,
+.ix-browser-row.is-picked > button img,
+.ix-browser.is-selecting .ix-browser-row > button img {
+  opacity: 0;
+}
+.ix-browser.is-selecting .ix-browser-row > input {
+  opacity: 1;
+}
+.ix-browser-row.is-picked {
+  background: var(--accent-soft, var(--hover));
+}
+.ix-bulk {
+  background: var(--accent-soft, var(--bg-content));
+}
+.ix-bulk strong {
+  margin-right: 4px;
+  font-size: 12px;
+}
+.ix-bulk .ix-btn.is-primary {
+  margin-left: auto;
+}
+
+/* the side panel, for files and folders alike: header, then label / value rows like Settings */
+.ix-detail {
+  padding: 0;
+  max-height: 520px;
+}
+.ix-detail > header {
+  padding: 16px 20px 4px;
+}
+.ix-detail h3 {
+  margin: 2px 0 0;
+  font-size: 15px;
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+.ix-detail-path {
+  margin: 0;
+  padding: 0 20px 12px;
+  color: var(--text-secondary);
+  font-size: 12px;
+  line-height: 1.5;
+}
+.ix-detail-section {
+  padding: 12px 20px 14px;
+  border-top: 1px solid var(--border-subtle);
+}
+.ix-detail-section h4 {
+  margin: 0 0 8px;
+  color: var(--text-secondary);
+  font-size: 12px;
+  font-weight: 600;
+}
+.ix-detail-reason,
+.ix-detail-status {
+  margin: 0 0 6px;
+  font-size: 13px;
+  line-height: 1.5;
+}
+.ix-detail-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  margin: 0;
+}
+.ix-detail-actions .ix-icon-btn {
+  width: 28px;
+  height: 28px;
+  border-color: var(--border-strong);
+}
+.ix-detail-facts {
+  margin: 0;
+}
+.ix-detail-facts > div,
+.ix-detail-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 10px 0;
+  border-top: 1px solid var(--border-subtle);
+  font-size: 13px;
+}
+.ix-detail-facts > div:first-child {
+  border-top: 0;
+}
+.ix-detail-facts dt {
+  flex: none;
+  color: var(--text-secondary);
+}
+.ix-detail-facts dd {
+  margin: 0;
+  min-width: 0;
+  text-align: right;
+  overflow-wrap: anywhere;
+}
+button.ix-detail-row {
+  width: 100%;
+  background: none;
+  border-right: 0;
+  border-bottom: 0;
+  border-left: 0;
+  color: var(--text);
+  font: inherit;
+  font-size: 13px;
+  text-align: left;
+  cursor: pointer;
+}
+.ix-detail-steps {
+  margin: 8px 0 0;
+}
+
+/* folders: list and panel side by side, exactly like a file list */
+.ix-folder-body {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  min-width: 0;
+}
+.ix-folder-body.has-detail {
+  grid-template-columns: minmax(0, 1fr) minmax(300px, 38%);
+}
+.ix-folder-scroll {
+  max-height: 336px;
+  min-width: 0;
+  overflow: auto;
+  overscroll-behavior: contain;
+}
+.ix-folder-body.has-detail .ix-folder-scroll {
+  max-height: 520px;
+}
+.ix-folder-panel {
+  min-width: 0;
+}
+.ix-folder-panel .ix-detail {
+  height: 100%;
+  border-left: 1px solid var(--border-subtle);
+}
+.ix-folder-extra {
+  border-top: 1px solid var(--border-subtle);
+}
+.ix-folder-extra:not(.is-files) {
+  padding: 16px 20px;
+}
+.ix-folder-history ol {
+  margin: 4px 0 0;
+}
+.ix-folder-body.has-detail .ix-folder-scroll {
+  max-height: 560px;
+}
+.ix-folder-panel .ix-detail {
+  max-height: none;
+}
+.ix-detail > header .ix-icon-btn {
+  font-size: 20px;
+  line-height: 1;
+}
+.ix-folder-history summary {
+  list-style: none;
+  color: var(--text-secondary);
+  font-size: 12px;
+}
+.ix-folder-history summary::-webkit-details-marker {
+  display: none;
+}
+.ix-folder-history summary::after {
+  content: '›';
+  display: inline-block;
+  margin-left: 6px;
+  transition: transform var(--transition-fast);
+}
+.ix-folder-history[open] summary::after {
+  transform: rotate(90deg);
+}
+
+.ix-advanced.ix-card .ix-disclosure {
+  border-top: 0;
+}
+.ix-card > .ix-offline {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  margin: 0;
+  padding: 12px 20px;
+  border-bottom: 1px solid var(--border-subtle);
+  font-size: 12px;
+}
+.ix-offline-text {
+  display: grid;
+  flex: 1;
+  gap: 4px;
+  min-width: 0;
+  justify-items: start;
+}
+.ix-offline-text p {
+  margin: 0;
+}
+.ix-advanced.ix-card .ix-advanced-body {
+  padding: 0;
+}
+.ix-advanced .ixs-list .idx-details > summary,
+.ix-advanced .ixs-list .idx-details > div {
+  padding-inline: 20px;
+}
+.ix-advanced .ixs-group > summary {
+  padding: 14px 20px;
+}
+.ix-advanced .ixs-danger {
+  padding: 16px 20px;
+}
+.ix-folder-scroll,
+.ix-browser-scroll {
+  scrollbar-width: thin;
+}
+@container ix (max-width: 760px) {
+  .ix-browser.has-detail {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .ix-browser.has-detail .ix-browser-list,
+  .ix-folder-body.has-detail .ix-folder-scroll {
+    display: none;
+  }
+  .ix-folder-body.has-detail {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .ix-detail {
+    border-left: 0;
+    max-height: none;
+  }
+  .ix-card-heading {
+    padding: 14px 16px;
+  }
+  .ix-card-heading-actions {
+    gap: 8px;
+  }
+  .ix-browser-state {
+    max-width: 100px;
+  }
+  .ix-file-toolbar {
+    padding: 12px 16px;
+  }
+  .ix-card .ix-issue-head,
+  .ix-card .ix-skipped .ix-issue-head,
+  .ix-frow {
+    padding-inline: 16px 44px;
+  }
+  .ix-issue-head > .ix-row-chev,
+  .ix-frow > .ix-row-chev {
+    right: 16px;
+  }
+  .ix-status-body,
+  .ix-detail-section {
+    padding-inline: 16px;
+  }
+  .ix-detail > header,
+  .ix-detail-path {
+    padding-inline: 16px;
+  }
+  .ix-browser-row,
+  .ix-browser-group,
+  .ix-card .ix-skipped-toggle,
+  .ix-more-groups {
+    padding-inline: 16px;
+  }
+  .ix-browser-row > input {
+    left: 18px;
+  }
+  .ix-card-heading-actions {
+    flex: none;
+  }
+}
+@container ix (max-width: 480px) {
+  .ix-card > .ix-offline {
+    flex-direction: column;
+    align-items: flex-start;
+  }
+  .ix-card .ix-issue-head {
+    flex-wrap: wrap;
+    row-gap: 0;
+    padding-bottom: 10px;
+  }
+  .ix-card .ix-issue-main {
+    flex: 1 1 100%;
+    padding-bottom: 6px;
+  }
+  .ix-browser-state {
+    display: none;
+  }
+  .ix-browser-row > input {
+    position: static;
+    margin: 0;
+    opacity: 1;
+  }
+  .ix-browser-row > button img {
+    opacity: 1 !important;
+  }
+  .ix-browser-row,
+  .ix-browser-group {
+    padding-inline: 12px;
+  }
+  .ix-folder-history li {
+    flex-direction: column;
+    gap: 4px;
+  }
+  .ix-browser-footer {
+    flex-wrap: wrap;
+  }
+}

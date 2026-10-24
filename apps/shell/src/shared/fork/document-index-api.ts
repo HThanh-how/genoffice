@@ -242,12 +242,14 @@ export const DOCUMENT_INDEX_CHANNELS = {
   listIndexedFolders: 'home:list-indexed-folders',
   setIndexedFolderPriority: 'home:set-indexed-folder-priority',
   rescanIndexedFolder: 'home:rescan-indexed-folder',
+  pauseIndexedFolder: 'home:pause-indexed-folder',
   forgetIndexedFolder: 'home:forget-indexed-folder',
   getKnownSearchSources: 'home:get-known-search-sources',
   setKnownSearchSource: 'home:set-known-search-source',
   getEmbeddingModel: 'home:get-embedding-model',
   setEmbeddingModel: 'home:set-embedding-model',
   getIndexFileDetail: 'home:get-index-file-detail',
+  getIndexBrowserPage: 'home:get-index-browser-page',
   searchIndexedFiles: 'home:search-indexed-files',
   getIndexingNow: 'home:get-indexing-now',
   stopIndexFile: 'home:stop-index-file',
@@ -279,6 +281,7 @@ export const DOCUMENT_INDEX_CHANNELS = {
   getIgnorePolicyConfig: 'home:get-ignore-policy-config',
   saveIgnorePolicyConfig: 'home:save-ignore-policy-config',
   addFolderIgnore: 'home:add-folder-ignore',
+  addIndexIgnore: 'home:add-index-ignore',
   removeFolderIgnore: 'home:remove-folder-ignore',
   getGenOfficeIgnoreFile: 'home:get-genofficeignore-file',
   saveGenOfficeIgnoreFile: 'home:save-genofficeignore-file',
@@ -392,6 +395,7 @@ export type IndexingBlockReason =
 
 /** What the indexer is doing this moment, so a waiting file can show whether it is being read. */
 export interface IndexingNow {
+  foldersPaused?: boolean
   /** Queued embedding checkpoints remain in embedding; only this path is running a batch. */
   activeEmbeddingPath?: string | null
   /** files being read right now, with when each started (epoch ms) */
@@ -425,6 +429,12 @@ export interface IndexedFileHit {
 
 /** How far one file got through the pipeline, for the file's detail view. */
 export interface IndexFileDetail {
+  indexStatus?: string
+  reason?: IndexIssueReason
+  sourceOffline?: boolean
+  localOcrAttempts?: number
+  localOcrAttemptAt?: number
+  ocrTiers?: string[]
   id: number
   path: string
   name: string
@@ -481,6 +491,8 @@ export interface IndexedFolderRun {
 
 /** A folder the user asked to index, with when it was last read and what is in the index now. */
 export interface IndexedFolder {
+  sizeBytes?: number
+  paused?: boolean
   root: string
   owners?: FolderOwner[]
   state: 'running' | 'complete' | 'stopped'
@@ -507,6 +519,9 @@ export interface IndexedFolder {
 
 /** Renderer-facing document-index methods, merged into HomeApi via ForkHomeApi. */
 export interface DocumentIndexApi {
+  getIndexBrowserPage?(
+    query: import('./index-browser').IndexBrowserQuery,
+  ): Promise<import('./index-browser').IndexBrowserPage>
   /** Prioritise a bounded batch without waiting for parsing/embedding to complete. */
   enqueueDocumentIndex?(
     documentIds: number[],
@@ -524,6 +539,7 @@ export interface DocumentIndexApi {
   setIndexedFolderPriority(root: string, priority: boolean): Promise<boolean>
   /** Scan the folder again now. */
   rescanIndexedFolder(root: string): Promise<{ ok: boolean; error?: string }>
+  pauseIndexedFolder?(root: string): Promise<boolean>
   /** Stop watching a folder and drop it from the list (indexed files stay searchable). */
   forgetIndexedFolder(root: string): Promise<boolean>
   /** Retrieve the list of known search sources (Documents, Downloads, Desktop) with their paths and enabled states. */
@@ -609,6 +625,7 @@ export interface DocumentIndexApi {
   ): Promise<{ ok: boolean; error?: string }>
   /** Fork-only: atomically add the "Ignore this folder" rule for one folder (read-modify-write in main). */
   addFolderIgnore?(path: string): Promise<{ ok: boolean; changed?: boolean; error?: string }>
+  addIndexIgnore?(path: string): Promise<{ ok: boolean; changed?: boolean; error?: string }>
   /** Fork-only: atomically remove the folder-level ignore rule for one folder. */
   removeFolderIgnore?(path: string): Promise<{ ok: boolean; changed?: boolean; error?: string }>
   /** Read .genofficeignore file content, parsed rules, and mode for a specific root. */

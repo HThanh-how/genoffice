@@ -216,7 +216,7 @@ it('reports the entire library even when the last scanned folder contains only f
   }
 })
 
-it('allows the blank-file issue reason through the document-index IPC contract', () => {
+it('allows the blank-file issue reason through the document-index IPC contract', async () => {
   const dir = mkdtempSync(join(tmpdir(), 'index-issue-ipc-'))
   const dbPath = join(dir, 'memory.db')
   const store = new DocumentMemoryStore(dbPath)
@@ -265,18 +265,18 @@ it('allows the blank-file issue reason through the document-index IPC contract',
       total: 1,
       items: [{ reason: 'empty' }],
     })
-    expect(call(DOCUMENT_INDEX_CHANNELS.retryDocumentIndexGroup, '*', 'empty')).toEqual({
+    expect(await call(DOCUMENT_INDEX_CHANNELS.retryDocumentIndexGroup, '*', 'empty')).toEqual({
       ok: true,
       retried: 1,
     })
     expect(retried).toHaveLength(1)
-    expect(call(DOCUMENT_INDEX_CHANNELS.retryDocumentIndexGroup, '*', 'model')).toEqual({
+    expect(await call(DOCUMENT_INDEX_CHANNELS.retryDocumentIndexGroup, '*', 'model')).toEqual({
       ok: true,
       retried: 0,
     })
     expect(recycled).toEqual(['Model retry requested from diagnostics'])
     memoryEnabled = false
-    expect(call(DOCUMENT_INDEX_CHANNELS.retryDocumentIndexGroup, '*', 'model')).toEqual({
+    expect(await call(DOCUMENT_INDEX_CHANNELS.retryDocumentIndexGroup, '*', 'model')).toEqual({
       ok: false,
       retried: 0,
       error: 'paused',

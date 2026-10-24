@@ -17,6 +17,15 @@ export function createDocumentIndexPreloadApi(
   ipcRenderer: IpcRenderer,
 ): DocumentIndexApi & IndexingModeApi & AgyOcrApi & AiInstructionsApi & StorageStartupApi {
   return {
+    async addIndexIgnore(path) {
+      return ipcRenderer.invoke(DOCUMENT_INDEX_CHANNELS.addIndexIgnore, path)
+    },
+    async pauseIndexedFolder(root) {
+      return ipcRenderer.invoke(DOCUMENT_INDEX_CHANNELS.pauseIndexedFolder, root)
+    },
+    async getIndexBrowserPage(query) {
+      return ipcRenderer.invoke(DOCUMENT_INDEX_CHANNELS.getIndexBrowserPage, query)
+    },
     async enqueueDocumentIndex(ids) {
       return ipcRenderer.invoke(DOCUMENT_INDEX_CHANNELS.enqueueDocumentIndex, ids)
     },

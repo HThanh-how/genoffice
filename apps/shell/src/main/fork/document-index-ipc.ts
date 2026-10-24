@@ -1,6 +1,5 @@
 import type { IpcMain } from 'electron'
 import { withOfflineSources } from '../document-memory/runtime/root-status'
-import { stat } from 'node:fs/promises'
 import type { FolderScanManager } from '../document-memory/folder-scan'
 import { ALL_FOLDERS, IndexIssueReader } from '../document-memory/issue-reader'
 import { ISSUE_REASON_ORDER, type IndexIssueReason } from '../document-memory/issues'
@@ -12,7 +11,6 @@ import {
   DOCUMENT_INDEX_CHANNELS,
   type IndexedFileHit,
   type IndexingNow,
-  type IndexFileDetail,
 } from '../../shared/fork/document-index-api'
 import type { KnownSourcesManager } from '../document-memory/known-sources'
 import {
@@ -24,6 +22,7 @@ import { registerDocumentIndexImportanceHandlers } from './document-index-import
 import { registerDocumentIndexStorageHandlers } from './document-index-storage-handlers'
 import { createIgnoreReconcileController } from './document-index-ignore-reconcile'
 import { isPathIgnored } from '../document-memory/ignore-policy'
+import { registerIndexBrowserHandlers } from './document-index-browser-handlers'
 
 export interface DocumentIndexIpcDeps {
   ipcMain: Pick<IpcMain, 'handle'>
@@ -81,6 +80,7 @@ export function registerDocumentIndexIpc(deps: DocumentIndexIpcDeps): () => void
   registerFolderAndModelHandlers(deps, () => folderCounts.invalidate())
   registerDocumentIndexImportanceHandlers(deps)
   registerDocumentIndexStorageHandlers(deps)
+  registerIndexBrowserHandlers(deps, reader)
   const ignoreReconcile = createIgnoreReconcileController({
     ipcMain,
     getFolderScan,
@@ -147,21 +147,6 @@ export function registerDocumentIndexIpc(deps: DocumentIndexIpcDeps): () => void
     },
   )
 
-  ipcMain.handle(
-    DOCUMENT_INDEX_CHANNELS.getIndexFileDetail,
-    async (_event, id: unknown): Promise<IndexFileDetail | null> => {
-      checkDocId(id)
-      if (!getDocumentMemory()) return null
-      const detail = reader().detail(id as number)
-      if (!detail || isPathIgnored(detail.path)) return null
-      const exists = await stat(detail.path).then(
-        (s) => s.isFile(),
-        () => false,
-      )
-      return { ...detail, exists }
-    },
-  )
-
   ipcMain.handle(DOCUMENT_INDEX_CHANNELS.getDocumentIndexIssueSummary, (_event, root: unknown) => {
     const memory = getDocumentMemory()
     if (!memory) return { total: 0, groups: [] }
@@ -172,7 +157,7 @@ export function registerDocumentIndexIpc(deps: DocumentIndexIpcDeps): () => void
 
   ipcMain.handle(
     DOCUMENT_INDEX_CHANNELS.retryDocumentIndexGroup,
-    (_event, root: unknown, reason?: unknown) => {
+    async (_event, root: unknown, reason?: unknown) => {
       const scope = activeRoot(root)
       const only = issueReason(reason)
       const memory = getDocumentMemory()
@@ -190,7 +175,9 @@ export function registerDocumentIndexIpc(deps: DocumentIndexIpcDeps): () => void
         return { ok: true, retried: 0 }
       }
       let retried = 0
-      const ids = reader().ids(scope, only)
+      const ids = memory.aggregates
+        ? await memory.aggregates.issueIds(scope, only)
+        : reader().ids(scope, only)
       if (ids.length <= 50) {
         for (const id of ids) if (memory.retryDocument(id).ok) retried++
         folderCounts.invalidate()

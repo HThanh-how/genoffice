@@ -1,6 +1,6 @@
 import { startJunkPurge } from './runtime/junk-purge'; import { enqueueIncompletePaged } from './runtime/poll-intake'; import { appendBootstrapLog } from './bootstrap-log'; import { currentIndexingPolicy } from '../fork/indexing-policy-bus'; import { WorkerHost } from './runtime/worker-host'; import { VectorGate } from './runtime/vector-gate'; import { QueueLanes, EXTRACT_SLICE_MS, EMBED_SLICE_MS } from './runtime/queue-lanes'; import { QueueWatchdog, blockedReasonOf, type QueueProbe } from './runtime/queue-health'
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs'; import { CachedOcrRecovery } from './runtime/ocr-recovery'; import { OcrSourceRecovery } from './runtime/ocr-source-recovery'
-import { dirname, join, resolve } from 'node:path'; import { rootAvailability } from './root-availability'
+import { folderPauses } from './folder-pause'; import { dirname, join, resolve } from 'node:path'; import { rootAvailability } from './root-availability'
 import { writeExtractedContentSliced, getValidatedFreeDiskBytes } from './runtime/content-write-budget'
 import type { Worker } from 'node:worker_threads'
 import type { DocumentIndexProgress } from '@genoffice/agent-core'; import type { FolderIndexProgress } from './folder-progress'; import type { DocumentIndexStorageDiagnostics, DocumentIndexMigrationDiagnostics, IndexingBlockReason, IndexingNow } from '../../shared/fork/document-index-api'
@@ -61,7 +61,7 @@ export class DocumentMemoryManager {
     try { await new Promise<void>((r) => setImmediate(r)); while (!this.stopped && this.store.backfillCounters()) { await new Promise<void>((r) => setImmediate(r)) } } catch { /* ignore */ }
   }
   private ocrHostInput(): OcrHostInput {
-    return { sourceRoot: (p) => rootAvailability.rootOf(p), sourceAvailable: (p) => rootAvailability.checkPath(p), sourceSelectable: (p) => rootAvailability.selectable(p), sourceOffline: (p) => rootAvailability.observe(rootAvailability.rootOf(p), false), onSourcesRecovered: (clear) => this.sourceRecovery.subscribe(clear), store: this.store, isEnabled: () => this.isEnabled(), isStopped: () => this.stopped, admission: this.admission, maintScheduler: this.maintScheduler, budgetCoord: this.budgetCoord, dbDir: dirname(this.dbPath), workerTimeoutMs: this.workerTimeoutMs, askWorker: (req, timeout) => this.ask(req as any, timeout), reindex: (path) => { const p = resolve(path); this.invalidatePath(p); this.enqueue(p, true) } }
+    return { sourceRoot: (p) => rootAvailability.rootOf(p), sourceAvailable: (p) => rootAvailability.checkPath(p), sourceSelectable: (p) => !folderPauses.paused(p) && rootAvailability.selectable(p), sourceOffline: (p) => rootAvailability.observe(rootAvailability.rootOf(p), false), onSourcesRecovered: (clear) => this.sourceRecovery.subscribe(clear), store: this.store, isEnabled: () => this.isEnabled(), isStopped: () => this.stopped, admission: this.admission, maintScheduler: this.maintScheduler, budgetCoord: this.budgetCoord, dbDir: dirname(this.dbPath), workerTimeoutMs: this.workerTimeoutMs, askWorker: (req, timeout) => this.ask(req as any, timeout), reindex: (path) => { const p = resolve(path); this.invalidatePath(p); this.enqueue(p, true) } }
   }
   ocrHost(): OcrJobHost { return createOcrHost(this.ocrHostInput()) }
   /** Local OCR pass + the cloud host that waits for it; one per manager. The OCR scheduler tick calls `.runner.tick()`. */
@@ -156,7 +156,7 @@ export class DocumentMemoryManager {
     return {
       extracting: active ? [{ path: active, since: this.activeSince.get(active) ?? Date.now() }] : [],
       embedding: this.embeddingCoord.getEmbeddingProgress(), positions, pages, queued: this.queue.length + this.pendingCount + this.embeddingCoord.getQueueLength() + this.gate.parked, paused: isIndexingPaused(),
-      ...(blocked ? { blocked } : {}),
+      ...(blocked ? { blocked } : {}), foldersPaused: this.foldersHeld(),
     }
   }
   remember(path: string): void {
@@ -339,7 +339,7 @@ export class DocumentMemoryManager {
   closeAsync(): Promise<void> {
     if (this.shutdownPromise) return this.shutdownPromise
     if (!this.stopped) {
-      this.stopped = true; this.sourceRecovery.dispose(); this.stopJunkPurge?.(); this.statusAgg?.close(); this.stopPolicyWatch(); this.epoch++
+      this.stopped = true; this.stopFolderPauseWatch(); this.sourceRecovery.dispose(); this.stopJunkPurge?.(); this.statusAgg?.close(); this.stopPolicyWatch(); this.epoch++
       if (this.pollTimer) { clearInterval(this.pollTimer); this.pollTimer = null }; this.admissionRetry.dispose(); if (this.migrationTimer) { clearTimeout(this.migrationTimer); this.migrationTimer = null }
       this.syncAdmissionCoord.close(); this.budgetCoord.close(); this.maintScheduler.dispose(); this.freshnessCoord.clearMissing(); this.embeddingCoord.clearQueue(); this.skippedMigrationDocs.clear(); this.admission.clear(); this.pendingIntake.close()
       this.queue.length = 0; this.queued.clear(); this.gate.clear(); this.urgent.clear(); this.deferred.clear()
@@ -348,7 +348,7 @@ export class DocumentMemoryManager {
       try { await this.localOcrWiring?.dispose().catch(() => undefined); await this.host.terminate() } finally { this.store.close() }
     })())
   }
-  private enqueue(path: string, prioritize = false, bytes?: number): void {
+  private readonly stopFolderPauseWatch = folderPauses.subscribe(() => this.drain()); private enqueue(path: string, prioritize = false, bytes?: number): void {
     if (this.stopped || !this.enabled) return; const p = resolve(path); if (isPathIgnored(p) || this.activeGeneration.get(p) === this.currentGeneration(p)) return
     if (this.queued.has(p)) { if (prioritize) { const idx = this.queue.indexOf(p); if (idx > 0) { this.queue.splice(idx, 1); this.queue.unshift(p) } }; return }
     const doc = this.store.documentByPath(p); if (!doc || doc.status === 'excluded') return
@@ -356,9 +356,9 @@ export class DocumentMemoryManager {
     if (size !== undefined) this.activeBytes.set(p, size); this.queued.add(p); this.gate.queued(p, doc.status)
     if (prioritize) this.queue.unshift(p); else this.queue.push(p); void this.drain()
   }
-  private takeNext(): string {
+  private takeNext(): string | undefined {
     const info = { urgent: this.urgent, deferred: this.deferred, bytes: this.activeBytes, prioritize: (p: string) => this.maintScheduler.isRecentUnderQuotaPressure(p) }
-    const path = (nextInOrder(this.queue, info, this.gate.skip(this.urgent)) ?? nextInOrder(this.queue, info))!
+    const gated = this.gate.skip(this.urgent); const path = nextInOrder(this.queue, info, (p) => folderPauses.paused(p) || !!gated?.(p)) ?? nextInOrder(this.queue, info, (p) => folderPauses.paused(p)); if (!path) return undefined
     const idx = this.queue.indexOf(path); if (idx >= 0) this.queue.splice(idx, 1); this.urgent.delete(path); return path
   }
   private makeWayForLightFiles(path: string, generation: number): void {
@@ -380,7 +380,7 @@ export class DocumentMemoryManager {
     }
     if (this.gate.parked > 0) for (const p of this.gate.release()) this.enqueue(p)
     if (this.extracting || this.activeExtractions.size > 0 || this.embeddingCoord.isEmbedding()) return
-    const lane = this.lanes.next(this.gate.extractable(this.queue.length, this.urgent), this.embeddingCoord.getQueueLength() > 0 && !this.embeddingCoord.isRetryPending())
+    const lane = this.lanes.next(this.queue.some(p => !folderPauses.paused(p)) && this.gate.extractable(this.queue.length, this.urgent), this.embeddingCoord.hasRunnableJobs() && !this.embeddingCoord.isRetryPending())
     if (lane === 'extract') void this.drainExtractions(); else if (lane === 'embed') void this.runEmbedPass()
   }
   private async runEmbedPass(): Promise<void> {
@@ -394,7 +394,7 @@ export class DocumentMemoryManager {
       while (!this.stopped && this.enabled && !isIndexingPaused() && this.budgetCoord.isWriteReady() && this.gate.extractable(this.queue.length, this.urgent)) {
         // vectors are waiting and this lane has had its share of the process for now: the other lane goes next
         if (Date.now() - sliceStart >= EXTRACT_SLICE_MS && this.embeddingCoord.getQueueLength() > 0 && !this.embeddingCoord.isRetryPending()) break
-        const path = this.takeNext(); const wasTextOnly = this.gate.taken(path); this.queued.delete(path); if (isPathIgnored(path) || !(await rootAvailability.checkPath(path)) || this.stopped || !this.enabled) continue; if (this.activeExtractions.size) { this.queue.unshift(path); this.queued.add(path); break }; this.activeExtractions.add(path)
+        const path = this.takeNext(); if (!path) break; const wasTextOnly = this.gate.taken(path); this.queued.delete(path); if (isPathIgnored(path) || !(await rootAvailability.checkPath(path)) || this.stopped || !this.enabled) continue; if (this.activeExtractions.size) { this.queue.unshift(path); this.queued.add(path); break }; this.activeExtractions.add(path)
         this.activeSince.set(path, Date.now()); const generation = this.currentGeneration(path)
         const epoch = this.epoch; this.activeGeneration.set(path, generation); this.pendingCount++
         if (!this.activeBytes.has(path)) { const doc = this.store.documentByPath(path); if (doc?.sizeBytes) this.activeBytes.set(path, doc.sizeBytes) }
@@ -486,10 +486,10 @@ export class DocumentMemoryManager {
   }
   private probe(): QueueProbe {
     const since = this.activeSince.values().next().value as number | undefined; const embedQ = this.embeddingCoord.getQueueLength()
-    return { waiting: this.queue.length + embedQ + this.gate.parked, line: this.queue.length, textOnlyInLine: this.gate.textOnly.size, vectorLine: embedQ, vectorWait: this.gate.parked, extracting: this.extracting, extractingForSeconds: since === undefined ? 0 : Math.round((Date.now() - since) / 1000), inFlightAsks: this.host.inFlight, embedding: this.embeddingCoord.isEmbedding(), extractable: this.gate.extractable(this.queue.length, this.urgent), writeReady: this.budgetCoord.isWriteReady(), accountingOk: this.maintScheduler.canAcceptExpensiveWork(), admissionRetryArmed: this.admissionRetry.isArmed(), vectorRetryPending: this.embeddingCoord.isRetryPending(), model: this.modelState, workerUp: this.host.isUp, lastError: this.lastError, pausedBy: isIndexingPaused() ? (currentIndexingPolicy()?.pauseReason ?? 'unknown') : undefined }
+    return { waiting: this.queue.length + embedQ + this.gate.parked, line: this.queue.length, textOnlyInLine: this.gate.textOnly.size, vectorLine: embedQ, vectorWait: this.gate.parked, extracting: this.extracting, extractingForSeconds: since === undefined ? 0 : Math.round((Date.now() - since) / 1000), inFlightAsks: this.host.inFlight, embedding: this.embeddingCoord.isEmbedding(), extractable: this.gate.extractable(this.queue.length, this.urgent), writeReady: this.budgetCoord.isWriteReady(), accountingOk: this.maintScheduler.canAcceptExpensiveWork(), admissionRetryArmed: this.admissionRetry.isArmed(), vectorRetryPending: this.embeddingCoord.isRetryPending(), model: this.modelState, workerUp: this.host.isUp, lastError: this.lastError, pausedBy: isIndexingPaused() ? (currentIndexingPolicy()?.pauseReason ?? 'unknown') : this.foldersHeld() ? 'folders' : undefined }
   }
   /** Why files wait while nothing runs (see queue-health.ts); the Index screen shows it. */
-  private blockedReason(): IndexingBlockReason | undefined { return this.stopped || !this.enabled ? undefined : blockedReasonOf(this.probe()) }
+  private foldersHeld(): boolean { return folderPauses.hasAny && this.queue.length + this.embeddingCoord.getQueueLength() > 0 && !this.activeExtractions.size && !this.embeddingCoord.isEmbedding() && !this.gate.parked && !this.queue.some(p => !folderPauses.paused(p)) && !this.embeddingCoord.hasRunnableJobs() }; private blockedReason(): IndexingBlockReason | undefined { return this.stopped || !this.enabled ? undefined : blockedReasonOf(this.probe()) }
   private releaseWorkerReservations(): void {
     for (const r of this.admission.listReservations()) if (r.id.startsWith('extract:') || r.id.startsWith('embed:') || r.id.startsWith('ocr:') || r.id.startsWith('worker:') || r.id.startsWith('ann:')) this.admission.release(r.id)
   }

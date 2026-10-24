@@ -1,4 +1,5 @@
 import { executePostWriteAccounting } from './post-write-accounting'
+import { folderPauses } from '../folder-pause'
 import { stat } from 'node:fs/promises'
 import { totalmem } from 'node:os'
 import type { DocumentMemoryStore } from '../store'
@@ -12,9 +13,7 @@ import {
   type EmbeddingProfileId,
 } from '../embedding-profiles'
 import { writeActiveEmbeddingConfig } from '../storage/embedding-settings'
-import {
-  type StorageAdmissionController,
-} from './storage-admission'
+import { type StorageAdmissionController } from './storage-admission'
 import {
   contentWriteCapBytes,
   CACHE_RETENTION_HIGH_WATERMARK,
@@ -139,6 +138,9 @@ export class EmbeddingCoordinator {
   getQueueLength(): number {
     return this.embeds.length
   }
+  hasRunnableJobs(): boolean {
+    return this.embeds.some((job) => !folderPauses.paused(job.path))
+  }
 
   getActiveJob(): EmbedJob | null {
     return this.activeEmbedJob
@@ -154,7 +156,9 @@ export class EmbeddingCoordinator {
 
   /** Queued + grace-parked jobs: callers use this to avoid re-extracting a document whose embedding is pending. */
   get embedsQueue(): readonly EmbedJob[] {
-    return this.graceParked.size === 0 ? this.embeds : [...this.embeds, ...this.graceParked.values()]
+    return this.graceParked.size === 0
+      ? this.embeds
+      : [...this.embeds, ...this.graceParked.values()]
   }
 
   /** Number of low-value jobs currently parked by the grace-zone value rule. */
@@ -165,7 +169,13 @@ export class EmbeddingCoordinator {
   private currentUsageRatio(): { used: number; soft: number } | null {
     const budget = this.options.getStorageBudget?.()
     const used = this.options.getCurrentUsage?.()
-    if (!budget || typeof used !== 'number' || !Number.isFinite(used) || !(budget.maxDatabaseBytes > 0)) return null
+    if (
+      !budget ||
+      typeof used !== 'number' ||
+      !Number.isFinite(used) ||
+      !(budget.maxDatabaseBytes > 0)
+    )
+      return null
     return { used, soft: budget.maxDatabaseBytes }
   }
 
@@ -243,12 +253,18 @@ export class EmbeddingCoordinator {
       const [job] = this.embeds.splice(idx, 1)
       if (job) this.embeds.unshift(job)
       this.embeddingRetryAt = 0
-      if (this.retryTimer) { clearTimeout(this.retryTimer); this.retryTimer = null }
+      if (this.retryTimer) {
+        clearTimeout(this.retryTimer)
+        this.retryTimer = null
+      }
       return true
     }
     if (this.activeEmbedJob?.path === path) {
       this.embeddingRetryAt = 0
-      if (this.retryTimer) { clearTimeout(this.retryTimer); this.retryTimer = null }
+      if (this.retryTimer) {
+        clearTimeout(this.retryTimer)
+        this.retryTimer = null
+      }
       return true
     }
     return false
@@ -259,7 +275,8 @@ export class EmbeddingCoordinator {
   }
 
   enqueueEmbed(job: EmbedJob): void {
-    if (this.options.isStopped ? this.options.isStopped() : this.options.isStoppedOrPaused?.()) return
+    if (this.options.isStopped ? this.options.isStopped() : this.options.isStoppedOrPaused?.())
+      return
     this.graceParked.delete(job.path) // fresher content supersedes a parked job
     job.priority = this.options.store.documentPriority(job.path)
     const position = this.embeds.findIndex((queued) => (job.priority ?? 0) > (queued.priority ?? 0))
@@ -279,8 +296,10 @@ export class EmbeddingCoordinator {
   }
 
   private isJobCancelled(job: EmbedJob): boolean {
-    if (this.options.isStopped ? this.options.isStopped() : this.options.isStoppedOrPaused?.()) return true
-    if (this.options.isCurrent && !this.options.isCurrent(job.path, job.generation, job.epoch)) return true
+    if (this.options.isStopped ? this.options.isStopped() : this.options.isStoppedOrPaused?.())
+      return true
+    if (this.options.isCurrent && !this.options.isCurrent(job.path, job.generation, job.epoch))
+      return true
     return false
   }
 
@@ -308,14 +327,17 @@ export class EmbeddingCoordinator {
         !(yieldAfterMs !== undefined && committed > 0 && Date.now() - startedAt >= yieldAfterMs)
       ) {
         if (this.options.canAcceptExpensiveWork && !this.options.canAcceptExpensiveWork()) {
-          blockedByBudget = true; blockedOnAccounting = true
+          blockedByBudget = true
+          blockedOnAccounting = true
           break
         }
         if (this.options.isWriteReady && !this.options.isWriteReady()) {
           this.deferEmbeddingRetry()
           break
         }
-        const job = this.embeds.shift()!
+        const runnable = this.embeds.findIndex((job) => !folderPauses.paused(job.path))
+        if (runnable < 0) break
+        const job = this.embeds.splice(runnable, 1)[0]!
         if (this.isJobCancelled(job)) {
           continue
         }
@@ -378,7 +400,8 @@ export class EmbeddingCoordinator {
 
             // Do NOT fallback to DB-only or 0 if unknown or degraded
             if (!snap || snap.measurementStatus === 'unknown' || snap.isDegraded === true) {
-              blockedByBudget = true; blockedOnAccounting = true
+              blockedByBudget = true
+              blockedOnAccounting = true
               const reason = snap?.isDegraded ? 'accounting-degraded' : 'accounting-unknown'
               this.options.onError?.(`Storage accounting degraded or unknown (${reason})`)
               this.deferEmbeddingRetry()
@@ -386,7 +409,9 @@ export class EmbeddingCoordinator {
               break
             }
 
-            const freeDiskBytes = this.options.getFreeDiskBytes ? await this.options.getFreeDiskBytes() : null
+            const freeDiskBytes = this.options.getFreeDiskBytes
+              ? await this.options.getFreeDiskBytes()
+              : null
             if (this.isJobCancelled(job)) break
             if (this.options.isWriteReady && !this.options.isWriteReady()) {
               this.deferEmbeddingRetry()
@@ -395,8 +420,11 @@ export class EmbeddingCoordinator {
             }
 
             if (freeDiskBytes === null) {
-              blockedByBudget = true; blockedOnAccounting = true
-              this.options.onError?.('Free disk space could not be verified (statfs unreadable or unsafe)')
+              blockedByBudget = true
+              blockedOnAccounting = true
+              this.options.onError?.(
+                'Free disk space could not be verified (statfs unreadable or unsafe)',
+              )
               this.deferEmbeddingRetry()
               this.embeds.push(job)
               break
@@ -428,13 +456,18 @@ export class EmbeddingCoordinator {
             if (
               !decision.admitted &&
               this.options.makeRoom &&
-              (decision.reason === 'hard-limit-exceeded' || decision.reason === 'quota-exhausted') &&
+              (decision.reason === 'hard-limit-exceeded' ||
+                decision.reason === 'quota-exhausted') &&
               !this.isJobCancelled(job)
             ) {
               // retry once after displacement; refuse only if still impossible
-              const shortfall = Math.max(1, Math.ceil(decision.projectedBytes - decision.budgetBytes))
+              const shortfall = Math.max(
+                1,
+                Math.ceil(decision.projectedBytes - decision.budgetBytes),
+              )
               const freed = await this.options.makeRoom(shortfall, job.path).catch(() => false)
-              if (freed && !this.isJobCancelled(job)) decision = tryReserve(this.options.getCurrentUsage?.() ?? currentBytes)
+              if (freed && !this.isJobCancelled(job))
+                decision = tryReserve(this.options.getCurrentUsage?.() ?? currentBytes)
             }
             if (!decision.admitted) {
               blockedByBudget = true
@@ -460,11 +493,7 @@ export class EmbeddingCoordinator {
             break
           }
 
-          if (
-            !reply ||
-            !('result' in reply) ||
-            !Array.isArray(reply.result)
-          ) {
+          if (!reply || !('result' in reply) || !Array.isArray(reply.result)) {
             const error =
               reply && 'error' in reply && typeof reply.error === 'string'
                 ? reply.error
@@ -521,15 +550,24 @@ export class EmbeddingCoordinator {
               break
             }
 
-            if (!freshSnap || freshSnap.measurementStatus === 'unknown' || freshSnap.isDegraded === true) {
-              blockedByBudget = true; blockedOnAccounting = true
-              this.options.onError?.('Storage accounting unknown or degraded before embedding commit')
+            if (
+              !freshSnap ||
+              freshSnap.measurementStatus === 'unknown' ||
+              freshSnap.isDegraded === true
+            ) {
+              blockedByBudget = true
+              blockedOnAccounting = true
+              this.options.onError?.(
+                'Storage accounting unknown or degraded before embedding commit',
+              )
               this.deferEmbeddingRetry()
               this.embeds.push(job)
               break
             }
 
-            const freshFreeDisk = this.options.getFreeDiskBytes ? await this.options.getFreeDiskBytes() : null
+            const freshFreeDisk = this.options.getFreeDiskBytes
+              ? await this.options.getFreeDiskBytes()
+              : null
             if (this.isJobCancelled(job)) break
             if (this.options.isWriteReady && !this.options.isWriteReady()) {
               this.deferEmbeddingRetry()
@@ -538,7 +576,8 @@ export class EmbeddingCoordinator {
             }
 
             if (freshFreeDisk === null) {
-              blockedByBudget = true; blockedOnAccounting = true
+              blockedByBudget = true
+              blockedOnAccounting = true
               this.options.onError?.('Free disk space check failed before embedding commit')
               this.deferEmbeddingRetry()
               this.embeds.push(job)
@@ -564,7 +603,9 @@ export class EmbeddingCoordinator {
 
             if (!resizeDec.admitted) {
               blockedByBudget = true
-              this.options.onError?.(`Storage quota exceeded before embedding commit (${resizeDec.reason})`)
+              this.options.onError?.(
+                `Storage quota exceeded before embedding commit (${resizeDec.reason})`,
+              )
               this.deferEmbeddingRetry()
               this.embeds.push(job)
               break
@@ -572,7 +613,10 @@ export class EmbeddingCoordinator {
           }
 
           // Final gate & cancellation check before mutation
-          if (this.isJobCancelled(job) || (this.options.isWriteReady && !this.options.isWriteReady())) {
+          if (
+            this.isJobCancelled(job) ||
+            (this.options.isWriteReady && !this.options.isWriteReady())
+          ) {
             this.deferEmbeddingRetry()
             this.embeds.push(job)
             break
@@ -612,9 +656,13 @@ export class EmbeddingCoordinator {
         } finally {
           if (hasLocalReservation) {
             await executePostWriteAccounting({
-              refreshUsage: this.options.refreshUsage, invalidateAccounting: this.options.invalidateAccounting,
-              admission: this.options.admission, reservationId: localReserveId, ownerToken: localOwnerToken,
-              context: 'embedding-terminal', isStopped: this.options.isStopped,
+              refreshUsage: this.options.refreshUsage,
+              invalidateAccounting: this.options.invalidateAccounting,
+              admission: this.options.admission,
+              reservationId: localReserveId,
+              ownerToken: localOwnerToken,
+              context: 'embedding-terminal',
+              isStopped: this.options.isStopped,
             })
           }
           if (this.activeEmbedJob === job) {
@@ -627,7 +675,10 @@ export class EmbeddingCoordinator {
       if (blockedByBudget && this.options.onAdmission && !this.options.isStoppedOrPaused?.()) {
         // The owner's backoff (re-measure, then drain) replaces the fixed 15 s retry armed at the refusal site.
         this.embeddingRetryAt = 0
-        if (this.retryTimer) { clearTimeout(this.retryTimer); this.retryTimer = null }
+        if (this.retryTimer) {
+          clearTimeout(this.retryTimer)
+          this.retryTimer = null
+        }
         this.options.onAdmission(true, blockedOnAccounting)
       } else if (!blockedByBudget && !this.options.isStoppedOrPaused?.()) {
         this.options.onDrainNeeded?.()
@@ -686,8 +737,13 @@ export class EmbeddingCoordinator {
 
   getEmbeddingProgress(): Record<string, { done: number; total: number }> {
     const res: Record<string, { done: number; total: number }> = {}
-    for (const job of this.embeds) res[job.path] = { done: job.startOffset ?? 0, total: job.chunks.length }
-    if (this.activeEmbedJob) res[this.activeEmbedJob.path] = { done: this.activeEmbedJob.startOffset ?? 0, total: this.activeEmbedJob.chunks.length }
+    for (const job of this.embeds)
+      res[job.path] = { done: job.startOffset ?? 0, total: job.chunks.length }
+    if (this.activeEmbedJob)
+      res[this.activeEmbedJob.path] = {
+        done: this.activeEmbedJob.startOffset ?? 0,
+        total: this.activeEmbedJob.chunks.length,
+      }
     return res
   }
 }

@@ -7,15 +7,27 @@ import { fill } from '../indexing-activity-copy'
 import { TEXT, EN } from './index-dashboard-i18n'
 import { readIndexRequest } from './index-request'
 import {
-  FILTER_FROM,
   filterFolderRows,
   shortPath,
   toFolderRows,
+  reuseIndexFolders,
   type FolderRow,
 } from './index-screen-model'
 import { useWindowedRows } from './use-windowed-rows'
-import { IconAlert, IconFolder, IconMore, IconOffline, IconSearch } from './index-icons'
+import {
+  IconAlert,
+  IconChevron,
+  IconFolder,
+  IconMore,
+  IconOffline,
+  IconSearch,
+} from './index-icons'
 import { IndexMenu, MenuItem, MenuSeparator } from './IndexMenu'
+import { IndexFolderDetail, type FolderExtra } from './IndexFolderDetail'
+import { IndexFileBrowser } from './IndexFileBrowser'
+import { IndexingRulesStudio } from './IndexingRulesStudio'
+import { IndexCardHeading } from './IndexCard'
+import { indexV2Words } from '../i18n/strings-index-v2'
 
 const ROW_HEIGHT = 56
 type Dict = (typeof EN)['screen']
@@ -48,7 +60,7 @@ export function useIndexFolders(api: HomeApi, tick: unknown) {
           ),
       )
       if (alive.current) {
-        setFolders(next)
+        setFolders((current) => reuseIndexFolders(current, next))
         setFailed(false)
       }
     } catch {
@@ -98,6 +110,8 @@ interface RowProps {
   menuOpen: boolean
   onMenu: (root: string, anchor: HTMLElement | null) => void
   onAttention: () => void
+  onOpen: (root: string) => void
+  expanded: boolean
 }
 
 const FolderRowView = memo(function FolderRowView({
@@ -107,10 +121,15 @@ const FolderRowView = memo(function FolderRowView({
   menuOpen,
   onMenu,
   onAttention,
+  onOpen,
+  expanded,
 }: RowProps) {
+  const { lang } = useI18n()
   const offline = row.state === 'offline'
   let state: React.ReactNode
   if (offline) state = <span className="ix-fstate">{s.offline}</span>
+  else if (row.state === 'paused')
+    state = <span className="ix-fstate">{indexV2Words(lang).paused}</span>
   else if (row.state === 'scanning')
     state = (
       <span className="ix-fstate">
@@ -135,17 +154,25 @@ const FolderRowView = memo(function FolderRowView({
       </span>
     )
   return (
-    <li className={`ix-frow${offline ? ' is-offline' : ''}`} style={{ height: ROW_HEIGHT }}>
+    <li
+      className={`ix-frow${offline ? ' is-offline' : ''}${expanded ? ' is-active' : ''}`}
+      style={{ height: ROW_HEIGHT }}
+    >
       <span className="ix-ficon" aria-hidden="true">
         {offline ? <IconOffline /> : <IconFolder />}
       </span>
-      <span className="ix-fname">
+      <button
+        type="button"
+        className="ix-fname ix-folder-main"
+        aria-expanded={expanded}
+        onClick={() => onOpen(row.root)}
+      >
         <strong>{row.name}</strong>
         {row.priority && <span className="ix-tag">{s.firstTag}</span>}
         <span className="ix-fpath" title={row.root}>
           {shortPath(row.root)}
         </span>
-      </span>
+      </button>
       <span className="ix-fside">
         {state}
         {row.errors > 0 && (
@@ -165,6 +192,9 @@ const FolderRowView = memo(function FolderRowView({
       >
         <IconMore />
       </button>
+      <span className={`ix-chev ix-row-chev${expanded ? ' is-open' : ''}`} aria-hidden="true">
+        <IconChevron />
+      </span>
     </li>
   )
 })
@@ -187,10 +217,22 @@ export function IndexFolders({
   onAttention,
 }: IndexFoldersProps) {
   const { lang, dateLocale } = useI18n()
+  const w = indexV2Words(lang)
   const s = (TEXT[lang] ?? EN).screen
   const num = useCallback((n: number) => n.toLocaleString(dateLocale), [dateLocale])
   const when = useWhen(lang, s)
   const [query, setQuery] = useState('')
+  const [selectedRoot, setSelectedRoot] = useState<string | null>(null)
+  const [sort, setSort] = useState('name')
+  const [status, setStatus] = useState('')
+  const [group, setGroup] = useState(false)
+  const [extra, setExtra] = useState<FolderExtra>(null)
+  const detailRef = useRef<HTMLDivElement>(null)
+  const onOpen = useCallback((root: string) => {
+    setSelectedRoot((current) => (current === root ? null : root))
+    setExtra(null)
+    requestAnimationFrame(() => detailRef.current?.scrollIntoView({ block: 'nearest' }))
+  }, [])
   const [menu, setMenu] = useState<{
     root: string
     anchor: HTMLElement | null
@@ -199,7 +241,26 @@ export function IndexFolders({
   const [busy, setBusy] = useState(false)
   const [known, setKnown] = useState<KnownSearchSourceEntry[]>([])
   const rows = useMemo(() => toFolderRows(folders), [folders])
-  const shown = useMemo(() => filterFolderRows(rows, query), [rows, query])
+  const shown = useMemo(
+    () =>
+      filterFolderRows(rows, query)
+        .filter((row) => !status || row.state === status)
+        .sort(
+          (a, b) =>
+            (group ? a.state.localeCompare(b.state) : 0) ||
+            (sort === 'count'
+              ? b.total - a.total
+              : sort === 'recent'
+                ? (b.folder.completedAt ?? 0) - (a.folder.completedAt ?? 0)
+                : sort === 'size'
+                  ? (b.folder.sizeBytes ?? 0) - (a.folder.sizeBytes ?? 0)
+                  : sort === 'status'
+                    ? a.state.localeCompare(b.state)
+                    : a.name.localeCompare(b.name)),
+        ),
+    [rows, query, sort, status, group],
+  )
+  const selectedFolder = folders.find((folder) => folder.root === selectedRoot)
   const open = menu ? rows.find((r) => r.root === menu.root) : undefined
 
   // Long lists draw only the rows near the viewport, measured against the page's own scroller.
@@ -208,7 +269,7 @@ export function IndexFolders({
     listRef,
     shown.length,
     ROW_HEIGHT,
-    '.ix-page',
+    '.ix-folder-scroll',
   )
 
   const onMenu = useCallback((root: string, anchor: HTMLElement | null) => {
@@ -258,24 +319,60 @@ export function IndexFolders({
   const slice = windowed ? shown.slice(range.start, range.end) : shown
 
   return (
-    <section className="ix-section" aria-labelledby="ix-folders-h">
-      <div className="ix-section-head">
-        <h2 id="ix-folders-h">
-          {s.folders} <span className="ix-count">{num(rows.length)}</span>
-        </h2>
-        {rows.length >= FILTER_FROM && (
-          <label className="ix-filter">
-            <IconSearch />
-            <input
-              type="search"
-              value={query}
-              placeholder={s.filter}
-              aria-label={s.filter}
-              onChange={(event) => setQuery(event.target.value)}
-              onKeyDown={(event) => event.key === 'Escape' && setQuery('')}
-            />
-          </label>
-        )}
+    <section className="ix-section ix-card" aria-label={s.folders}>
+      <IndexCardHeading
+        title={`${s.folders} · ${num(rows.length)}`}
+        hint={w.folderHint}
+        icon={<IconFolder />}
+      />
+      <div className="ix-file-toolbar">
+        <label className="ix-filter">
+          <IconSearch />
+          <input
+            type="search"
+            value={query}
+            placeholder={s.filter}
+            aria-label={s.filter}
+            onChange={(event) => setQuery(event.target.value)}
+            onKeyDown={(event) => event.key === 'Escape' && setQuery('')}
+          />
+        </label>
+        <details className="ix-filter-menu">
+          <summary className="ix-btn is-small">{w.filters}</summary>
+          <div>
+            <label>
+              {w.sort}
+              <select value={sort} onChange={(e) => setSort(e.target.value)}>
+                <option value="name">{w.name}</option>
+                <option value="count">{w.total}</option>
+                <option value="size">{w.size}</option>
+                <option value="recent">{w.recent}</option>
+                <option value="status">{w.status}</option>
+              </select>
+            </label>
+            <label>
+              {w.status}
+              <select value={status} onChange={(e) => setStatus(e.target.value)}>
+                <option value="">{w.all}</option>
+                {['ready', 'indexing', 'scanning', 'stopped', 'offline', 'paused'].map((state) => (
+                  <option key={state} value={state}>
+                    {state === 'paused'
+                      ? w.paused
+                      : state === 'ready'
+                        ? w.ready
+                        : state === 'indexing'
+                          ? w.pending
+                          : s[state as 'offline']}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <label>
+              {w.group} · {w.status}
+              <input type="checkbox" checked={group} onChange={(e) => setGroup(e.target.checked)} />
+            </label>
+          </div>
+        </details>
       </div>
       {failed && (
         <p className="ix-note" role="status">
@@ -285,26 +382,69 @@ export function IndexFolders({
           </button>
         </p>
       )}
-      {shown.length === 0 ? (
+      {shown.length === 0 && !selectedFolder ? (
         <p className="ix-quiet">{fill(s.noMatch, { q: query.trim() })}</p>
       ) : (
-        <ul
-          className="ix-flist"
-          ref={listRef}
-          style={windowed ? { paddingTop: padTop, paddingBottom: padBottom } : undefined}
-        >
-          {slice.map((row) => (
-            <FolderRowView
-              key={row.root}
-              row={row}
-              s={s}
-              num={num}
-              menuOpen={menu?.root === row.root}
-              onMenu={onMenu}
-              onAttention={onAttention}
-            />
-          ))}
-        </ul>
+        <div className={`ix-folder-body${selectedFolder ? ' has-detail' : ''}`}>
+          <div className="ix-folder-scroll">
+            <ul
+              className="ix-flist"
+              ref={listRef}
+              style={windowed ? { paddingTop: padTop, paddingBottom: padBottom } : undefined}
+            >
+              {slice.map((row) => (
+                <FolderRowView
+                  key={row.root}
+                  row={row}
+                  s={s}
+                  num={num}
+                  menuOpen={menu?.root === row.root}
+                  onMenu={onMenu}
+                  onAttention={onAttention}
+                  onOpen={onOpen}
+                  expanded={selectedRoot === row.root}
+                />
+              ))}
+            </ul>
+          </div>
+          {selectedFolder && (
+            <div ref={detailRef} className="ix-folder-panel">
+              <IndexFolderDetail
+                key={selectedFolder.root}
+                api={api}
+                folder={selectedFolder}
+                onChanged={onRefresh}
+                onRemove={() => {
+                  const row = rows.find((row) => row.root === selectedFolder.root)
+                  if (row) void remove(row)
+                }}
+                onClose={() => {
+                  setSelectedRoot(null)
+                  setExtra(null)
+                }}
+                extra={extra}
+                onExtra={setExtra}
+              />
+            </div>
+          )}
+        </div>
+      )}
+      {selectedFolder && extra === 'rules' && (
+        <div className="ix-folder-extra">
+          <IndexingRulesStudio api={api} initialRoot={selectedFolder.root} />
+        </div>
+      )}
+      {selectedFolder && extra === 'files' && (
+        <div className="ix-folder-extra is-files">
+          <IndexFileBrowser
+            api={api}
+            scope={{ root: selectedFolder.root }}
+            revision={
+              selectedFolder.totalFiles + selectedFolder.errorFiles + selectedFolder.pendingFiles
+            }
+            onChanged={onRefresh}
+          />
+        </div>
       )}
       {menu && open && (
         <IndexMenu
