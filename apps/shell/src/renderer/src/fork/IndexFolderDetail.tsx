@@ -4,31 +4,42 @@ import type { IndexedFolder } from '../../../shared/fork/document-index-api'
 import { useI18n } from '../locale'
 import { indexV2Words } from '../i18n/strings-index-v2'
 import { formatBytes } from './index-file-log'
-import { IndexFileBrowser } from './IndexFileBrowser'
 import { IndexRuntime } from './IndexRuntime'
-import { IndexingRulesStudio } from './IndexingRulesStudio'
+import { IndexOverflow } from './IndexCard'
+import { MenuItem, MenuSeparator } from './IndexMenu'
+import { IconChevron } from './index-icons'
+import { shortPath } from './index-screen-model'
 
+/** What the folder panel has opened underneath the list: the folder's rules or its files. */
+export type FolderExtra = 'rules' | 'files' | null
+
+/**
+ * One folder, in the same panel the file list uses: a header, what happened, a primary action
+ * with everything else behind "…", and the facts as label / value rows.
+ */
 export function IndexFolderDetail({
   api,
   folder,
   onChanged,
   onRemove,
   onClose,
+  extra,
+  onExtra,
 }: {
   api: HomeApi
   folder: IndexedFolder
   onChanged: () => void
   onRemove: () => void
   onClose: () => void
+  extra: FolderExtra
+  onExtra: (next: FolderExtra) => void
 }) {
   const { lang, dateLocale } = useI18n()
   const w = indexV2Words(lang)
   const runtime = useContext(IndexRuntime)
-  const [rulesOpen, setRulesOpen] = useState(false)
   const [size, setSize] = useState<number | null>(null)
   const [busy, setBusy] = useState(false)
   const [note, setNote] = useState('')
-  const [filesOpen, setFilesOpen] = useState(false)
   useEffect(() => {
     if (folder.sizeBytes !== undefined) {
       setSize(folder.sizeBytes)
@@ -63,9 +74,22 @@ export function IndexFolderDetail({
       setBusy(false)
     }
   }
+  const name = folder.root.split(/[\\/]/).filter(Boolean).pop() ?? folder.root
+  const since = runtime.offlineRoots?.find((source) => source.root === folder.root)?.since
+  const num = (n: number) => n.toLocaleString(dateLocale)
+  const facts: Array<[string, string]> = [
+    [w.total, num(folder.totalFiles)],
+    [w.ready, num(folder.readyFiles + (folder.releasedFiles ?? 0))],
+    [w.pending, num(folder.waitingFiles ?? folder.pendingFiles)],
+    [w.error, num(folder.errorFiles)],
+    [w.skipped, num(folder.emptyFiles ?? 0)],
+    [w.size, size === null ? w.notRecorded : formatBytes(size, dateLocale)],
+  ]
+  const toggle = (next: Exclude<FolderExtra, null>) => onExtra(extra === next ? null : next)
   return (
-    <div
-      className="ix-folder-detail"
+    <aside
+      className="ix-detail ix-folder-detail"
+      aria-label={`${w.folder}: ${name}`}
       onKeyDown={(e) => {
         if (e.key === 'Escape') {
           e.stopPropagation()
@@ -74,152 +98,158 @@ export function IndexFolderDetail({
       }}
     >
       <header>
-        <strong title={folder.root}>{folder.root}</strong>
+        <div>
+          <span className="ix-quiet">{w.folder}</span>
+          <h3 title={folder.root}>{name}</h3>
+        </div>
         <button type="button" className="ix-icon-btn" onClick={onClose} aria-label={w.close}>
           ×
         </button>
       </header>
-      <dl className="ix-folder-facts">
-        {[
-          [w.total, folder.totalFiles],
-          [w.ready, folder.readyFiles + (folder.releasedFiles ?? 0)],
-          [w.pending, folder.waitingFiles ?? folder.pendingFiles],
-          [w.error, folder.errorFiles],
-          [w.skipped, folder.emptyFiles ?? 0],
-          [w.size, size === null ? w.notRecorded : formatBytes(size, dateLocale)],
-          [
-            w.lastScan,
-            folder.completedAt
-              ? new Date(folder.completedAt).toLocaleString(dateLocale)
-              : w.notRecorded,
-          ],
-        ].map(([label, value]) => (
-          <div key={label}>
-            <dt>{label}</dt>
-            <dd>{typeof value === 'number' ? value.toLocaleString(dateLocale) : value}</dd>
-          </div>
-        ))}
-      </dl>
-      {folder.unavailable && (
-        <p className="ix-note">
-          {w.connection}:{' '}
-          {runtime.offlineRoots?.find((source) => source.root === folder.root)?.since
-            ? w.offlineSince.replace(
-                '{date}',
-                new Date(
-                  runtime.offlineRoots.find((source) => source.root === folder.root)!.since,
-                ).toLocaleString(dateLocale),
-              )
-            : w.notRecorded}{' '}
+      <p className="ix-detail-path" title={folder.root}>
+        {shortPath(folder.root)}
+      </p>
+      <section className="ix-detail-section">
+        <h4>{w.sectionHappened}</h4>
+        {folder.unavailable && (
+          <p className="ix-detail-reason">
+            {w.connection}:{' '}
+            {since
+              ? w.offlineSince.replace('{date}', new Date(since).toLocaleString(dateLocale))
+              : w.notRecorded}{' '}
+            <button
+              type="button"
+              className="ix-link"
+              onClick={() => void act(() => api.checkDocumentIndexSources!())}
+            >
+              {w.checkSource}
+            </button>
+          </p>
+        )}
+        {folder.paused && <p className="ix-detail-reason">{w.pauseHint}</p>}
+        {folder.lastError && <p className="ix-detail-reason">{folder.lastError}</p>}
+        <p className="ix-detail-reason">
+          {w.lastScan}:{' '}
+          {folder.completedAt
+            ? new Date(folder.completedAt).toLocaleString(dateLocale)
+            : w.notRecorded}
+        </p>
+        <details className="ix-folder-history">
+          <summary>{w.history}</summary>
+          {folder.history.length ? (
+            <ol>
+              {folder.history.map((run) => (
+                <li key={`${run.kind}:${run.endedAt}`}>
+                  <time>{new Date(run.endedAt).toLocaleString(dateLocale)}</time>
+                  <span>
+                    {num(run.discovered)} {w.files} · {num(run.enrolled)} {w.ready} ·{' '}
+                    {num(run.skipped)} {w.skipped} · {num(run.errors)} {w.error}
+                  </span>
+                </li>
+              ))}
+            </ol>
+          ) : (
+            <p className="ix-quiet">{w.notRecorded}</p>
+          )}
+        </details>
+      </section>
+      <section className="ix-detail-section">
+        <h4>{w.sectionActions}</h4>
+        {note && (
+          <p className="ix-note" role="status">
+            {note}
+          </p>
+        )}
+        <div className="ix-detail-actions">
           <button
             type="button"
-            className="ix-link"
-            onClick={() => void act(() => api.checkDocumentIndexSources!())}
+            className="ix-btn is-primary is-small"
+            disabled={busy || folder.unavailable}
+            onClick={() => void act(() => api.rescanIndexedFolder(folder.root))}
           >
-            {w.checkSource}
+            {folder.paused ? w.resumeFolder : w.scan}
           </button>
-        </p>
-      )}
-      {folder.lastError && <p className="ix-note">{folder.lastError}</p>}
-      {note && (
-        <p className="ix-note" role="status">
-          {note}
-        </p>
-      )}
-      <div className="ix-folder-actions">
-        <button
-          type="button"
-          className="ix-btn is-small"
-          disabled={busy || folder.unavailable}
-          onClick={() => void act(() => api.rescanIndexedFolder(folder.root))}
-        >
-          {folder.paused ? w.resumeFolder : w.scan}
-        </button>
-        {!folder.paused && (
           <button
             type="button"
             className="ix-btn is-small"
-            disabled={busy || !api.pauseIndexedFolder}
-            title={w.pauseHint}
-            onClick={() => void act(() => api.pauseIndexedFolder!(folder.root))}
+            disabled={busy || folder.unavailable}
+            onClick={() => void act(() => api.openFolderInFileManager(folder.root))}
           >
-            {w.pauseFolder}
+            {w.reveal}
           </button>
-        )}
+          <IndexOverflow label={w.more}>
+            {(close) => (
+              <>
+                {!folder.paused && (
+                  <MenuItem
+                    disabled={busy || !api.pauseIndexedFolder}
+                    title={w.pauseHint}
+                    onClick={() => {
+                      close()
+                      void act(() => api.pauseIndexedFolder!(folder.root))
+                    }}
+                  >
+                    {w.pauseFolder}
+                  </MenuItem>
+                )}
+                <MenuItem
+                  checked={!!folder.priority}
+                  disabled={busy}
+                  onClick={() => {
+                    close()
+                    void act(() => api.setIndexedFolderPriority(folder.root, !folder.priority))
+                  }}
+                >
+                  {w.priority}
+                </MenuItem>
+                <MenuItem
+                  onClick={() => {
+                    close()
+                    toggle('rules')
+                  }}
+                >
+                  {w.rules}
+                </MenuItem>
+                <MenuSeparator />
+                <MenuItem
+                  danger
+                  disabled={busy || folder.state === 'running'}
+                  onClick={() => {
+                    close()
+                    onRemove()
+                  }}
+                >
+                  {w.removeFolder}
+                </MenuItem>
+              </>
+            )}
+          </IndexOverflow>
+        </div>
+      </section>
+      <section className="ix-detail-section">
+        <h4>{w.sectionFacts}</h4>
+        <dl className="ix-detail-facts">
+          {facts.map(([label, value]) => (
+            <div key={label}>
+              <dt>{label}</dt>
+              <dd>{value}</dd>
+            </div>
+          ))}
+        </dl>
         <button
           type="button"
-          className="ix-btn is-small"
-          disabled={busy}
-          aria-pressed={folder.priority}
-          onClick={() =>
-            void act(() => api.setIndexedFolderPriority(folder.root, !folder.priority))
-          }
+          className="ix-detail-row"
+          aria-expanded={extra === 'files'}
+          onClick={() => toggle('files')}
         >
-          {w.priority}
+          <span>
+            {w.files} · {num(folder.totalFiles)}
+          </span>
+          <span className={`ix-chev${extra === 'files' ? ' is-open' : ''}`} aria-hidden="true">
+            <IconChevron />
+          </span>
         </button>
-        <button
-          type="button"
-          className="ix-btn is-small"
-          disabled={busy || folder.unavailable}
-          onClick={() => void act(() => api.openFolderInFileManager(folder.root))}
-        >
-          {w.reveal}
-        </button>
-        <button
-          type="button"
-          className="ix-btn is-small"
-          onClick={() => setRulesOpen((v) => !v)}
-          aria-expanded={rulesOpen}
-        >
-          {w.rules}
-        </button>
-        <button
-          type="button"
-          className="ix-btn is-small"
-          disabled={busy || folder.state === 'running'}
-          onClick={onRemove}
-        >
-          {w.removeFolder}
-        </button>
-      </div>
-      {folder.paused && <p className="ix-note">{w.pauseHint}</p>}
-      {rulesOpen && <IndexingRulesStudio api={api} initialRoot={folder.root} />}
-      <details className="ix-folder-history">
-        <summary>{w.history}</summary>
-        {folder.history.length ? (
-          <ol>
-            {folder.history.map((run) => (
-              <li key={`${run.kind}:${run.endedAt}`}>
-                <time>{new Date(run.endedAt).toLocaleString(dateLocale)}</time>
-                <span>
-                  {run.discovered.toLocaleString(dateLocale)} {w.files} ·{' '}
-                  {run.enrolled.toLocaleString(dateLocale)} {w.ready} ·{' '}
-                  {run.skipped.toLocaleString(dateLocale)} {w.skipped} ·{' '}
-                  {run.errors.toLocaleString(dateLocale)} {w.error}
-                </span>
-              </li>
-            ))}
-          </ol>
-        ) : (
-          <p className="ix-quiet">{w.notRecorded}</p>
-        )}
-      </details>
-      <button
-        type="button"
-        className="ix-link ix-folder-files-toggle"
-        aria-expanded={filesOpen}
-        onClick={() => setFilesOpen((v) => !v)}
-      >
-        {w.files} · {folder.totalFiles.toLocaleString(dateLocale)}
-      </button>
-      {filesOpen && (
-        <IndexFileBrowser
-          api={api}
-          scope={{ root: folder.root }}
-          revision={folder.totalFiles + folder.errorFiles + folder.pendingFiles}
-          onChanged={onChanged}
-        />
-      )}
-    </div>
+      </section>
+    </aside>
   )
 }

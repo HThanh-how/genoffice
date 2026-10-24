@@ -17,6 +17,7 @@ import { readIndexRequest } from './index-request'
 import { createIndexSourceLookup, sortViewFiles, type IndexViewSort } from './index-list-view'
 import { foldText, indexFileActivity } from './index-screen-model'
 import { IndexRuntime } from './IndexRuntime'
+import { IconChevron } from './index-icons'
 
 const FileRow = memo(function FileRow({
   item,
@@ -91,7 +92,9 @@ const FileRow = memo(function FileRow({
             {item.progress.done}/{item.progress.total}
           </span>
         )}
-        <span aria-hidden="true">{active ? '⌄' : '›'}</span>
+        <span className={`ix-chev ix-row-chev${active ? ' is-open' : ''}`} aria-hidden="true">
+          <IconChevron />
+        </span>
       </button>
     </li>
   )
@@ -226,13 +229,10 @@ export function IndexFileBrowser({
     if (!more || actionsRef.current.open !== item.id) actionsRef.current.toggle(item)
     if (more)
       requestAnimationFrame(() => {
-        const detail = scrollRef.current
+        scrollRef.current
           ?.closest('.ix-browser')
-          ?.querySelector<HTMLDetailsElement>('.ix-detail-more')
-        if (detail) {
-          detail.open = true
-          detail.querySelector<HTMLButtonElement>('button:not(:disabled)')?.focus()
-        }
+          ?.querySelector<HTMLButtonElement>('.ix-detail .ix-overflow-trigger')
+          ?.click()
       })
   }, [])
   const onPick = useCallback(
@@ -339,10 +339,10 @@ export function IndexFileBrowser({
       )
   }
   const offset = view.offset ?? 0
-  const bulkButton = (mode: IndexBulkAction, text: string) => (
+  const bulkButton = (mode: IndexBulkAction, text: string, primary = false) => (
     <button
       type="button"
-      className="ix-btn is-small"
+      className={`ix-btn is-small${primary ? ' is-primary' : ''}`}
       disabled={bulk.busy}
       onClick={() =>
         void bulk.run(mode, allSelection ? { ...allSelection, except: pickState.picked } : selected)
@@ -352,7 +352,9 @@ export function IndexFileBrowser({
     </button>
   )
   return (
-    <div className={`ix-browser${active ? ' has-detail' : ''}`}>
+    <div
+      className={`ix-browser${active ? ' has-detail' : ''}${selectedCount > 0 ? ' is-selecting' : ''}`}
+    >
       <div className="ix-browser-list">
         {!hideToolbar && (
           <IndexFileToolbar
@@ -366,45 +368,20 @@ export function IndexFileBrowser({
             reasons={scope.reasons}
           />
         )}
-        <div className="ix-browser-tools">
-          <button
-            type="button"
-            className="ix-link"
-            onClick={() => select(items)}
-            disabled={!items.length}
-          >
-            {w.selectShown}
-          </button>
-          {!fixedItems && page && page.total > page.items.length && page.maxId !== undefined && (
+        {grouping !== 'none' && (
+          <div className="ix-browser-tools">
+            <button type="button" className="ix-link" onClick={() => setCollapsed(new Set())}>
+              {w.expandAll}
+            </button>
             <button
               type="button"
               className="ix-link"
-              onClick={() => {
-                setPick(NOTHING_PICKED)
-                setAllSelection({
-                  query: { ...view, offset: 0, throughId: page.maxId },
-                  total: page.total,
-                })
-              }}
+              onClick={() => setCollapsed(new Set(groups.map((g) => g.name)))}
             >
-              {fill(w.selectAll, { n: page.total.toLocaleString(dateLocale) })}
+              {w.collapseAll}
             </button>
-          )}
-          {grouping !== 'none' && (
-            <>
-              <button type="button" className="ix-link" onClick={() => setCollapsed(new Set())}>
-                {w.expandAll}
-              </button>
-              <button
-                type="button"
-                className="ix-link"
-                onClick={() => setCollapsed(new Set(groups.map((g) => g.name)))}
-              >
-                {w.collapseAll}
-              </button>
-            </>
-          )}
-        </div>
+          </div>
+        )}
         <p className="ix-sr-only">{w.fileHint}</p>
         {selectedCount > 0 && (
           <div
@@ -413,11 +390,34 @@ export function IndexFileBrowser({
             aria-label={fill(w.selected, { n: selectedCount })}
           >
             <strong>{fill(w.selected, { n: selectedCount.toLocaleString(dateLocale) })}</strong>
-            {bulkButton('retry', w.retry)}
-            {bulkButton('ocr', w.ocr)}
+            <button
+              type="button"
+              className="ix-link"
+              onClick={() => select(items)}
+              disabled={!items.length}
+            >
+              {w.selectShown}
+            </button>
+            {!fixedItems && page && page.total > page.items.length && page.maxId !== undefined && (
+              <button
+                type="button"
+                className="ix-link"
+                onClick={() => {
+                  setPick(NOTHING_PICKED)
+                  setAllSelection({
+                    query: { ...view, offset: 0, throughId: page.maxId },
+                    total: page.total,
+                  })
+                }}
+              >
+                {fill(w.selectAll, { n: page.total.toLocaleString(dateLocale) })}
+              </button>
+            )}
+            {bulkButton('retry', w.retry, true)}
             <details>
               <summary className="ix-btn is-small">{w.more}</summary>
               <div className="ix-bulk-more">
+                {bulkButton('ocr', w.ocr)}
                 {bulkButton('exclude', w.exclude)}
                 {bulkButton('remove', w.remove)}
                 {bulkButton('reveal', w.showFirst)}
@@ -555,7 +555,7 @@ export function IndexFileBrowser({
             </ul>
           )}
         </div>
-        {page && (
+        {page && page.total > INDEX_BROWSER_PAGE_SIZE && (
           <footer className="ix-browser-footer">
             <span>
               {fill(w.coverage, {

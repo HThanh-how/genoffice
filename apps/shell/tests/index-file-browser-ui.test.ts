@@ -116,8 +116,7 @@ describe('shared Index file interactions', () => {
     await act(async () => {
       await new Promise((resolve) => setTimeout(resolve, 50))
     })
-    expect(container.querySelector<HTMLDetailsElement>('.ix-detail-more')?.open).toBe(true)
-    expect(container.querySelector('.ix-detail')?.textContent).toContain('Copy file name')
+    expect(document.body.querySelector('.ix-menu')?.textContent).toContain('Copy file name')
   })
   it('stops eligible local work and queued OCR in a mixed selection without failing on ready files', async () => {
     const stopIndexFile = vi.fn(async () => ({ ok: true }))
@@ -143,6 +142,7 @@ describe('shared Index file interactions', () => {
       ),
     )
     await flush()
+    act(() => container.querySelector<HTMLInputElement>('.ix-browser-row input')!.click())
     act(() =>
       [...container.querySelectorAll<HTMLButtonElement>('button')]
         .find((button) => button.textContent === 'Select shown files')!
@@ -167,10 +167,11 @@ describe('shared Index file interactions', () => {
     await flush()
     expect(api.getIndexFileDetail).toHaveBeenCalledTimes(1)
     const panel = container.querySelector('.ix-detail')!
+    act(() => panel.querySelector<HTMLButtonElement>('.ix-overflow-trigger')!.click())
+    const menu = document.body.querySelector('.ix-menu')!
+    for (const label of ['Open in its app', 'Show in folder', 'Read again'])
+      expect(panel.textContent).toContain(label)
     for (const label of [
-      'Open in its app',
-      'Show in folder',
-      'Read again',
       'Cloud OCR now',
       'Copy path',
       'Copy file name',
@@ -181,7 +182,7 @@ describe('shared Index file interactions', () => {
       'Read later',
       'Stop processing',
     ])
-      expect(panel.textContent).toContain(label)
+      expect(menu.textContent).toContain(label)
     act(() => panel.querySelector<HTMLButtonElement>('[aria-label="Close details"]')!.click())
     expect(container.querySelector('.ix-detail')).toBeNull()
   })
@@ -209,12 +210,17 @@ describe('shared Index file interactions', () => {
   it('selects the whole filtered group and processes bounded keyset pages without skipping changed rows', async () => {
     const api = render()
     await flush()
+    act(() => container.querySelector<HTMLInputElement>('.ix-browser-row input')!.click())
     const all = [...container.querySelectorAll<HTMLButtonElement>('button')].find(
       (button) => button.textContent === 'Select all 350 matching files',
     )!
     act(() => all.click())
     expect(container.querySelector('.ix-bulk')?.textContent).toContain('350 files selected')
-    act(() => container.querySelector<HTMLButtonElement>('.ix-bulk button')!.click())
+    act(() =>
+      [...container.querySelectorAll<HTMLButtonElement>('.ix-bulk button')]
+        .find((button) => button.textContent === 'Read again')!
+        .click(),
+    )
     await flush()
     expect(api.retried.size).toBe(350)
     expect(api.enqueueDocumentIndex.mock.calls.every(([ids]) => ids.length <= 100)).toBe(true)

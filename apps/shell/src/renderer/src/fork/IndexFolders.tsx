@@ -14,9 +14,18 @@ import {
   type FolderRow,
 } from './index-screen-model'
 import { useWindowedRows } from './use-windowed-rows'
-import { IconAlert, IconFolder, IconMore, IconOffline, IconSearch } from './index-icons'
+import {
+  IconAlert,
+  IconChevron,
+  IconFolder,
+  IconMore,
+  IconOffline,
+  IconSearch,
+} from './index-icons'
 import { IndexMenu, MenuItem, MenuSeparator } from './IndexMenu'
-import { IndexFolderDetail } from './IndexFolderDetail'
+import { IndexFolderDetail, type FolderExtra } from './IndexFolderDetail'
+import { IndexFileBrowser } from './IndexFileBrowser'
+import { IndexingRulesStudio } from './IndexingRulesStudio'
 import { IndexCardHeading } from './IndexCard'
 import { indexV2Words } from '../i18n/strings-index-v2'
 
@@ -145,7 +154,10 @@ const FolderRowView = memo(function FolderRowView({
       </span>
     )
   return (
-    <li className={`ix-frow${offline ? ' is-offline' : ''}`} style={{ height: ROW_HEIGHT }}>
+    <li
+      className={`ix-frow${offline ? ' is-offline' : ''}${expanded ? ' is-active' : ''}`}
+      style={{ height: ROW_HEIGHT }}
+    >
       <span className="ix-ficon" aria-hidden="true">
         {offline ? <IconOffline /> : <IconFolder />}
       </span>
@@ -180,6 +192,9 @@ const FolderRowView = memo(function FolderRowView({
       >
         <IconMore />
       </button>
+      <span className={`ix-chev ix-row-chev${expanded ? ' is-open' : ''}`} aria-hidden="true">
+        <IconChevron />
+      </span>
     </li>
   )
 })
@@ -211,9 +226,11 @@ export function IndexFolders({
   const [sort, setSort] = useState('name')
   const [status, setStatus] = useState('')
   const [group, setGroup] = useState(false)
+  const [extra, setExtra] = useState<FolderExtra>(null)
   const detailRef = useRef<HTMLDivElement>(null)
   const onOpen = useCallback((root: string) => {
     setSelectedRoot((current) => (current === root ? null : root))
+    setExtra(null)
     requestAnimationFrame(() => detailRef.current?.scrollIntoView({ block: 'nearest' }))
   }, [])
   const [menu, setMenu] = useState<{
@@ -357,21 +374,6 @@ export function IndexFolders({
           </div>
         </details>
       </div>
-      {selectedFolder && (
-        <div ref={detailRef}>
-          <IndexFolderDetail
-            key={selectedFolder.root}
-            api={api}
-            folder={selectedFolder}
-            onChanged={onRefresh}
-            onRemove={() => {
-              const row = rows.find((row) => row.root === selectedFolder.root)
-              if (row) void remove(row)
-            }}
-            onClose={() => setSelectedRoot(null)}
-          />
-        </div>
-      )}
       {failed && (
         <p className="ix-note" role="status">
           {s.folderFailed}{' '}
@@ -380,29 +382,68 @@ export function IndexFolders({
           </button>
         </p>
       )}
-      {shown.length === 0 ? (
+      {shown.length === 0 && !selectedFolder ? (
         <p className="ix-quiet">{fill(s.noMatch, { q: query.trim() })}</p>
       ) : (
-        <div className="ix-folder-scroll">
-          <ul
-            className="ix-flist"
-            ref={listRef}
-            style={windowed ? { paddingTop: padTop, paddingBottom: padBottom } : undefined}
-          >
-            {slice.map((row) => (
-              <FolderRowView
-                key={row.root}
-                row={row}
-                s={s}
-                num={num}
-                menuOpen={menu?.root === row.root}
-                onMenu={onMenu}
-                onAttention={onAttention}
-                onOpen={onOpen}
-                expanded={selectedRoot === row.root}
+        <div className={`ix-folder-body${selectedFolder ? ' has-detail' : ''}`}>
+          <div className="ix-folder-scroll">
+            <ul
+              className="ix-flist"
+              ref={listRef}
+              style={windowed ? { paddingTop: padTop, paddingBottom: padBottom } : undefined}
+            >
+              {slice.map((row) => (
+                <FolderRowView
+                  key={row.root}
+                  row={row}
+                  s={s}
+                  num={num}
+                  menuOpen={menu?.root === row.root}
+                  onMenu={onMenu}
+                  onAttention={onAttention}
+                  onOpen={onOpen}
+                  expanded={selectedRoot === row.root}
+                />
+              ))}
+            </ul>
+          </div>
+          {selectedFolder && (
+            <div ref={detailRef} className="ix-folder-panel">
+              <IndexFolderDetail
+                key={selectedFolder.root}
+                api={api}
+                folder={selectedFolder}
+                onChanged={onRefresh}
+                onRemove={() => {
+                  const row = rows.find((row) => row.root === selectedFolder.root)
+                  if (row) void remove(row)
+                }}
+                onClose={() => {
+                  setSelectedRoot(null)
+                  setExtra(null)
+                }}
+                extra={extra}
+                onExtra={setExtra}
               />
-            ))}
-          </ul>
+            </div>
+          )}
+        </div>
+      )}
+      {selectedFolder && extra === 'rules' && (
+        <div className="ix-folder-extra">
+          <IndexingRulesStudio api={api} initialRoot={selectedFolder.root} />
+        </div>
+      )}
+      {selectedFolder && extra === 'files' && (
+        <div className="ix-folder-extra is-files">
+          <IndexFileBrowser
+            api={api}
+            scope={{ root: selectedFolder.root }}
+            revision={
+              selectedFolder.totalFiles + selectedFolder.errorFiles + selectedFolder.pendingFiles
+            }
+            onChanged={onRefresh}
+          />
         </div>
       )}
       {menu && open && (

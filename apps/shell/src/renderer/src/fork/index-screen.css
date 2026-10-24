@@ -488,7 +488,7 @@
   color: var(--text-tertiary);
   transition: transform var(--transition-fast);
 }
-.ix-issue.is-open .ix-chev,
+.ix-issue.is-open > .ix-issue-head .ix-chev,
 .ix-chev.is-open {
   transform: rotate(90deg);
 }

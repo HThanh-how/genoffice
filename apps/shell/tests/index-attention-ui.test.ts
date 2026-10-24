@@ -104,9 +104,12 @@ describe('Index attention list', () => {
     expect(rows[0]!.querySelector('input[type="checkbox"]')).not.toBeNull()
     expect(rows[0]!.querySelector('button[aria-expanded="false"]')).not.toBeNull()
     expect(container.querySelector('.ixp')).toBeNull()
-    expect(container.textContent).toMatch(/Expand all/)
+    // one toolbar for the whole card, "Expand all" behind the overflow, selection links only once selecting
+    expect(container.querySelector('button[aria-label="More actions"]')).not.toBeNull()
+    expect(container.textContent).not.toMatch(/Expand all|Select shown files/)
+    expect(container.querySelectorAll('input[type="search"]')).toHaveLength(1)
+    act(() => rows[0]!.querySelector<HTMLInputElement>('input[type="checkbox"]')!.click())
     expect(container.textContent).toMatch(/Select shown files/)
-    expect(container.querySelector('input[type="search"]')).not.toBeNull()
   })
 
   it('shows an offline root calmly and checks it on request', async () => {

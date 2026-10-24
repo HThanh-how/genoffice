@@ -4,7 +4,7 @@ import { useI18n } from '../locale'
 import { indexV2Words } from '../i18n/strings-index-v2'
 import { IndexCardHeading } from './IndexCard'
 import { IndexFileBrowser } from './IndexFileBrowser'
-import { IconChevron, IconFolder } from './index-icons'
+import { IconChevron, IconClock } from './index-icons'
 import type { FileItem } from './IndexFiles'
 
 function RecentlyOpened({ api, onChanged }: { api: HomeApi; onChanged: () => void }) {
@@ -85,7 +85,7 @@ export function IndexActivity({
         aria-expanded={activityOpen}
         onClick={() => setActivityOpen((v) => !v)}
       >
-        <IndexCardHeading title={w.activity} hint={w.activityHint} icon={<IconFolder />} />
+        <IndexCardHeading title={w.activity} hint={w.activityHint} icon={<IconClock />} />
         <span className={`ix-chev${activityOpen ? ' is-open' : ''}`}>
           <IconChevron />
         </span>

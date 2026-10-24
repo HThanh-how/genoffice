@@ -3,7 +3,7 @@ import type { HomeApi } from '../../../shared/home-api'
 import type { IndexIssueReason } from '../../../main/document-memory/issues'
 import type { IndexingNow } from '../../../shared/fork/document-index-api'
 
-/** One shared interaction model for issues, waiting, activity and folder contents. */
+/** One group's files. Search, filter and sort live once, in the Needs-your-attention toolbar. */
 export function IndexIssueFiles({
   api,
   reasons,
@@ -21,6 +21,7 @@ export function IndexIssueFiles({
     <IndexFileBrowser
       api={api}
       scope={{ reasons }}
+      hideToolbar
       revision={count}
       now={now}
       onChanged={onChanged}

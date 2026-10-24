@@ -12,8 +12,9 @@ import { IndexIssueFiles } from './IndexIssueFiles'
 import { IconChevron } from './index-icons'
 import { ocrSourceCopy } from '../i18n/strings-ocr-source'
 import { indexV2Words } from '../i18n/strings-index-v2'
-import { IndexCardHeading } from './IndexCard'
+import { IndexCardHeading, IndexOverflow } from './IndexCard'
 import { IconAlert } from './index-icons'
+import { MenuItem } from './IndexMenu'
 import type { IndexingNow } from '../../../shared/fork/document-index-api'
 import type { IndexBrowserQuery } from '../../../shared/fork/index-browser'
 import { IndexFileToolbar, type FileGrouping } from './IndexFileToolbar'
@@ -22,6 +23,8 @@ import { parseIndexView } from './index-screen-model'
 
 /** Kinds of trouble listed before the rest fold behind "Show N more". */
 const TOP_GROUPS = 3
+/** Disconnected locations spelled out before the rest fold behind "Show N more". */
+const OFFLINE_SHOWN = 2
 const VIEW_KEY = 'genoffice.index.todo.view'
 const savedView = () => {
   try {
@@ -54,6 +57,7 @@ export const IndexAttention = forwardRef<
   const [open, setOpen] = useState<Set<string>>(new Set())
   const [skippedOpen, setSkippedOpen] = useState(false)
   const [showAll, setShowAll] = useState(false)
+  const [offlineAll, setOfflineAll] = useState(false)
   const [retrying, setRetrying] = useState<string | null>(null)
   const [note, setNote] = useState('')
   const [filters, setFilters] = useState<IndexBrowserQuery>(() => ({
@@ -176,9 +180,6 @@ export const IndexAttention = forwardRef<
               })
             }
           >
-            <span className="ix-chev" aria-hidden="true">
-              <IconChevron />
-            </span>
             <span className="ix-issue-text">
               <strong>{text.title}</strong>
               <span>{text.hint}</span>
@@ -195,6 +196,9 @@ export const IndexAttention = forwardRef<
               {retrying === row.id ? g.retrying : g.retry}
             </button>
           )}
+          <span className="ix-chev ix-row-chev" aria-hidden="true">
+            <IconChevron />
+          </span>
         </div>
         {isOpen && attention && (
           <div className="ix-issue-body">
@@ -214,30 +218,53 @@ export const IndexAttention = forwardRef<
   return (
     <section className="ix-section ix-card" ref={ref} aria-label={s.attention}>
       <IndexCardHeading title={s.attention} hint={w.attentionHint} icon={<IconAlert />}>
-        <button
-          type="button"
-          className="ix-link"
-          onClick={() => {
-            setShowAll(true)
-            setSkippedOpen(true)
-            setOpen(new Set([...needs, ...skipped].map((row) => row.id)))
-          }}
-        >
-          {w.expandAll}
-        </button>
-        <button type="button" className="ix-link" onClick={() => setOpen(new Set())}>
-          {w.collapseAll}
-        </button>
+        {needs.length + skipped.length > 1 && (
+          <IndexOverflow label={w.more}>
+            {(close) => (
+              <>
+                <MenuItem
+                  onClick={() => {
+                    close()
+                    setShowAll(true)
+                    setSkippedOpen(true)
+                    setOpen(new Set([...needs, ...skipped].map((row) => row.id)))
+                  }}
+                >
+                  {w.expandAll}
+                </MenuItem>
+                <MenuItem
+                  onClick={() => {
+                    close()
+                    setOpen(new Set())
+                  }}
+                >
+                  {w.collapseAll}
+                </MenuItem>
+              </>
+            )}
+          </IndexOverflow>
+        )}
       </IndexCardHeading>
-      {offline.map((source) => (
-        <div className="ix-note" role="status" key={source.root}>
-          <p>
-            {fill(sourceCopy.waiting, {
-              root: source.root,
-              date: new Date(source.since).toLocaleString(dateLocale),
-              n: num(source.waiting),
-            })}
-          </p>
+      {offline.length > 0 && (
+        <div className="ix-note ix-offline" role="status">
+          <div className="ix-offline-text">
+            {(offlineAll ? offline : offline.slice(0, OFFLINE_SHOWN)).map((source) => (
+              <p key={source.root}>
+                {fill(sourceCopy.waiting, {
+                  root: source.root,
+                  date: new Date(source.since).toLocaleString(dateLocale),
+                  n: num(source.waiting),
+                })}
+              </p>
+            ))}
+            {offline.length > OFFLINE_SHOWN && (
+              <button type="button" className="ix-link" onClick={() => setOfflineAll((v) => !v)}>
+                {offlineAll
+                  ? s.groupsFewer
+                  : s.groupsMore.replace('{n}', num(offline.length - OFFLINE_SHOWN))}
+              </button>
+            )}
+          </div>
           {api.checkDocumentIndexSources && (
             <button
               type="button"
@@ -252,7 +279,7 @@ export const IndexAttention = forwardRef<
             </button>
           )}
         </div>
-      ))}
+      )}
       {note && (
         <p className="ix-note" role="status">
           {note}

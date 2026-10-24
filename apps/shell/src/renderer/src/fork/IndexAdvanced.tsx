@@ -5,7 +5,7 @@ import { TEXT, EN } from './index-dashboard-i18n'
 import { IconChevron } from './index-icons'
 import { IndexSettingsTab } from './IndexSettingsTab'
 import { IndexCardHeading } from './IndexCard'
-import { IconFolder } from './index-icons'
+import { IconSliders } from './index-icons'
 
 /**
  * Everything that changes how indexing behaves lives behind one quiet row at the bottom, and is only
@@ -32,7 +32,7 @@ export const IndexAdvanced = forwardRef<
         aria-controls="ix-advanced-body"
         onClick={onToggle}
       >
-        <IndexCardHeading title={s.advanced} hint={s.advancedHint} icon={<IconFolder />} />
+        <IndexCardHeading title={s.advanced} hint={s.advancedHint} icon={<IconSliders />} />
         <span className={`ix-chev${open ? ' is-open' : ''}`} aria-hidden="true">
           <IconChevron />
         </span>
