@@ -449,7 +449,7 @@ export class DocumentMemoryManager {
     }
     const ext = reply.result; this.readProgress.delete(path); const prev = this.store.documentByPath(path); const lexicalOnly = !!ext.skipEmbeddings && ext.chunks.length > 0
     if (!(await this.freshnessCoord.handleExtractedFreshness(path, ext)) || !this.isCurrent(path, generation, epoch)) return
-    const resumeOffset = !lexicalOnly && prev?.mtimeMs === ext.mtimeMs && prev?.sizeBytes === ext.sizeBytes ? this.store.resumeVectorOffset(path, ext.hash, this.embeddingCoord.currentProfile.embeddingId) : null
+    const resumeOffset = !lexicalOnly && prev?.mtimeMs === ext.mtimeMs && prev?.sizeBytes === ext.sizeBytes ? this.store.resumeVectorOffset(path, ext.hash, this.embeddingCoord.currentProfile.embeddingId, ext.chunks) : null
     if (resumeOffset === null) {
       const res = await writeExtractedContentSliced({
         store: this.store, admission: this.admission, maintScheduler: this.maintScheduler, budgetCoord: this.budgetCoord,

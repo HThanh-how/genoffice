@@ -270,8 +270,8 @@ export class DocumentMemoryStore {
   resumeEmbeddingOffset(path: string, hash: string, spaceId: string): number | null {
     return this.embRepo.resumeEmbeddingOffset(path, hash, spaceId)
   }
-  resumeVectorOffset(path: string, hash: string, model: string): number | null {
-    return this.embRepo.resumeEmbeddingOffset(path, hash, model)
+  resumeVectorOffset(path: string, hash: string, model: string, expectedChunks?: readonly { text: string }[]): number | null {
+    return this.embRepo.resumeEmbeddingOffset(path, hash, model, expectedChunks)
   }
   move(oldPath: string, newPath: string): void {
     this.docRepo.move(oldPath, newPath)

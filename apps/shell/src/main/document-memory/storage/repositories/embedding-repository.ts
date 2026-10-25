@@ -381,7 +381,7 @@ export class EmbeddingRepository {
     }
   }
 
-  resumeEmbeddingOffset(path: string, hash: string, embeddingSpaceId: string): number | null {
+  resumeEmbeddingOffset(path: string, hash: string, embeddingSpaceId: string, expectedChunks?: readonly { text: string }[]): number | null {
     const doc = this.db
       .prepare('SELECT id, hash, embedding_model, excluded, status FROM documents WHERE path = ?')
       .get(resolve(path)) as
@@ -397,9 +397,26 @@ export class EmbeddingRepository {
       return null
     }
 
+    // A matching file hash does not guarantee the same chunking after an upgrade.
+    // Offsets and saved vectors are reusable only for the exact same passage sequence.
+    if (expectedChunks) {
+      let index = 0
+      for (const chunk of this.db.prepare(`
+        SELECT c.ordinal, c.text FROM chunks c
+        JOIN documents d ON d.id = c.document_id
+        WHERE c.document_id = ?
+          AND (c.chunk_set_id IS NULL OR c.chunk_set_id = d.active_chunk_set_id)
+        ORDER BY c.ordinal
+      `).iterate(doc.id)) {
+        if (chunk.ordinal !== index || chunk.text !== expectedChunks[index]?.text) return null
+        index++
+      }
+      if (index !== expectedChunks.length) return null
+    }
+
     const row = this.db
       .prepare(`
-        SELECT min(c.ordinal) AS missing, count(*) AS total
+        SELECT min(CASE WHEN e.chunk_id IS NULL THEN c.ordinal END) AS missing, count(*) AS total
         FROM chunks c
         JOIN documents d ON d.id = c.document_id
         LEFT JOIN chunk_embeddings e
@@ -407,7 +424,6 @@ export class EmbeddingRepository {
           AND e.space_id = ?
         WHERE c.document_id = ?
           AND (c.chunk_set_id IS NULL OR c.chunk_set_id = d.active_chunk_set_id)
-          AND e.chunk_id IS NULL
       `)
       .get(embeddingSpaceId, doc.id) as { missing: number | null; total: number }
 
