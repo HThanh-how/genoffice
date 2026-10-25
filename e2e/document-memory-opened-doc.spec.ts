@@ -156,14 +156,26 @@ test.describe('opened document memory', () => {
       expect(hit!.text).toContain('Moonstone')
       expect(initial.modelState).toMatch(/^(not-loaded|downloading|ready|error)$/)
 
-      const read = await editor.evaluate(async (chunkId) => {
-        const api = (window as WindowWithMemoryApis).desktop!
-        return api.documentMemoryRead(chunkId)
-      }, hit!.chunkId)
-      expect(read.verified).toBe(true)
-      expect(read.path).toBe(sourcePath)
-      expect(read.location).toBeTruthy()
-      expect(read.text).toContain(OLD_PHONE)
+      // Opening can enqueue another indexing generation while verification is in flight.
+      // Retry a fresh search/read until the normal fail-closed guard observes a stable generation.
+      await expect
+        .poll(
+          async () => {
+            const current = await search(editor, 'Moonstone class 2/1 guardian')
+            const currentHit = current.hits.find((entry) => entry.path === sourcePath)
+            if (!currentHit) return undefined
+            return editor.evaluate(async (chunkId) => {
+              return (window as WindowWithMemoryApis).desktop!.documentMemoryRead(chunkId)
+            }, currentHit.chunkId)
+          },
+          { timeout: 15_000 },
+        )
+        .toMatchObject({
+          verified: true,
+          path: sourcePath,
+          location: expect.stringMatching(/.+/),
+          text: expect.stringContaining(OLD_PHONE),
+        })
 
       // Opening a remembered result uses the shell's standard file-open router.
       const opened = await editor.evaluate(async (documentId) => {
