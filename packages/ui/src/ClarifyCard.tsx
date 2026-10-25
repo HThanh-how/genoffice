@@ -109,6 +109,7 @@ export function ClarifyCard({
   }
 
   const q = questions[qIdx]
+  if (!q) return null
   const isLast = qIdx === questions.length - 1
   const selCount = picked[q.id]?.size ?? 0
   const hasAnswer = selCount > 0 || !!other[q.id]?.trim()
