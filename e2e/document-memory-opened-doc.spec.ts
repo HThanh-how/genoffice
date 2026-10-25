@@ -160,7 +160,7 @@ test.describe('opened document memory', () => {
         const api = (window as WindowWithMemoryApis).desktop!
         return api.documentMemoryRead(chunkId)
       }, hit!.chunkId)
-      expect(read.verified).toBe(true)
+      expect(read.verified, JSON.stringify(read)).toBe(true)
       expect(read.path).toBe(sourcePath)
       expect(read.location).toBeTruthy()
       expect(read.text).toContain(OLD_PHONE)
