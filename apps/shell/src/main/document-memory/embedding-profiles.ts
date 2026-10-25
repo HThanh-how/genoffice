@@ -317,7 +317,7 @@ export const EMBEDDING_PROFILES: Record<EmbeddingProfileId, EmbeddingProfile> = 
   ...LEGACY_PROFILES,
   base: tieredProfile('base', 'base', BEKKO_A8M, {
     maxInputTokens: 512,
-    maxThreads: 1,
+    maxThreads: 8,
     concurrency: 1,
     heavy: false,
     resizableSession: true,

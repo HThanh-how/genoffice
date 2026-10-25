@@ -50,9 +50,9 @@ describe('resolvePolicy on AC power', () => {
       tier: 'idle',
     },
     {
-      name: 'balanced, idle on 4 cores caps at 2',
+      name: 'balanced, idle on 4 cores leaves one free',
       input: { userIdleSeconds: 900, cores: 4 },
-      threads: 2,
+      threads: 3,
       share: 1,
       tier: 'idle',
     },
@@ -60,28 +60,28 @@ describe('resolvePolicy on AC power', () => {
     {
       name: 'fast, idle on 16 cores',
       input: { mode: 'fast', userIdleSeconds: 300 },
-      threads: 8,
+      threads: 12,
       share: 1,
       tier: 'idle',
     },
     {
       name: 'fast, idle on 8 cores',
       input: { mode: 'fast', userIdleSeconds: 300, cores: 8 },
-      threads: 4,
+      threads: 6,
       share: 1,
       tier: 'idle',
     },
     {
-      name: 'fast, idle on 32 cores still 8',
+      name: 'fast, idle on 32 cores leaves 20 percent free',
       input: { mode: 'fast', userIdleSeconds: 300, cores: 32 },
-      threads: 8,
+      threads: 25,
       share: 1,
       tier: 'idle',
     },
     {
-      name: 'fast, active on 4 cores caps at 2',
+      name: 'fast, active on 4 cores leaves one free',
       input: { mode: 'fast', cores: 4 },
-      threads: 2,
+      threads: 3,
       share: 0.6,
       tier: 'active',
     },
@@ -134,16 +134,23 @@ describe('resolvePolicy on AC power', () => {
     expect(result.threads).toBe(threads)
     expect(result.cpuShare).toBeCloseTo(share)
     expect(result.tier).toBe(tier)
-    expect(result.priority).toBe('below-normal')
+    expect(result.priority).toBe(result.tier === 'idle' ? 'below-normal' : 'idle')
   })
 
-  it('never uses more than half of the logical cores', () => {
+  it('never uses more than 80 percent of the logical cores', () => {
     for (const cores of [1, 2, 3, 4, 6, 8, 12, 16, 24, 64])
       for (const mode of ['light', 'balanced', 'fast'] as const)
         for (const idle of [0, 1000])
           expect(policy({ cores, mode, userIdleSeconds: idle }).threads).toBeLessThanOrEqual(
-            Math.max(1, Math.floor(cores / 2)),
+            Math.max(1, Math.floor(cores * 0.8)),
           )
+  })
+
+  it('honours the sign-in launch ceiling without bypassing pause protection', () => {
+    expect(policy({ mode: 'fast', userIdleSeconds: 900, cores: 8, maxThreads: 1 })).toMatchObject({ threads: 1, priority: 'idle' })
+    expect(policy({ mode: 'fast', userIdleSeconds: 900, cores: 8, maxThreads: 8 }).threads).toBe(6)
+    expect(policy({ maxThreads: 1, userPaused: true }).paused).toBe(true)
+    expect(policy({ maxThreads: 1, thermalCritical: true }).paused).toBe(true)
   })
 })
 
@@ -156,10 +163,10 @@ describe('resolvePolicy on battery', () => {
     expect(result.tier).toBe('battery')
   })
 
-  it('uses the idle OS class only for Light on battery', () => {
+  it('uses the idle OS class for background work on battery', () => {
     expect(policy({ mode: 'light', onBattery: true }).priority).toBe('idle')
-    expect(policy({ mode: 'balanced', onBattery: true }).priority).toBe('below-normal')
-    expect(policy({ mode: 'fast', onBattery: true }).priority).toBe('below-normal')
+    expect(policy({ mode: 'balanced', onBattery: true }).priority).toBe('idle')
+    expect(policy({ mode: 'fast', onBattery: true }).priority).toBe('idle')
   })
 
   it('runs when the battery percentage is unknown and nothing else is wrong', () => {

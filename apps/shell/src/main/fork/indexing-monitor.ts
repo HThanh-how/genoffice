@@ -28,6 +28,7 @@ export interface MonitorTimers {
 export interface MonitorDeps {
   power: PowerMonitorLike
   cores: number
+  maxThreads?: number
   freeMemMB: () => number
   /** all the memory the computer has, so the low-memory pause scales with it */
   totalMemMB?: () => number
@@ -153,6 +154,7 @@ export class IndexingMonitor {
       onBattery,
       userIdleSeconds: Number.isFinite(idle) && idle > 0 ? idle : 0,
       cores: this.deps.cores,
+      maxThreads: this.deps.maxThreads,
       freeMemMB: this.deps.freeMemMB(),
       ...(this.deps.totalMemMB ? { totalMemMB: this.deps.totalMemMB() } : {}),
       locked: this.locked || this.suspended,

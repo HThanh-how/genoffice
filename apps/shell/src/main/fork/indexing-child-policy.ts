@@ -13,6 +13,7 @@ export interface ChildControl {
   connected: () => boolean
   send: (message: PolicyMessage) => void
   setPriority: (pid: number, priority: number) => void
+  placeCpuSets?: (pid: number, threads: number) => Promise<number | undefined>
   platform?: NodeJS.Platform
 }
 
@@ -36,19 +37,37 @@ export function osPriorityFor(
  */
 export function attachChildToPolicy(child: ChildControl): () => void {
   let lastPriority: number | null = null
-  const apply = (policy: PublishedPolicy): void => {
+  let lastThreads: number | null = null
+  let placementLimit: number | undefined
+  let generation = 0
+  let disposed = false
+  let placementWork = Promise.resolve()
+  let latest: PublishedPolicy | null = null
+  const send = (policy: PublishedPolicy): void => {
+    if (disposed) return
     try {
-      if (child.connected())
-        child.send({
-          type: 'policy',
-          threads: policy.threads,
-          cpuShare: policy.cpuShare,
-          memoryTier: policy.memoryTier,
-          maxBatchTokens: policy.maxBatchTokens,
-          allowHeavyEmbedding: policy.allowHeavyEmbedding,
-        })
-    } catch {
-      // The child exited; the manager restarts it and the next attach pushes the policy again.
+      if (child.connected()) child.send({
+        type: 'policy', threads: Math.min(policy.threads, placementLimit ?? Infinity),
+        cpuShare: policy.cpuShare, memoryTier: policy.memoryTier,
+        maxBatchTokens: policy.maxBatchTokens, allowHeavyEmbedding: policy.allowHeavyEmbedding,
+      })
+    } catch { /* The child may have exited. */ }
+  }
+  const apply = (policy: PublishedPolicy): void => {
+    latest = policy
+    send(policy)
+    if (child.pid && child.placeCpuSets && lastThreads !== policy.threads && !disposed) {
+      lastThreads = policy.threads
+      const requestedGeneration = ++generation
+      const pid = child.pid, place = child.placeCpuSets
+      // Serialize native updates: an older, slow helper must never overwrite a newer placement.
+      placementWork = placementWork.then(async () => {
+        if (disposed || !child.connected() || requestedGeneration !== generation) return
+        const limit = await place(pid, policy.threads).catch(() => undefined)
+        if (disposed || requestedGeneration !== generation) return
+        if (limit !== undefined && Number.isSafeInteger(limit) && limit >= 1) placementLimit = limit
+        if (latest) send(latest)
+      }).catch(() => {})
     }
     const priority = osPriorityFor(policy.priority, child.platform)
     if (priority === lastPriority || !child.pid) return
@@ -62,5 +81,5 @@ export function attachChildToPolicy(child: ChildControl): () => void {
   const unsubscribe = subscribeIndexingPolicy((next) => apply(next))
   const initial = currentIndexingPolicy()
   if (initial) apply(initial)
-  return unsubscribe
+  return () => { disposed = true; generation++; unsubscribe() }
 }

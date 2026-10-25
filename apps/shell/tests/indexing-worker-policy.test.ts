@@ -116,6 +116,39 @@ describe('OS priority', () => {
 })
 
 describe('attachChildToPolicy', () => {
+  it('serializes placement changes and clamps inference to the selected CPU pool', async () => {
+    const messages: Array<{ threads: number }> = []
+    let finishFirst!: (count: number) => void
+    const place = vi.fn().mockImplementationOnce(() => new Promise<number>((resolve) => { finishFirst = resolve }))
+      .mockResolvedValueOnce(2)
+    publishIndexingPolicy(policy({ threads: 6 }))
+    const detach = attachChildToPolicy({ pid: 4242, connected: () => true,
+      send: (message) => messages.push(message), setPriority: () => {}, placeCpuSets: place })
+    await vi.waitFor(() => expect(place).toHaveBeenCalledTimes(1))
+    publishIndexingPolicy(policy({ threads: 3 }))
+    expect(place).toHaveBeenCalledTimes(1)
+    finishFirst(6)
+    await vi.waitFor(() => expect(messages.at(-1)?.threads).toBe(2))
+    expect(place.mock.calls).toEqual([[4242, 6], [4242, 3]])
+    publishIndexingPolicy(policy({ threads: 3 }))
+    expect(place).toHaveBeenCalledTimes(2)
+    detach()
+  })
+
+  it('does not send a late placement result after the child is detached', async () => {
+    const messages: unknown[] = []
+    let finish!: (count: number) => void
+    const place = vi.fn(() => new Promise<number>((resolve) => { finish = resolve }))
+    publishIndexingPolicy(policy({ threads: 6 }))
+    const detach = attachChildToPolicy({ pid: 4242, connected: () => true,
+      send: (message) => messages.push(message), setPriority: () => {}, placeCpuSets: place })
+    await vi.waitFor(() => expect(place).toHaveBeenCalledTimes(1))
+    const before = messages.length
+    detach(); finish(4)
+    await new Promise((resolve) => setTimeout(resolve, 0))
+    expect(messages).toHaveLength(before)
+  })
+
   function fakeChild(platform: NodeJS.Platform = 'win32') {
     const sent: unknown[] = []
     const priorities: [number, number][] = []
@@ -209,7 +242,7 @@ describe('createIndexProcess with a fake child', () => {
       kill: vi.fn(),
     })
     const fakeSpawn = vi.fn(() => child) as unknown as typeof spawn
-    const worker = createIndexProcess('worker.cjs', { cacheDir: 'c', dbPath: 'd' }, fakeSpawn)
+    const worker = createIndexProcess('worker.cjs', { cacheDir: 'c', dbPath: 'd' }, fakeSpawn, async () => undefined)
     child.emit('spawn')
     expect(child.send).toHaveBeenCalledWith(
       { type: 'policy', threads: 3, cpuShare: 0.6 },
@@ -240,7 +273,7 @@ describe('createIndexProcess with a fake child', () => {
       }),
     })
     const fakeSpawn = vi.fn(() => child) as unknown as typeof spawn
-    const worker = createIndexProcess('worker.cjs', { cacheDir: 'c', dbPath: 'd' }, fakeSpawn)
+    const worker = createIndexProcess('worker.cjs', { cacheDir: 'c', dbPath: 'd' }, fakeSpawn, async () => undefined)
 
     const code = await worker.terminate(1000)
     expect(code).toBe(0)
@@ -263,7 +296,7 @@ describe('createIndexProcess with a fake child', () => {
       }),
     })
     const fakeSpawn = vi.fn(() => child) as unknown as typeof spawn
-    const worker = createIndexProcess('worker.cjs', { cacheDir: 'c', dbPath: 'd' }, fakeSpawn)
+    const worker = createIndexProcess('worker.cjs', { cacheDir: 'c', dbPath: 'd' }, fakeSpawn, async () => undefined)
 
     const code = await worker.terminate(20)
     expect(code).toBe(137)
@@ -281,7 +314,7 @@ describe('createIndexProcess with a fake child', () => {
       kill: vi.fn(),
     })
     const fakeSpawn = vi.fn(() => child) as unknown as typeof spawn
-    const worker = createIndexProcess('worker.cjs', { cacheDir: 'c', dbPath: 'd' }, fakeSpawn)
+    const worker = createIndexProcess('worker.cjs', { cacheDir: 'c', dbPath: 'd' }, fakeSpawn, async () => undefined)
 
     const code = await worker.terminate()
     expect(code).toBe(42)

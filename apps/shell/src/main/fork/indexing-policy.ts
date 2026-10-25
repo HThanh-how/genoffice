@@ -4,10 +4,11 @@ import type {
   IndexingTier,
 } from '../../shared/fork/indexing-mode'
 export type PauseReason = IndexingPauseReason
+import { backgroundThreadCap } from './background-cpu'
 
 /**
  * Pure policy for the background document-index job. The user and the UI always come first:
- * the job never takes more than half the logical cores, backs off at once when the user is
+ * the job leaves at least 20% of logical cores free, backs off at once when the user is
  * active, and only ramps up after the machine has been idle (and on AC power) for a while.
  */
 
@@ -19,6 +20,8 @@ export interface PolicyInput {
   batterySaver?: boolean
   userIdleSeconds: number
   cores: number
+  /** Optional launch-time ceiling, e.g. one thread for sign-in/background startup. */
+  maxThreads?: number
   freeMemMB: number
   /** all the memory the computer has; unknown = the fixed thresholds */
   totalMemMB?: number
@@ -125,8 +128,8 @@ export function resolvePolicy(input: PolicyInput): ResolvedPolicy {
           : 'high'
 
   const cores = Number.isFinite(input.cores) ? Math.floor(input.cores) : 1
-  // The UI keeps at least half of the cores free.
-  const cap = Math.max(1, Math.floor(cores / 2))
+  const launchCap = typeof input.maxThreads === 'number' && Number.isFinite(input.maxThreads) && input.maxThreads >= 1 ? Math.floor(input.maxThreads) : Infinity
+  const cap = Math.min(backgroundThreadCap(cores), launchCap)
   const threads = (wanted: number) => {
     if (memoryTier === 'low') return 1
     return Math.max(1, Math.min(wanted, cap))
@@ -169,7 +172,7 @@ export function resolvePolicy(input: PolicyInput): ResolvedPolicy {
       paused: false,
       threads: 1,
       cpuShare: Math.round(share * 100) / 100,
-      priority: light ? 'idle' : 'below-normal',
+      priority: 'idle',
       tier: 'battery',
       reason: `on battery${input.batterySaver ? ' with battery saver' : ''} (${typeof percent === 'number' ? `${percent}%` : 'level unknown'}): one thread, ${Math.round(share * 100)}% duty cycle`,
       batteryBand: band,
@@ -186,7 +189,7 @@ export function resolvePolicy(input: PolicyInput): ResolvedPolicy {
         paused: false,
         threads: 1,
         cpuShare: LIGHT_SHARE,
-        priority: 'below-normal',
+        priority: 'idle',
         tier: 'light',
         reason: 'light mode: one thread, low duty cycle',
         memoryTier,
@@ -197,11 +200,11 @@ export function resolvePolicy(input: PolicyInput): ResolvedPolicy {
       return idle
         ? {
             paused: false,
-            threads: threads(8),
+            threads: threads(cap),
             cpuShare: 1,
-            priority: 'below-normal',
+            priority: launchCap === 1 ? 'idle' : 'below-normal',
             tier: 'idle',
-            reason: 'fast mode, idle on AC: uncapped',
+            reason: 'fast mode, idle on AC: up to 80% of logical processors',
             memoryTier,
             allowHeavyEmbedding,
             maxBatchTokens,
@@ -210,7 +213,7 @@ export function resolvePolicy(input: PolicyInput): ResolvedPolicy {
             paused: false,
             threads: threads(3),
             cpuShare: FAST_ACTIVE_SHARE,
-            priority: 'below-normal',
+            priority: 'idle',
             tier: 'active',
             reason: 'fast mode, user active: modest share',
             memoryTier,
@@ -223,7 +226,7 @@ export function resolvePolicy(input: PolicyInput): ResolvedPolicy {
             paused: false,
             threads: threads(4),
             cpuShare: 1,
-            priority: 'below-normal',
+            priority: launchCap === 1 ? 'idle' : 'below-normal',
             tier: 'idle',
             reason: 'balanced mode, idle on AC: uncapped',
             memoryTier,
@@ -234,7 +237,7 @@ export function resolvePolicy(input: PolicyInput): ResolvedPolicy {
             paused: false,
             threads: threads(2),
             cpuShare: BALANCED_ACTIVE_SHARE,
-            priority: 'below-normal',
+            priority: 'idle',
             tier: 'active',
             reason: 'balanced mode, user active: half a core',
             memoryTier,

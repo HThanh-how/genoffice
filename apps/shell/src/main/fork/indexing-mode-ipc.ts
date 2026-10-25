@@ -27,6 +27,7 @@ export function registerIndexingMode(deps: IndexingModeDeps): void {
     monitor = new IndexingMonitor({
       power: powerMonitor,
       cores: availableParallelism(),
+      maxThreads: Number(process.env.GENOFFICE_INDEX_MAX_THREADS),
       // Electron's figure counts reclaimable memory as available (os.freemem() does not on macOS).
       freeMemMB: () => electronFreeMemMB(() => process.getSystemMemoryInfo(), freemem),
       totalMemMB: () => totalmem() / (1024 * 1024),
