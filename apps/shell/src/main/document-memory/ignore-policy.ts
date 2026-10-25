@@ -477,7 +477,7 @@ function clearPolicyCaches(): void {
 export function isPathCaseInsensitive(p: string): boolean {
   return (
     process.platform === 'win32' ||
-    /^[a-zA-Z]:[/\\]/.test(p) ||
+    (p[1] === ':' && /^[a-zA-Z]:[/\\]/.test(p)) ||
     p.startsWith('\\\\') ||
     p.startsWith('//')
   )
