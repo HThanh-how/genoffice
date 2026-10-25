@@ -232,6 +232,20 @@ function seed(): void {
 }
 
 describe('per-document chunk counters', () => {
+  it('resumes only identical passage sequences after an extractor upgrade', () => {
+    const path = join(root(), 'changed-chunking.pdf')
+    store.ensureEmbeddingSpace(EMBEDDING_PROFILES.standard)
+    replace(path, 28)
+    store.setChunkVectors(path, `hash-${path}`, 0, vectors(7), MODEL, false)
+    expect(store.resumeVectorOffset(path, `hash-${path}`, MODEL, chunks(28))).toBe(7)
+    expect(store.resumeVectorOffset(path, `hash-${path}`, MODEL, chunks(8))).toBeNull()
+    const changed = chunks(28)
+    changed[7]!.text = 'different boundary with the same chunk count'
+    expect(store.resumeVectorOffset(path, `hash-${path}`, MODEL, changed)).toBeNull()
+    store.setChunkVectors(path, `hash-${path}`, 7, vectors(21), MODEL, true)
+    expect(store.resumeVectorOffset(path, `hash-${path}`, MODEL, chunks(28))).toBe(28)
+  })
+
   it('persists a fresh OCR re-read even when a mixed PDF was ready, without discarding saved text', () => {
     const path = join(root(), 'mixed.pdf')
     replace(path, 2, 'ready', { vectored: true })

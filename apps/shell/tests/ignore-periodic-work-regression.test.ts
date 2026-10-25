@@ -8,6 +8,7 @@ import {
   getIgnorePolicyGeneration,
   invalidateKnownRootsCache,
   isPathIgnored,
+  isPathCaseInsensitive,
   resolveIndexedRoot,
   setActiveIgnoreRules,
   setIgnoreStoragePath,
@@ -37,6 +38,20 @@ afterEach(() => {
 })
 
 describe('periodic ignore evaluation converges', () => {
+  it('skips drive-letter matching for POSIX paths while recognizing Windows paths', () => {
+    const platform = process.platform
+    try {
+      Object.defineProperty(process, 'platform', { value: 'linux' })
+      const test = vi.spyOn(RegExp.prototype, 'test')
+      expect(isPathCaseInsensitive('/tmp/corpus/file.docx')).toBe(false)
+      expect(test).not.toHaveBeenCalled()
+      expect(isPathCaseInsensitive('C:/Data/file.docx')).toBe(true)
+      expect(isPathCaseInsensitive('c:\\Data\\file.docx')).toBe(true)
+    } finally {
+      Object.defineProperty(process, 'platform', { value: platform })
+    }
+  })
+
   it('resolves the known roots once for a whole pass, not once per path', () => {
     const roots = Array.from({ length: 300 }, (_, i) => join(dir, `root${i}`))
     const resolver = vi.fn(() => roots)

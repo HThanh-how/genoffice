@@ -145,12 +145,16 @@ export class EmbeddingRepository {
   getEmbeddingCounts(documentId: number, spaceId?: string): number {
     if (spaceId) {
       const row = this.db
-        .prepare('SELECT completed_chunks FROM document_embedding_counts WHERE document_id = ? AND space_id = ?')
+        .prepare(
+          'SELECT completed_chunks FROM document_embedding_counts WHERE document_id = ? AND space_id = ?',
+        )
         .get(documentId, spaceId) as { completed_chunks: number } | undefined
       return row?.completed_chunks ?? 0
     }
     const row = this.db
-      .prepare('SELECT coalesce(sum(completed_chunks), 0) AS total FROM document_embedding_counts WHERE document_id = ?')
+      .prepare(
+        'SELECT coalesce(sum(completed_chunks), 0) AS total FROM document_embedding_counts WHERE document_id = ?',
+      )
       .get(documentId) as { total: number } | undefined
     return row?.total ?? 0
   }
@@ -169,13 +173,13 @@ export class EmbeddingRepository {
          FROM embedding_spaces ORDER BY created_at ASC`,
       )
       .all() as Array<{
-        id: string
-        model_repo: string
-        model_revision: string
-        pooling: string
-        dimensions: number
-        quantization: string
-      }>
+      id: string
+      model_repo: string
+      model_revision: string
+      pooling: string
+      dimensions: number
+      quantization: string
+    }>
     return rows.map((r) => ({
       id: r.id,
       modelRepo: r.model_repo,
@@ -339,11 +343,7 @@ export class EmbeddingRepository {
 
     const expectedDim = canonical ? canonical.dimensions : space.dimensions
     for (const item of batch) {
-      if (
-        !item.vector ||
-        !item.vector.length ||
-        item.vector.some((v) => !Number.isFinite(v))
-      ) {
+      if (!item.vector || !item.vector.length || item.vector.some((v) => !Number.isFinite(v))) {
         throw new Error('Vectors must have a consistent nonzero dimension and finite values')
       }
       if (item.vector.length !== expectedDim) {
@@ -381,7 +381,12 @@ export class EmbeddingRepository {
     }
   }
 
-  resumeEmbeddingOffset(path: string, hash: string, embeddingSpaceId: string): number | null {
+  resumeEmbeddingOffset(
+    path: string,
+    hash: string,
+    embeddingSpaceId: string,
+    expectedChunks?: readonly { text: string }[],
+  ): number | null {
     const doc = this.db
       .prepare('SELECT id, hash, embedding_model, excluded, status FROM documents WHERE path = ?')
       .get(resolve(path)) as
@@ -397,9 +402,31 @@ export class EmbeddingRepository {
       return null
     }
 
+    // A matching file hash does not guarantee the same chunking after an upgrade.
+    // Offsets and saved vectors are reusable only for the exact same passage sequence.
+    if (expectedChunks) {
+      let index = 0
+      for (const chunk of this.db
+        .prepare(
+          `
+        SELECT c.ordinal, c.text FROM chunks c
+        JOIN documents d ON d.id = c.document_id
+        WHERE c.document_id = ?
+          AND (c.chunk_set_id IS NULL OR c.chunk_set_id = d.active_chunk_set_id)
+        ORDER BY c.ordinal
+      `,
+        )
+        .iterate(doc.id)) {
+        if (chunk.ordinal !== index || chunk.text !== expectedChunks[index]?.text) return null
+        index++
+      }
+      if (index !== expectedChunks.length) return null
+    }
+
     const row = this.db
-      .prepare(`
-        SELECT min(c.ordinal) AS missing, count(*) AS total
+      .prepare(
+        `
+        SELECT min(CASE WHEN e.chunk_id IS NULL THEN c.ordinal END) AS missing, count(*) AS total
         FROM chunks c
         JOIN documents d ON d.id = c.document_id
         LEFT JOIN chunk_embeddings e
@@ -407,15 +434,18 @@ export class EmbeddingRepository {
           AND e.space_id = ?
         WHERE c.document_id = ?
           AND (c.chunk_set_id IS NULL OR c.chunk_set_id = d.active_chunk_set_id)
-          AND e.chunk_id IS NULL
-      `)
+      `,
+      )
       .get(embeddingSpaceId, doc.id) as { missing: number | null; total: number }
 
     return row.missing ?? row.total
   }
 
   repairInvalidCanonicalEmbeddings(
-    onSpaceDirty?: ((spaceId: string) => void) | string | { spaceId?: string; onSpaceDirty?: (spaceId: string) => void },
+    onSpaceDirty?:
+      | ((spaceId: string) => void)
+      | string
+      | { spaceId?: string; onSpaceDirty?: (spaceId: string) => void },
     targetSpaceIdArg?: string,
   ): RepairInvalidCanonicalEmbeddingsResult {
     let spaceFilter: string | undefined
@@ -447,7 +477,11 @@ export class EmbeddingRepository {
       }
     }
 
-    const canonicalSpecs: Array<{ spaceId: string; dimensions: number; profile: EmbeddingProfile }> = [
+    const canonicalSpecs: Array<{
+      spaceId: string
+      dimensions: number
+      profile: EmbeddingProfile
+    }> = [
       {
         spaceId: EMBEDDING_PROFILES.standard.embeddingId,
         dimensions: EMBEDDING_PROFILES.standard.dimensions,
@@ -534,7 +568,9 @@ export class EmbeddingRepository {
       // 1. Repair embedding_spaces metadata
       for (const spec of specsToInspect) {
         const existing = this.db
-          .prepare('SELECT id, dimensions, model_repo, model_revision, pooling, quantization FROM embedding_spaces WHERE id = ?')
+          .prepare(
+            'SELECT id, dimensions, model_repo, model_revision, pooling, quantization FROM embedding_spaces WHERE id = ?',
+          )
           .get(spec.spaceId) as
           | {
               id: string
@@ -637,7 +673,9 @@ export class EmbeddingRepository {
       }
 
       // 3a. Delete ONLY the invalid rows from chunk_embeddings
-      const deleteStmt = this.db.prepare('DELETE FROM chunk_embeddings WHERE chunk_id = ? AND space_id = ?')
+      const deleteStmt = this.db.prepare(
+        'DELETE FROM chunk_embeddings WHERE chunk_id = ? AND space_id = ?',
+      )
       for (const r of invalidRows) {
         deleteStmt.run(r.chunk_id, r.space_id)
       }
@@ -687,7 +725,9 @@ export class EmbeddingRepository {
               .run(docId, spaceId, remaining)
           } else {
             this.db
-              .prepare('DELETE FROM document_embedding_counts WHERE document_id = ? AND space_id = ?')
+              .prepare(
+                'DELETE FROM document_embedding_counts WHERE document_id = ? AND space_id = ?',
+              )
               .run(docId, spaceId)
           }
         }
@@ -747,7 +787,11 @@ export class EmbeddingRepository {
               newModel = null
             }
             requeuedCount++
-          } else if (doc.status !== 'ready' && remainingVectors === totalChunks && totalChunks > 0) {
+          } else if (
+            doc.status !== 'ready' &&
+            remainingVectors === totalChunks &&
+            totalChunks > 0
+          ) {
             newStatus = 'ready'
           }
 
@@ -809,33 +853,39 @@ export class EmbeddingRepository {
       ? [spaceId]
       : (
           this.db
-            .prepare('SELECT DISTINCT space_id FROM document_embedding_counts WHERE document_id = ?')
+            .prepare(
+              'SELECT DISTINCT space_id FROM document_embedding_counts WHERE document_id = ?',
+            )
             .all(documentId) as Array<{ space_id: string }>
         ).map((r) => r.space_id)
 
     let total = 0
     for (const s of spaces) {
       const row = this.db
-        .prepare(`
+        .prepare(
+          `
           SELECT count(e.chunk_id) AS c
           FROM chunks c
           JOIN documents d ON d.id = c.document_id
           JOIN chunk_embeddings e ON e.chunk_id = c.id AND e.space_id = ?
           WHERE c.document_id = ?
             AND (c.chunk_set_id IS NULL OR c.chunk_set_id = d.active_chunk_set_id)
-        `)
+        `,
+        )
         .get(s, documentId) as { c: number } | undefined
       const count = row?.c ?? 0
       total += count
 
       if (count > 0) {
         this.db
-          .prepare(`
+          .prepare(
+            `
             INSERT INTO document_embedding_counts (document_id, space_id, completed_chunks)
             VALUES (?, ?, ?)
             ON CONFLICT (document_id, space_id)
             DO UPDATE SET completed_chunks = excluded.completed_chunks
-          `)
+          `,
+          )
           .run(documentId, s, count)
       } else {
         this.db
@@ -862,13 +912,15 @@ export class EmbeddingRepository {
     affectedSpaceIds: string[]
   } {
     const spaceRows = this.db
-      .prepare(`
+      .prepare(
+        `
         SELECT DISTINCT e.space_id
         FROM chunk_embeddings e
         JOIN chunks c ON c.id = e.chunk_id
         WHERE c.document_id = ?
           AND (? IS NULL OR e.space_id = ?)
-      `)
+      `,
+      )
       .all(documentId, targetSpaceId ?? null, targetSpaceId ?? null) as Array<{ space_id: string }>
 
     const affectedSpaceIds = spaceRows.map((r) => r.space_id)
@@ -883,14 +935,16 @@ export class EmbeddingRepository {
     }
 
     const delResult = this.db
-      .prepare(`
+      .prepare(
+        `
         DELETE FROM chunk_embeddings
         WHERE chunk_id IN (
           SELECT c.id FROM chunks c
           WHERE c.document_id = ?
         )
         AND (? IS NULL OR space_id = ?)
-      `)
+      `,
+      )
       .run(documentId, targetSpaceId ?? null, targetSpaceId ?? null)
 
     const deletedEmbeddings = Number(delResult.changes)
@@ -899,26 +953,30 @@ export class EmbeddingRepository {
     let remainingVectors = 0
     for (const spaceId of affectedSpaceIds) {
       const remainingRow = this.db
-        .prepare(`
+        .prepare(
+          `
           SELECT count(e.chunk_id) AS c
           FROM chunks c
           JOIN documents d ON d.id = c.document_id
           JOIN chunk_embeddings e ON e.chunk_id = c.id AND e.space_id = ?
           WHERE c.document_id = ?
             AND (c.chunk_set_id IS NULL OR c.chunk_set_id = d.active_chunk_set_id)
-        `)
+        `,
+        )
         .get(spaceId, documentId) as { c: number } | undefined
       const count = remainingRow?.c ?? 0
       remainingVectors += count
 
       if (count > 0) {
         this.db
-          .prepare(`
+          .prepare(
+            `
             INSERT INTO document_embedding_counts (document_id, space_id, completed_chunks)
             VALUES (?, ?, ?)
             ON CONFLICT (document_id, space_id)
             DO UPDATE SET completed_chunks = excluded.completed_chunks
-          `)
+          `,
+          )
           .run(documentId, spaceId, count)
       } else {
         this.db
@@ -929,7 +987,8 @@ export class EmbeddingRepository {
 
     // Update document chunk_done and status
     this.db
-      .prepare(`
+      .prepare(
+        `
         UPDATE documents
         SET chunk_done = coalesce(
               (SELECT completed_chunks FROM document_embedding_counts WHERE document_id = ? AND space_id = documents.embedding_model),
@@ -942,7 +1001,8 @@ export class EmbeddingRepository {
             END,
             updated_at = unixepoch()
         WHERE id = ?
-      `)
+      `,
+      )
       .run(documentId, documentId, documentId)
 
     return {

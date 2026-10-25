@@ -102,7 +102,7 @@ export type OcrRenderResult =
       totalPages: number
       pages: OcrRenderedPage[]
     }
-  | { ok: false; code: OcrRenderFailure; message: string; detail?: string }
+  | { ok: false; code: OcrRenderFailure; message: string; detail?: string; retryable?: boolean }
 
 export interface OcrRenderRequest {
   /** Indexed root, supplied by the main-process selector (may be a mounted folder). */

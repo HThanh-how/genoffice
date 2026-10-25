@@ -3,6 +3,7 @@ import { EventEmitter } from 'node:events'
 import { constants, setPriority } from 'node:os'
 import type { Worker } from 'node:worker_threads'
 import { attachChildToPolicy } from '../fork/indexing-child-policy'
+import { placeBackgroundProcess } from '../fork/windows-background-cpu'
 import type { EmbeddingProfileId } from './embedding-profiles'
 
 export const DEFAULT_WORKER_TERMINATE_TIMEOUT_MS = 3000
@@ -20,6 +21,7 @@ export function createIndexProcess(
   path: string,
   data: IndexProcessData,
   spawnProcess: typeof spawn = spawn,
+  placeCpuSets: typeof placeBackgroundProcess = placeBackgroundProcess,
 ): Worker {
   const channel = new EventEmitter()
   const child = spawnProcess(process.execPath, [path], {
@@ -45,6 +47,7 @@ export function createIndexProcess(
     }
     // Threads, duty cycle and OS priority follow the power / idle policy from here on.
     detachPolicy = attachChildToPolicy({
+      placeCpuSets,
       pid: child.pid,
       connected: () => child.connected,
       send: (message) => child.send(message, () => {}),
