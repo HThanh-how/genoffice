@@ -18,11 +18,15 @@ export function selectBackgroundCpuSets(sets: BackgroundCpuSet[], requested: num
   const efficient = Math.min(...classes)
   const hybrid = efficient !== Math.max(...classes)
   const pool = (hybrid ? sets.filter((cpu) => cpu.efficiencyClass === efficient) : sets)
-    .slice().sort((a, b) => b.group - a.group || b.index - a.index)
+    .slice()
+    .sort((a, b) => b.group - a.group || b.index - a.index)
   const physicalCores = new Set(sets.map((cpu) => `${cpu.group}:${cpu.core}`)).size
   const physicalLimit = backgroundThreadCap(physicalCores)
   const allowedCores = new Set<string>()
-  const limit = Math.min(backgroundThreadCap(sets.length), Number.isFinite(requested) ? Math.max(1, Math.floor(requested)) : 1)
+  const limit = Math.min(
+    backgroundThreadCap(sets.length),
+    Number.isFinite(requested) ? Math.max(1, Math.floor(requested)) : 1,
+  )
   const selected: number[] = []
   for (const cpu of pool) {
     const core = `${cpu.group}:${cpu.core}`

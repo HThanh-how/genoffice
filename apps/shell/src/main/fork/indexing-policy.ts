@@ -128,7 +128,12 @@ export function resolvePolicy(input: PolicyInput): ResolvedPolicy {
           : 'high'
 
   const cores = Number.isFinite(input.cores) ? Math.floor(input.cores) : 1
-  const launchCap = typeof input.maxThreads === 'number' && Number.isFinite(input.maxThreads) && input.maxThreads >= 1 ? Math.floor(input.maxThreads) : Infinity
+  const launchCap =
+    typeof input.maxThreads === 'number' &&
+    Number.isFinite(input.maxThreads) &&
+    input.maxThreads >= 1
+      ? Math.floor(input.maxThreads)
+      : Infinity
   const cap = Math.min(backgroundThreadCap(cores), launchCap)
   const threads = (wanted: number) => {
     if (memoryTier === 'low') return 1
@@ -158,10 +163,8 @@ export function resolvePolicy(input: PolicyInput): ResolvedPolicy {
       return paused('locked', 'screen is locked on a low battery', memoryTier)
   }
 
-  const allowHeavyEmbedding =
-    memoryTier !== 'low' && !input.onBattery && input.mode !== 'light'
-  const maxBatchTokens =
-    memoryTier === 'low' ? 1600 : memoryTier === 'normal' ? 3000 : 6000
+  const allowHeavyEmbedding = memoryTier !== 'low' && !input.onBattery && input.mode !== 'light'
+  const maxBatchTokens = memoryTier === 'low' ? 1600 : memoryTier === 'normal' ? 3000 : 6000
 
   if (input.onBattery) {
     const light = input.mode === 'light'

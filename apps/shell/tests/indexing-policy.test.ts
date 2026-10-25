@@ -147,7 +147,10 @@ describe('resolvePolicy on AC power', () => {
   })
 
   it('honours the sign-in launch ceiling without bypassing pause protection', () => {
-    expect(policy({ mode: 'fast', userIdleSeconds: 900, cores: 8, maxThreads: 1 })).toMatchObject({ threads: 1, priority: 'idle' })
+    expect(policy({ mode: 'fast', userIdleSeconds: 900, cores: 8, maxThreads: 1 })).toMatchObject({
+      threads: 1,
+      priority: 'idle',
+    })
     expect(policy({ mode: 'fast', userIdleSeconds: 900, cores: 8, maxThreads: 8 }).threads).toBe(6)
     expect(policy({ maxThreads: 1, userPaused: true }).paused).toBe(true)
     expect(policy({ maxThreads: 1, thermalCritical: true }).paused).toBe(true)

@@ -3,12 +3,12 @@
 The document-index **child process** is restricted; the Electron UI is not pinned.
 Thread counts are ceilings, not promises of total application CPU utilization.
 
-| Situation | Threads | Windows priority |
-| --- | --- | --- |
-| Fast, idle on AC | Up to floor(80% of available logical processors) | Below normal |
-| Fast, user active | Up to 3, within the same ceiling | Idle |
-| Balanced, user active | Up to 2, within the same ceiling | Idle |
-| Sign-in launch with `GENOFFICE_INDEX_MAX_THREADS=1` | 1 | Idle |
+| Situation                                           | Threads                                          | Windows priority |
+| --------------------------------------------------- | ------------------------------------------------ | ---------------- |
+| Fast, idle on AC                                    | Up to floor(80% of available logical processors) | Below normal     |
+| Fast, user active                                   | Up to 3, within the same ceiling                 | Idle             |
+| Balanced, user active                               | Up to 2, within the same ceiling                 | Idle             |
+| Sign-in launch with `GENOFFICE_INDEX_MAX_THREADS=1` | 1                                                | Idle             |
 
 Memory-tier, battery, thermal, suspend and explicit pause protection still apply.
 The existing governor waits for stable idleness before increasing work. The monitor

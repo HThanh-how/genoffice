@@ -1,8 +1,17 @@
 import { describe, expect, it } from 'vitest'
-import { backgroundThreadCap, selectBackgroundCpuSets, type BackgroundCpuSet } from '../src/main/fork/background-cpu'
+import {
+  backgroundThreadCap,
+  selectBackgroundCpuSets,
+  type BackgroundCpuSet,
+} from '../src/main/fork/background-cpu'
 
 const cpu = (index: number, patch: Partial<BackgroundCpuSet> = {}): BackgroundCpuSet => ({
-  id: 100 + index, group: 0, index, core: index, efficiencyClass: 0, ...patch,
+  id: 100 + index,
+  group: 0,
+  index,
+  core: index,
+  efficiencyClass: 0,
+  ...patch,
 })
 
 describe('background CPU placement', () => {
@@ -12,7 +21,14 @@ describe('background CPU placement', () => {
   })
 
   it('chooses the farthest E-cores even if a P-core has a higher index', () => {
-    const sets = [cpu(0, { efficiencyClass: 1 }), cpu(1, { efficiencyClass: 1 }), cpu(2), cpu(3), cpu(4, { efficiencyClass: 1 }), cpu(5)]
+    const sets = [
+      cpu(0, { efficiencyClass: 1 }),
+      cpu(1, { efficiencyClass: 1 }),
+      cpu(2),
+      cpu(3),
+      cpu(4, { efficiencyClass: 1 }),
+      cpu(5),
+    ]
     expect(selectBackgroundCpuSets(sets, 2)).toEqual([105, 103])
     expect(selectBackgroundCpuSets(sets, 6)).toEqual([105, 103, 102])
   })
@@ -24,7 +40,9 @@ describe('background CPU placement', () => {
   })
 
   it('uses real CPU set IDs across processor groups rather than 32/64-bit shifts', () => {
-    const sets = Array.from({ length: 8 }, (_, i) => cpu(i % 4, { id: 2000 + i, group: Math.floor(i / 4) }))
+    const sets = Array.from({ length: 8 }, (_, i) =>
+      cpu(i % 4, { id: 2000 + i, group: Math.floor(i / 4) }),
+    )
     expect(selectBackgroundCpuSets(sets, 8)).toEqual([2007, 2006, 2005, 2004, 2003, 2002])
   })
 

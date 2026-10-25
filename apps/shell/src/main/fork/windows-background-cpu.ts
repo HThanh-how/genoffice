@@ -47,39 +47,86 @@ public class GenOfficeCpuSets {
 
 /** Best effort: unsupported/restricted Windows hosts retain the existing low-priority policy. */
 export function placeBackgroundProcess(pid: number, threads: number): Promise<number | undefined> {
-  if (process.platform !== 'win32' || !Number.isSafeInteger(pid) || pid <= 0) return Promise.resolve(undefined)
+  if (process.platform !== 'win32' || !Number.isSafeInteger(pid) || pid <= 0)
+    return Promise.resolve(undefined)
   return new Promise((resolve) => {
-    const script = `$ErrorActionPreference='Stop'; Add-Type -TypeDefinition @'\n${WINDOWS_CPU_SET_API}\n'@\n` +
+    const script =
+      `$ErrorActionPreference='Stop'; Add-Type -TypeDefinition @'\n${WINDOWS_CPU_SET_API}\n'@\n` +
       `$h=[GenOfficeCpuSets]::OpenProcess(0x1600,$false,${pid}); if($h -eq [IntPtr]::Zero){exit 1}; try { ` +
       `ConvertTo-Json -InputObject @([GenOfficeCpuSets]::Read($h)) -Compress; ` +
       `$line=[Console]::ReadLine(); if($line){[uint32[]]$ids=@($line.Split(',') | ForEach-Object {[uint32]$_}); ` +
       `if(-not [GenOfficeCpuSets]::SetProcessDefaultCpuSets($h,$ids,$ids.Length)){exit 1}} ` +
       `} finally {[void][GenOfficeCpuSets]::CloseHandle($h)}`
-    const exe = join(process.env.SystemRoot || 'C:\\Windows', 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe')
-    const child = spawn(exe, ['-NoProfile', '-NonInteractive', '-EncodedCommand', Buffer.from(script, 'utf16le').toString('base64')], { windowsHide: true, stdio: ['pipe', 'pipe', 'ignore'] })
-    let output = '', selected: number[] | undefined, settled = false
+    const exe = join(
+      process.env.SystemRoot || 'C:\\Windows',
+      'System32',
+      'WindowsPowerShell',
+      'v1.0',
+      'powershell.exe',
+    )
+    const child = spawn(
+      exe,
+      [
+        '-NoProfile',
+        '-NonInteractive',
+        '-EncodedCommand',
+        Buffer.from(script, 'utf16le').toString('base64'),
+      ],
+      { windowsHide: true, stdio: ['pipe', 'pipe', 'ignore'] },
+    )
+    let output = '',
+      selected: number[] | undefined,
+      settled = false
     const finish = (count?: number) => {
       if (settled) return
       settled = true
       clearTimeout(timer)
       resolve(count)
     }
-    const timer = setTimeout(() => { child.kill(); finish() }, 8000)
+    const timer = setTimeout(() => {
+      child.kill()
+      finish()
+    }, 8000)
     timer.unref?.()
     child.stdin.on('error', () => finish())
     child.on('error', () => finish())
     child.stdout.setEncoding('utf8')
     child.stdout.on('data', (part: string) => {
       output += part
-      if (output.length > 256 * 1024) { child.kill(); finish(); return }
+      if (output.length > 256 * 1024) {
+        child.kill()
+        finish()
+        return
+      }
       if (selected || !output.includes('\n')) return
       try {
-        const cpus: BackgroundCpuSet[] = JSON.parse(output.slice(0, output.indexOf('\n')).replace(/^\uFEFF/, '').trim())
-        if (!Array.isArray(cpus) || cpus.some((cpu) => !['id', 'group', 'index', 'core', 'efficiencyClass'].every((key) => Number.isSafeInteger(cpu[key as keyof BackgroundCpuSet]) && cpu[key as keyof BackgroundCpuSet] >= 0))) throw new Error('Invalid CPU topology')
+        const cpus: BackgroundCpuSet[] = JSON.parse(
+          output
+            .slice(0, output.indexOf('\n'))
+            .replace(/^\uFEFF/, '')
+            .trim(),
+        )
+        if (
+          !Array.isArray(cpus) ||
+          cpus.some(
+            (cpu) =>
+              !['id', 'group', 'index', 'core', 'efficiencyClass'].every(
+                (key) =>
+                  Number.isSafeInteger(cpu[key as keyof BackgroundCpuSet]) &&
+                  cpu[key as keyof BackgroundCpuSet] >= 0,
+              ),
+          )
+        )
+          throw new Error('Invalid CPU topology')
         selected = selectBackgroundCpuSets(cpus, threads)
         child.stdin.end(selected.join(',') + '\n')
-      } catch { child.kill(); finish() }
+      } catch {
+        child.kill()
+        finish()
+      }
     })
-    child.on('close', (code) => finish(code === 0 && selected?.length ? selected.length : undefined))
+    child.on('close', (code) =>
+      finish(code === 0 && selected?.length ? selected.length : undefined),
+    )
   })
 }

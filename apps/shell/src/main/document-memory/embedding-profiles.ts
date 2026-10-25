@@ -167,8 +167,14 @@ const LEGACY_PROFILES: Record<'standard' | 'high', EmbeddingProfile> = {
     revision: 'ad88d7a126711f1490cd4bad645dc9d3acc2af6a',
 
     files: [
-      { path: 'tokenizer.json', sha256: '7e295e5bb91a3d35335f92fa4294a6e4e0ab4aa586db853e14312a62135bfddc' },
-      { path: 'tokenizer_config.json', sha256: '3c0884a30471f4f542dc89630f62a380bb70a341fafda826136a7be921fec7ea' },
+      {
+        path: 'tokenizer.json',
+        sha256: '7e295e5bb91a3d35335f92fa4294a6e4e0ab4aa586db853e14312a62135bfddc',
+      },
+      {
+        path: 'tokenizer_config.json',
+        sha256: '3c0884a30471f4f542dc89630f62a380bb70a341fafda826136a7be921fec7ea',
+      },
       { path: standardArtifact.modelFile, sha256: standardArtifact.sha256 },
     ],
 
@@ -213,7 +219,10 @@ const LEGACY_PROFILES: Record<'standard' | 'high', EmbeddingProfile> = {
     revision: 'bd58e9fd4b0467770da53678d8da25481c0f959b',
 
     files: [
-      { path: 'tokenizer.json', sha256: 'def76fb086971c7867b829c23a26261e38d9d74e02139253b38aeb9df8b4b50a' },
+      {
+        path: 'tokenizer.json',
+        sha256: 'def76fb086971c7867b829c23a26261e38d9d74e02139253b38aeb9df8b4b50a',
+      },
       { path: 'tokenizer_config.json' },
       { path: highArtifact.modelFile, sha256: highArtifact.sha256 },
     ],
@@ -378,7 +387,8 @@ export function assertEmbeddingManifest(profile: EmbeddingProfile): void {
   }
   const paths = new Set(profile.files.map((file) => file.path))
   for (const required of [profile.modelFile, profile.tokenizerFile, profile.tokenizerConfigFile]) {
-    if (!paths.has(required)) throw new Error(`Missing manifest entry for ${profile.id}:${required}`)
+    if (!paths.has(required))
+      throw new Error(`Missing manifest entry for ${profile.id}:${required}`)
   }
   if (profile.tier !== 'legacy') {
     for (const file of profile.files) {
@@ -401,7 +411,9 @@ for (const profile of Object.values(EMBEDDING_PROFILES)) assertEmbeddingManifest
 export const DEFAULT_EMBEDDING_PROFILE: EmbeddingProfileId = 'standard'
 
 export function isEmbeddingProfileId(value: unknown): value is EmbeddingProfileId {
-  return typeof value === 'string' && Object.prototype.hasOwnProperty.call(EMBEDDING_PROFILES, value)
+  return (
+    typeof value === 'string' && Object.prototype.hasOwnProperty.call(EMBEDDING_PROFILES, value)
+  )
 }
 
 export function embeddingProfile(id: unknown): EmbeddingProfile {
