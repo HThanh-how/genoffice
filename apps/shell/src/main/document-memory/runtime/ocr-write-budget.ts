@@ -24,7 +24,13 @@ export interface OcrSavePagesResult {
   ok: boolean
   savedCount?: number
   error?: string
-  code?: 'quota-denied' | 'disk-space-insufficient' | 'accounting-degraded' | 'aborted' | 'invalid' | 'io-error'
+  code?:
+    | 'quota-denied'
+    | 'disk-space-insufficient'
+    | 'accounting-degraded'
+    | 'aborted'
+    | 'invalid'
+    | 'io-error'
 }
 
 /**
@@ -35,7 +41,9 @@ export function validateBoundedRenderCount(request: unknown): number {
   if (!request || typeof request !== 'object') return 1
   const req = request as Partial<OcrRenderRequest>
   const count =
-    typeof req.count === 'number' && Number.isSafeInteger(req.count) && req.count > 0 ? req.count : 1
+    typeof req.count === 'number' && Number.isSafeInteger(req.count) && req.count > 0
+      ? req.count
+      : 1
   const maxPages =
     typeof req.maxPages === 'number' && Number.isSafeInteger(req.maxPages) && req.maxPages > 0
       ? req.maxPages
@@ -183,9 +191,15 @@ export async function persistOcrPagesGated(
     }
   }
 
-  if (pages.length > MAX_BOUNDED_RENDER_PAGES) return { ok: false, code: 'invalid', error: 'OCR batch exceeds page limit' }
+  if (pages.length > MAX_BOUNDED_RENDER_PAGES)
+    return { ok: false, code: 'invalid', error: 'OCR batch exceeds page limit' }
   const sanitized = sanitizeOcrPages(pages)
-  if (sanitized.truncated) return { ok: false, code: 'invalid', error: 'OCR page text exceeds storage limits; no pages were saved' }
+  if (sanitized.truncated)
+    return {
+      ok: false,
+      code: 'invalid',
+      error: 'OCR page text exceeds storage limits; no pages were saved',
+    }
   if (sanitized.pages.length === 0) {
     return { ok: true, savedCount: 0 }
   }
@@ -246,8 +260,10 @@ export async function persistOcrPagesGated(
     }
   }
 
-  if (params.isStopped?.() || (params.isEnabled && !params.isEnabled())) return { ok: false, code: 'aborted', error: 'OCR persistence cancelled' }
-  if (!budgetCoord.isWriteReady()) return { ok: false, code: 'quota-denied', error: 'Storage budget is pending' }
+  if (params.isStopped?.() || (params.isEnabled && !params.isEnabled()))
+    return { ok: false, code: 'aborted', error: 'OCR persistence cancelled' }
+  if (!budgetCoord.isWriteReady())
+    return { ok: false, code: 'quota-denied', error: 'Storage budget is pending' }
 
   // 5. Central admission reserve with unique owner token
   const ownerToken = randomUUID()
@@ -286,7 +302,11 @@ export async function persistOcrPagesGated(
     store.ocr.savePages(path, meta, sanitized.pages)
   } finally {
     await executePostWriteAccounting({
-      maintScheduler, admission, reservationId, ownerToken, context: 'ocr-persistence-terminal',
+      maintScheduler,
+      admission,
+      reservationId,
+      ownerToken,
+      context: 'ocr-persistence-terminal',
       isStopped: params.isStopped,
     })
   }
@@ -322,16 +342,33 @@ export async function executeOcrRenderGated(
     params
 
   if (params.isStopped?.() || (params.isEnabled && !params.isEnabled())) {
-    return { ok: false, code: 'render', message: 'Document memory stopped or disabled' }
-  }
-
-  if (!budgetCoord.isWriteReady()) {
     return {
       ok: false,
       code: 'render',
-      message: 'Storage quota config pending worker confirmation',
+      message: 'Document memory stopped or disabled',
+      retryable: true,
     }
   }
+
+  if (!budgetCoord.isWriteReady()) {
+    // A recycled worker must acknowledge its limits before rendering. This is not a bad PDF.
+    await budgetCoord.recover?.()
+    if (!budgetCoord.isWriteReady())
+      return {
+        ok: false,
+        code: 'render',
+        message: 'Storage quota config pending worker confirmation',
+        retryable: true,
+      }
+  }
+
+  if (params.isStopped?.() || (params.isEnabled && !params.isEnabled()))
+    return {
+      ok: false,
+      code: 'render',
+      message: 'Document memory stopped or disabled',
+      retryable: true,
+    }
 
   const boundedCount = validateBoundedRenderCount(request)
   const estBytes = Math.max(64 * 1024, boundedCount * ESTIMATED_RENDER_RAM_BYTES_PER_PAGE)
@@ -363,19 +400,29 @@ export async function executeOcrRenderGated(
       ok: false,
       code: 'render',
       message: dec.error ?? 'Storage quota denied OCR render',
+      retryable: true,
     }
   }
 
   try {
-    const reply = await askWorker({ type: 'ocr-render', path, ocr: { ...request, count: boundedCount } }, workerTimeoutMs)
+    const reply = await askWorker(
+      { type: 'ocr-render', path, ocr: { ...request, count: boundedCount } },
+      workerTimeoutMs,
+    )
     if (params.isStopped?.()) {
-      return { ok: false, code: 'render', message: 'Render cancelled because document memory was stopped' }
+      return {
+        ok: false,
+        code: 'render',
+        message: 'Render cancelled because document memory was stopped',
+        retryable: true,
+      }
     }
     return reply && 'result' in reply
       ? (reply.result as OcrRenderResult)
       : {
           ok: false,
           code: 'render',
+          retryable: true,
           message:
             reply && 'error' in reply && typeof (reply as any).error === 'string'
               ? (reply as any).error

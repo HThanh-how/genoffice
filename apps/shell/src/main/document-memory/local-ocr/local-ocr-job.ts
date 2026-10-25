@@ -262,6 +262,8 @@ export class LocalOcrJob {
       return null
     }
     if (!rendered.ok) {
+      // Resource/worker gates stop this pass without consuming the file's three attempts.
+      if (rendered.retryable) return 'render-deferred'
       if (rendered.code === 'offline') {
         this.deps.sourceOffline?.(row.path)
         return null
@@ -271,7 +273,7 @@ export class LocalOcrJob {
         file,
         rendered.code,
         PERMANENT_RENDER_CODES.has(rendered.code),
-        rendered.detail,
+        rendered.detail ?? rendered.message,
       )
       summary.failed++
       this.deps.log?.({ kind: 'file-failed', code: rendered.code })

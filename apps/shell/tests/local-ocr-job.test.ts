@@ -264,6 +264,44 @@ describe('quality tier on ocr_pages', () => {
 })
 
 describe('LocalOcrJob on scanned PDFs (real SQLite, real PDFium render, engine double)', () => {
+  it('does not quarantine files while rendering waits for worker or storage readiness', async () => {
+    const path = invoicePdf('temporary-render-gate.pdf', 1)
+    enrollEmpty(path)
+    const engine = new ScriptedEngine(['good'])
+    const deferred = makeJob(engine, {
+      render: async () => ({
+        ok: false,
+        code: 'render',
+        message: 'Worker not ready',
+        retryable: true,
+      }),
+    })
+    for (let i = 0; i < 4; i++) {
+      expect(await deferred.runOnce()).toMatchObject({
+        failed: 0,
+        pages: 0,
+        stoppedBecause: 'render-deferred',
+      })
+      expect(store.ocr.localFailure(path)).toBeNull()
+    }
+    expect(await makeJob(engine).runOnce()).toMatchObject({ pages: 1, failed: 0 })
+  })
+
+  it('preserves the actual render error for failures that belong to the file', async () => {
+    const path = invoicePdf('bad-render.pdf', 1)
+    enrollEmpty(path)
+    await makeJob(new ScriptedEngine(['good']), {
+      render: async () => ({
+        ok: false,
+        code: 'render',
+        message: 'PDF bitmap could not be allocated',
+      }),
+    }).runOnce()
+    expect(
+      store.rawDb.prepare('SELECT detail FROM ocr_local_failures WHERE path = ?').get(path),
+    ).toMatchObject({ detail: 'PDF bitmap could not be allocated' })
+  })
+
   it('reads the light pages locally, writes tier=local rows, and the file becomes findable by its OCR text', async () => {
     const path = invoicePdf('hoa don scan.pdf', 5)
     enrollEmpty(path)
