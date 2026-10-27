@@ -787,8 +787,20 @@ export interface RepasteSlideOp {
   fitWidthPx: number
 }
 
-export interface PasteSlideResult {
+/** Partial render update; order includes every part path, slides only changed pages. */
+export interface SlideUpdate {
+  order: string[]
   slides: RenderSlide[]
+}
+
+export interface DeckChange {
+  slides: RenderSlide[]
+  size: { cx: number; cy: number }
+  /** Present for a partial update; omitted for a full resync. */
+  order?: string[]
+}
+
+export interface PasteSlideResult extends SlideUpdate {
   /** First pasted slide ('picture': the anchor slide the bitmaps landed on) */
   index: number
   /** Slides inserted ('picture': 0) */
@@ -1531,7 +1543,7 @@ export interface SlidesApi {
   deleteElement: (op: DeleteElementOp) => Promise<RenderSlide | null>
   /** Multi-selection delete in one undo step */
   deleteElements: (op: DeleteElementsOp) => Promise<RenderSlide | null>
-  addSlide: (op: AddSlideOp) => Promise<{ slides: RenderSlide[]; index: number } | null>
+  addSlide: (op: AddSlideOp) => Promise<(SlideUpdate & { index: number }) | null>
   /** New blank page (reuses slide sourceIndex's layout, content empty) */
   addBlankSlide: (op: AddBlankSlideOp) => Promise<{ slides: RenderSlide[]; index: number } | null>
   /** Copy slides onto the app-wide slide clipboard, so another open deck can paste them */
@@ -1549,9 +1561,7 @@ export interface SlidesApi {
   /** Delete a thumbnail selection in one undo step; returns the full RenderSlide array */
   deleteSlides: (op: DeleteSlidesOp) => Promise<RenderSlide[] | null>
   /** Duplicate a thumbnail selection in one undo step; index = first copy */
-  duplicateSlides: (
-    op: DuplicateSlidesOp,
-  ) => Promise<{ slides: RenderSlide[]; index: number } | null>
+  duplicateSlides: (op: DuplicateSlidesOp) => Promise<(SlideUpdate & { index: number }) | null>
   /** Bring element to front/back or move one layer forward/backward */
   reorderElement: (op: ReorderElementOp) => Promise<RenderSlide | null>
   /** Table cell text edit */
@@ -1770,9 +1780,7 @@ export interface SlidesApi {
   /** Undo/redo stack occupancy pushed by the main process (drives the QAT button gray states) */
   onHistoryChanged: (handler: (state: { canUndo: boolean; canRedo: boolean }) => void) => () => void
   /** Another window attached to the same file changed the deck (shared session): fresh render state to apply */
-  onDeckChanged: (
-    handler: (state: { slides: RenderSlide[]; size: { cx: number; cy: number } }) => void,
-  ) => () => void
+  onDeckChanged: (handler: (state: DeckChange) => void) => () => void
   reportCloseSaveResult: (ok: boolean) => void
   /** Mirror the autosave toggle state to the main process: files with it on save silently on close, no dialog */
   setAutoSavePref: (on: boolean) => void

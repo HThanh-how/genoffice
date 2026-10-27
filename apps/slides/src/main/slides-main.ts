@@ -264,6 +264,7 @@ import {
   editorAttachedIds,
   beginHistoryBatch,
   buildAllRenderSlides,
+  buildSlideUpdate,
   carryHistoryForReplacement,
   dialogParent,
   endHistoryBatch,
@@ -275,6 +276,7 @@ import {
   markMetaDirty,
   pushHistory,
   rebuildSlide,
+  readSlideMedia,
   rebuildSlideWithReparse,
   registerAiSnapshot,
   restoreAiSnapshot,
@@ -306,7 +308,7 @@ import {
 let slideClipboard: { bundles: SlideBundle[]; pngs?: string[] } | null = null
 
 /** The immediately preceding slide paste per webContents, so the paste-options floater can redo it with another mode. */
-const lastSlidePaste = new Map<number, { afterIndex: number; undoLen: number }>()
+const lastSlidePaste = new Map<number, { afterIndex: number; undoLen: number; changed: number[] }>()
 
 // Generated single-page pptx: marker strings travel in pageMarkers slots; only paths issued
 // by slides:local-page-generate are readable (the renderer can't point the reader at arbitrary files)
@@ -1372,6 +1374,18 @@ export function registerSlidesIpc(): void {
   // Screen recording: source dispatch for the renderer's navigator.mediaDevices.getDisplayMedia.
   // macOS prefers the system picker (with its permission flow), falling back to the first screen.
   void app.whenReady().then(() => {
+    electronSession.defaultSession.protocol.handle('genoffice-slide-media', (request) => {
+      const media = readSlideMedia(request.url)
+      if (!media) return new Response(null, { status: 404 })
+      return new Response(media.body as BodyInit, {
+        headers: {
+          'Content-Type': media.mime,
+          'Content-Length': String(media.body.byteLength),
+          'Access-Control-Allow-Origin': '*',
+          'Cache-Control': 'no-store',
+        },
+      })
+    })
     try {
       electronSession.defaultSession.setDisplayMediaRequestHandler(
         (_request, callback) => {
@@ -2614,6 +2628,7 @@ export function registerSlidesIpc(): void {
   ipcMain.handle('slides:add-slide', (e, op: AddSlideOp) => {
     const session = sessions.get(e.sender.id)
     if (!session) return null
+    const before = session.opened.deck.slides.map((s) => s.path)
     const r = sessionTxn(session, {
       ops: [
         {
@@ -2627,7 +2642,7 @@ export function registerSlidesIpc(): void {
     session.fitWidthPx = op.fitWidthPx
     markMetaDirty(session)
     return {
-      slides: buildAllRenderSlides(session.opened, op.fitWidthPx),
+      ...buildSlideUpdate(session, before),
       index: op.sourceIndex + 1,
     }
   })
@@ -2652,7 +2667,12 @@ export function registerSlidesIpc(): void {
   ipcMain.handle('slides:has-slide-clipboard', () => slideClipboard !== null)
 
   // Several copied slides paste in order; 'picture' mode stacks every bitmap on the anchor slide.
-  const performSlidePaste = (session: Session, op: PasteSlideOp): PasteSlideResult | null => {
+  const performSlidePaste = (
+    session: Session,
+    op: PasteSlideOp,
+    before = session.opened.deck.slides.map((s) => s.path),
+    restored: number[] = [],
+  ): PasteSlideResult | null => {
     if (!slideClipboard) return null
     const picture = op.mode === 'picture'
     const { bundles, pngs } = slideClipboard
@@ -2673,9 +2693,13 @@ export function registerSlidesIpc(): void {
     // repaste-slide re-runs this after restoring a snapshot that cleared the flag.
     markMetaDirty(session)
     const created = r.records!.flatMap((x) => x.created ?? [])
+    const index = (rec.after as { index: number }).index
     return {
-      slides: buildAllRenderSlides(session.opened, op.fitWidthPx),
-      index: (rec.after as { index: number }).index,
+      ...buildSlideUpdate(session, before, [
+        ...restored,
+        ...Array.from({ length: picture ? 1 : bundles.length }, (_, j) => index + j),
+      ]),
+      index,
       count: picture ? 0 : bundles.length,
       ...(created.length ? { sourceIds: created } : {}),
     }
@@ -2693,6 +2717,7 @@ export function registerSlidesIpc(): void {
     lastSlidePaste.set(e.sender.id, {
       afterIndex: op.afterIndex,
       undoLen: session.undoStack.length,
+      changed: op.mode === 'picture' ? [r.index] : [],
     })
     return r
   })
@@ -2706,18 +2731,25 @@ export function registerSlidesIpc(): void {
     if (session.undoStack.length !== rec.undoLen) return null
     const snap = session.undoStack.pop()
     if (!snap) return null
+    const before = session.opened.deck.slides.map((s) => s.path)
     restoreSnapshot(session, snap)
     pushHistory(session)
-    const r = performSlidePaste(session, {
-      afterIndex: rec.afterIndex,
-      fitWidthPx: op.fitWidthPx,
-      mode: op.mode,
-    })
+    const r = performSlidePaste(
+      session,
+      {
+        afterIndex: rec.afterIndex,
+        fitWidthPx: op.fitWidthPx,
+        mode: op.mode,
+      },
+      before,
+      rec.changed,
+    )
     if (!r) {
       session.undoStack.pop()
       return null
     }
     rec.undoLen = session.undoStack.length
+    rec.changed = op.mode === 'picture' ? [r.index] : []
     return r
   })
 
@@ -3107,6 +3139,7 @@ export function registerSlidesIpc(): void {
     if (!session) return null
     const steps = planSlideDuplicates(op.slideIndexes)
     if (!steps.length) return null
+    const before = session.opened.deck.slides.map((s) => s.path)
     const r = sessionTxn(session, {
       ops: steps.map((st) =>
         'duplicate' in st
@@ -3120,7 +3153,7 @@ export function registerSlidesIpc(): void {
     // would otherwise leave the deck changed but reported clean.
     markMetaDirty(session)
     return {
-      slides: buildAllRenderSlides(session.opened, op.fitWidthPx),
+      ...buildSlideUpdate(session, before),
       index: Math.max(...op.slideIndexes) + 1,
     }
   })

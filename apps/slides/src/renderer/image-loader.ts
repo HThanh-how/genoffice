@@ -10,6 +10,7 @@ export type ApplyImages = (entries: ReadonlyArray<readonly [string, HTMLImageEle
 
 /** EMF/WMF data URLs: browsers cannot decode metafiles — rasterize to PNG first (keyed by the original url). */
 const METAFILE_RE = /^data:(image\/x-(?:emf|wmf)|image\/(?:emf|wmf));base64,/
+const LAZY_METAFILE_RE = /^genoffice-slide-media:.*[?&]mime=image%2F(?:x-)?(emf|wmf)(?:&|$)/i
 
 /**
  * EMF headers size the raster from their device bounds, up to the converter's 8192px cap:
@@ -41,8 +42,21 @@ function waitForDocFonts(timeoutMs = 4000): Promise<void> {
 
 async function rasterizeMetafile(url: string): Promise<string | null> {
   const m = METAFILE_RE.exec(url)
-  if (!m) return null
+  const lazy = LAZY_METAFILE_RE.exec(url)
+  if (!m && !lazy) return null
   await waitForDocFonts()
+  if (lazy) {
+    const response = await fetch(url)
+    if (!response.ok) return null
+    const maxBytes = Math.floor((MAX_METAFILE_BASE64_CHARS * 3) / 4)
+    const size = Number(response.headers.get('Content-Length'))
+    if (size > maxBytes) return null
+    const bytes = new Uint8Array(await response.arrayBuffer())
+    if (bytes.byteLength > maxBytes) return null
+    return metafileToDataUrl(bytes, `image/x-${lazy[1]!.toLowerCase()}`, {
+      maxSidePx: MAX_METAFILE_RASTER_PX,
+    })
+  }
   const b64 = url.slice(url.indexOf(',') + 1)
   // atob + Uint8Array double-allocate the payload on the main thread: refuse
   // huge metafiles before decoding (mirrors the 40MB PNG cap in element-clipboard).
@@ -50,7 +64,7 @@ async function rasterizeMetafile(url: string): Promise<string | null> {
   const bin = atob(b64)
   const bytes = new Uint8Array(bin.length)
   for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i)
-  const mime = m[1]!.includes('emf') ? 'image/x-emf' : 'image/x-wmf'
+  const mime = m![1]!.includes('emf') ? 'image/x-emf' : 'image/x-wmf'
   return metafileToDataUrl(bytes, mime, { maxSidePx: MAX_METAFILE_RASTER_PX })
 }
 
@@ -83,6 +97,7 @@ export function createImageLoader(apply: ApplyImages, batchSize = 16, delayMs = 
         if (loaded.has(u) || loading.has(u) || failed.has(u)) continue
         loading.add(u)
         const img = new Image()
+        if (u.startsWith('genoffice-slide-media:')) img.crossOrigin = 'anonymous'
         const done = (ok: boolean) => {
           loading.delete(u)
           if (ok) {
@@ -94,7 +109,7 @@ export function createImageLoader(apply: ApplyImages, batchSize = 16, delayMs = 
         }
         img.onload = () => done(true)
         img.onerror = () => done(false)
-        if (METAFILE_RE.test(u)) {
+        if (METAFILE_RE.test(u) || LAZY_METAFILE_RE.test(u)) {
           void rasterizeMetafile(u)
             .then((png) => {
               if (png) img.src = png

@@ -9,6 +9,7 @@ import type { ActionCtx } from './action-context'
 import type { SectionInfo } from '../shared/ipc'
 import { renderSlidesToPngBase64 } from './export-render'
 import { movedBlockPositions, rangeSelection } from '../shared/slide-selection'
+import { mergeSlideUpdate } from '../shared/slide-update'
 import { t } from './i18n/locale'
 import { currentAfterRemoval, groupSections, indexRange } from './section-groups'
 
@@ -82,7 +83,7 @@ export async function duplicateSlides(ctx: ActionCtx, indexes: number[]): Promis
   if (!sel.length) return
   const r = await window.slidesApi.duplicateSlides({ slideIndexes: sel, fitWidthPx: FIT_WIDTH })
   if (r) {
-    ctx.setSlides(r.slides)
+    ctx.setSlides((slides) => mergeSlideUpdate(slides, r))
     ctx.setCurrent(r.index)
     ctx.setSelectedSlides(rangeSelection(r.index, r.index + sel.length - 1))
     ctx.setSelectedIds([])
