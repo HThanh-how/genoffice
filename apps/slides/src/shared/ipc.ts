@@ -1545,7 +1545,7 @@ export interface SlidesApi {
   deleteElements: (op: DeleteElementsOp) => Promise<RenderSlide | null>
   addSlide: (op: AddSlideOp) => Promise<(SlideUpdate & { index: number }) | null>
   /** New blank page (reuses slide sourceIndex's layout, content empty) */
-  addBlankSlide: (op: AddBlankSlideOp) => Promise<{ slides: RenderSlide[]; index: number } | null>
+  addBlankSlide: (op: AddBlankSlideOp) => Promise<(SlideUpdate & { index: number }) | null>
   /** Copy slides onto the app-wide slide clipboard, so another open deck can paste them */
   copySlides: (op: CopySlidesOp) => Promise<boolean>
   /** Paste the clipboard slides after afterIndex (mode: destination theme / source formatting / picture); index = first pasted slide, count = slides inserted */
@@ -1558,8 +1558,8 @@ export interface SlidesApi {
   clipboardProbe: () => Promise<boolean>
   /** Delete a slide (refused when only one page remains); returns the full RenderSlide array */
   deleteSlide: (slideIndex: number) => Promise<RenderSlide[] | null>
-  /** Delete a thumbnail selection in one undo step; returns the full RenderSlide array */
-  deleteSlides: (op: DeleteSlidesOp) => Promise<RenderSlide[] | null>
+  /** Delete a thumbnail selection in one undo step; returns a partial update */
+  deleteSlides: (op: DeleteSlidesOp) => Promise<SlideUpdate | null>
   /** Duplicate a thumbnail selection in one undo step; index = first copy */
   duplicateSlides: (op: DuplicateSlidesOp) => Promise<(SlideUpdate & { index: number }) | null>
   /** Bring element to front/back or move one layer forward/backward */
@@ -1906,7 +1906,7 @@ export interface SlidesApi {
   /** New blank page (with a specific layout): inserted after slide sourceIndex, rels pointing at the chosen layout */
   addSlideWithLayout: (
     op: AddSlideWithLayoutOp,
-  ) => Promise<{ slides: RenderSlide[]; index: number } | null>
+  ) => Promise<(SlideUpdate & { index: number }) | null>
   /** Query the current pptx's slideLayout list (for the new-slide dropdown panel) */
   getLayouts: () => Promise<GetLayoutsResult | null>
   // ── Master edit view ──────────────────────────────────────────────

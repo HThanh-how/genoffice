@@ -131,6 +131,35 @@ describe('slide media IPC payload', () => {
     expect(readSlideMedia(url)?.body.byteLength).toBe(size)
   })
 
+  it.each([1024, 50 * 1024 * 1024])(
+    'inserts and deletes slides with %i byte media without sending the deck',
+    async (size) => {
+      addImage(size)
+      const before = buildAllRenderSlides(session.opened, FIT)
+      const added = call('slides:add-blank-slide', {
+        sourceIndex: 0,
+        before: true,
+        fitWidthPx: FIT,
+      })
+      expect(serialize(added).byteLength).toBeLessThan(32 * 1024)
+      let current = mergeSlideUpdate(before, added)
+      expect(current.map((s) => s.partPath)).toEqual(added.order)
+      expect(current.slice(1)).toEqual(before)
+      const deleted = call('slides:delete-slides', { slideIndexes: [0, 2] })
+      expect(serialize(deleted).byteLength).toBeLessThan(32 * 1024)
+      current = mergeSlideUpdate(current, deleted)
+      expect(current.map((s) => s.partPath)).toEqual([before[0]!.partPath])
+      expect((call('slides:undo') as RenderSlide[]).map((s) => s.partPath)).toEqual(added.order)
+      expect((call('slides:redo') as RenderSlide[]).map((s) => s.partPath)).toEqual(deleted.order)
+      const saved = await openPptx(await savePptx(session.opened))
+      expect(saved.deck.slides.map((s) => s.path)).toEqual(deleted.order)
+      const picture = saved.deck.slides[0]!.elements.find(
+        (e) => e.type === 'picture',
+      ) as PictureElement
+      expect(saved.archive.readBytes(picture.mediaRef!)?.byteLength).toBe(size)
+    },
+  )
+
   it('keeps multiple large images outside the update and the open result', () => {
     const bytes = addImage(8 * 1024 * 1024)
     for (let i = 1; i < 6; i++) {

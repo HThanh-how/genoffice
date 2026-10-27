@@ -22,7 +22,7 @@ export async function addSlide(ctx: ActionCtx): Promise<void> {
     fitWidthPx: FIT_WIDTH,
   })
   if (r) {
-    ctx.setSlides(r.slides)
+    ctx.setSlides((slides) => mergeSlideUpdate(slides, r))
     ctx.setCurrent(r.index)
     ctx.setSelectedSlides([r.index])
     ctx.setSelectedIds([])
@@ -41,7 +41,7 @@ export async function addSlideAt(ctx: ActionCtx, pos: number): Promise<void> {
     ...(before ? { before: true } : {}),
   })
   if (r) {
-    ctx.setSlides(r.slides)
+    ctx.setSlides((slides) => mergeSlideUpdate(slides, r))
     ctx.setCurrent(r.index)
     ctx.setSelectedSlides([r.index])
     ctx.setSelectedIds([])
@@ -68,7 +68,7 @@ export async function addSlideWithLayout(ctx: ActionCtx, layoutPath: string): Pr
     fitWidthPx: FIT_WIDTH,
   })
   if (r) {
-    ctx.setSlides(r.slides)
+    ctx.setSlides((slides) => mergeSlideUpdate(slides, r))
     ctx.setCurrent(r.index)
     ctx.setSelectedSlides([r.index])
     ctx.setSelectedIds([])
@@ -102,8 +102,8 @@ export async function deleteSlides(ctx: ActionCtx, indexes: number[]): Promise<v
   if (!sel.length) return
   const r = await window.slidesApi.deleteSlides({ slideIndexes: sel })
   if (!r) return
-  const next = Math.min(sel[sel.length - 1]! + 1 - sel.length, r.length - 1)
-  ctx.setSlides(r)
+  const next = Math.min(sel[sel.length - 1]! + 1 - sel.length, r.order.length - 1)
+  ctx.setSlides((slides) => mergeSlideUpdate(slides, r))
   ctx.setCurrent(next)
   ctx.setSelectedSlides([next])
   ctx.setSelectedIds([])

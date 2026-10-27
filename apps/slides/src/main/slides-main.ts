@@ -2756,6 +2756,7 @@ export function registerSlidesIpc(): void {
   ipcMain.handle('slides:add-blank-slide', (e, op: AddBlankSlideOp) => {
     const session = sessions.get(e.sender.id)
     if (!session) return null
+    const before = session.opened.deck.slides.map((s) => s.path)
     const r = sessionTxn(session, {
       ops: [
         { op: 'addBlankSlide', target: { slide: op.sourceIndex } },
@@ -2772,7 +2773,7 @@ export function registerSlidesIpc(): void {
     // element dirty flag is set and the insert would otherwise be unsaveable.
     markMetaDirty(session)
     return {
-      slides: buildAllRenderSlides(session.opened, op.fitWidthPx),
+      ...buildSlideUpdate(session, before),
       index: op.before ? op.sourceIndex : op.sourceIndex + 1,
     }
   })
@@ -2792,6 +2793,7 @@ export function registerSlidesIpc(): void {
   ipcMain.handle('slides:add-slide-with-layout', (e, op: AddSlideWithLayoutOp) => {
     const session = sessions.get(e.sender.id)
     if (!session) return null
+    const before = session.opened.deck.slides.map((s) => s.path)
     // 'builtin:' resolution may inject a layout part — do it before the undo snapshot
     // is taken so a failed insert still rolls back to a consistent package
     pushHistory(session)
@@ -2808,7 +2810,7 @@ export function registerSlidesIpc(): void {
     session.fitWidthPx = op.fitWidthPx
     markMetaDirty(session)
     return {
-      slides: buildAllRenderSlides(session.opened, op.fitWidthPx),
+      ...buildSlideUpdate(session, before),
       index: op.sourceIndex + 1,
     }
   })
@@ -3124,6 +3126,7 @@ export function registerSlidesIpc(): void {
   ipcMain.handle('slides:delete-slides', (e, op: DeleteSlidesOp) => {
     const session = sessions.get(e.sender.id)
     if (!session) return null
+    const before = session.opened.deck.slides.map((s) => s.path)
     const indexes = [...new Set(op.slideIndexes)].sort((a, b) => b - a)
     if (!indexes.length || indexes.length >= session.opened.deck.slides.length) return null
     const r = sessionTxn(session, {
@@ -3131,7 +3134,7 @@ export function registerSlidesIpc(): void {
     })
     if (!r) return null
     markMetaDirty(session)
-    return buildAllRenderSlides(session.opened, session.fitWidthPx)
+    return buildSlideUpdate(session, before)
   })
 
   ipcMain.handle('slides:duplicate-slides', (e, op: DuplicateSlidesOp) => {
