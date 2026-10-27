@@ -2372,6 +2372,7 @@ export function registerSlidesIpc(): void {
     const session = sessions.get(e.sender.id)
     if (!session) return null
     const slides = session.opened.deck.slides
+    const before = slides.map((s) => s.path)
     const targets = op.slideIndex === -1 ? slides : [slides[op.slideIndex]].filter(Boolean)
     if (targets.length === 0) return null
 
@@ -2454,7 +2455,11 @@ export function registerSlidesIpc(): void {
       }
     }
     session.fitWidthPx = op.fitWidthPx
-    return buildAllRenderSlides(session.opened, op.fitWidthPx)
+    return buildSlideUpdate(
+      session,
+      before,
+      targets.map((s) => slides.indexOf(s)),
+    )
   })
 
   ipcMain.handle('slides:edit-image-fill', async (e, op: EditFillImageOp) => {
@@ -3094,6 +3099,7 @@ export function registerSlidesIpc(): void {
   ipcMain.handle('slides:find-replace', (e, op: FindReplaceOp) => {
     const session = sessions.get(e.sender.id)
     if (!session) return null
+    const before = session.opened.deck.slides.map((s) => s.path)
     const r = sessionTxn(session, {
       ops: [
         {
@@ -3107,18 +3113,22 @@ export function registerSlidesIpc(): void {
         },
       ],
     })
-    if (!r) return { count: 0, slides: null }
-    const count = (r.records![0]!.after as { count: number }).count
-    return { count, slides: buildAllRenderSlides(session.opened, session.fitWidthPx) }
+    if (!r) return { count: 0, update: null }
+    const { count, changedSlides } = r.records![0]!.after as {
+      count: number
+      changedSlides: number[]
+    }
+    return { count, update: buildSlideUpdate(session, before, changedSlides) }
   })
 
   ipcMain.handle('slides:delete-slide', (e, slideIndex: number) => {
     const session = sessions.get(e.sender.id)
     if (!session) return null
+    const before = session.opened.deck.slides.map((s) => s.path)
     const r = sessionTxn(session, { ops: [{ op: 'deleteSlide', target: { slide: slideIndex } }] })
     if (!r) return null
     markMetaDirty(session)
-    return buildAllRenderSlides(session.opened, session.fitWidthPx)
+    return buildSlideUpdate(session, before)
   })
 
   // Highest index first: every op is validated against the pre-transaction deck
@@ -3164,6 +3174,7 @@ export function registerSlidesIpc(): void {
   ipcMain.handle('slides:set-slides-hidden', (e, op: SetSlidesHiddenOp) => {
     const session = sessions.get(e.sender.id)
     if (!session || !op.slideIndexes.length) return null
+    const before = session.opened.deck.slides.map((s) => s.path)
     const r = sessionTxn(session, {
       ops: op.slideIndexes.map((i) => ({
         op: 'setHidden' as const,
@@ -3171,7 +3182,7 @@ export function registerSlidesIpc(): void {
         hidden: op.hidden,
       })),
     })
-    return r ? buildAllRenderSlides(session.opened, session.fitWidthPx) : null
+    return r ? buildSlideUpdate(session, before, op.slideIndexes) : null
   })
 
   ipcMain.handle('slides:edit-table-cell', (e, op: EditTableCellOp) => {
@@ -4429,6 +4440,7 @@ export function registerSlidesIpc(): void {
   ipcMain.handle('slides:remove-section-slides', (e, op: RemoveSectionSlidesOp) => {
     const session = sessions.get(e.sender.id)
     if (!session) return null
+    const before = session.opened.deck.slides.map((s) => s.path)
     const total = session.opened.deck.slides.length
     const { lead, sections } = normalizeSections(getSections(session.opened), total)
     const indices = op.id == null ? lead : sections.find((s) => s.id === op.id)?.slideIndices
@@ -4442,22 +4454,23 @@ export function registerSlidesIpc(): void {
     if (!r) return null
     markMetaDirty(session)
     return {
-      slides: buildAllRenderSlides(session.opened, session.fitWidthPx),
+      ...buildSlideUpdate(session, before),
       sections: getSections(session.opened),
     }
   })
 
-  // Drag to reorder slides (sldIdLst + deck.slides + section membership); must send back the full RenderSlide set
+  // Drag to reorder slides (sldIdLst + deck.slides + section membership)
   ipcMain.handle('slides:move-slide', (e, op: MoveSlideOp) => {
     const session = sessions.get(e.sender.id)
     if (!session) return null
+    const before = session.opened.deck.slides.map((s) => s.path)
     const r = sessionTxn(session, {
       ops: [{ op: 'moveSlide', target: { slide: op.fromIndex }, to: op.toIndex }],
     })
     if (!r) return null
     markMetaDirty(session)
     return {
-      slides: buildAllRenderSlides(session.opened, session.fitWidthPx),
+      ...buildSlideUpdate(session, before),
       sections: getSections(session.opened),
     }
   })
@@ -4465,6 +4478,7 @@ export function registerSlidesIpc(): void {
   ipcMain.handle('slides:move-slides', (e, op: MoveSlidesOp) => {
     const session = sessions.get(e.sender.id)
     if (!session) return null
+    const before = session.opened.deck.slides.map((s) => s.path)
     const steps = planSlideMoves(session.opened.deck.slides.length, op.slideIndexes, op.insertAt)
     if (!steps.length) return null
     const r = sessionTxn(session, {
@@ -4473,19 +4487,20 @@ export function registerSlidesIpc(): void {
     if (!r) return null
     markMetaDirty(session)
     return {
-      slides: buildAllRenderSlides(session.opened, session.fitWidthPx),
+      ...buildSlideUpdate(session, before),
       sections: getSections(session.opened),
     }
   })
 
-  // Moving a whole section changes slide order (sldIdLst + deck.slides); must send back the full RenderSlide set
+  // Moving a whole section changes slide order (sldIdLst + deck.slides)
   ipcMain.handle('slides:move-section', (e, op: MoveSectionOp) => {
     const session = sessions.get(e.sender.id)
     if (!session) return null
+    const before = session.opened.deck.slides.map((s) => s.path)
     const sections = sectionShim(e, { op: 'moveSection', id: op.id, dir: op.dir })
     if (!sections) return null
     return {
-      slides: buildAllRenderSlides(session.opened, session.fitWidthPx),
+      ...buildSlideUpdate(session, before),
       sections,
     }
   })

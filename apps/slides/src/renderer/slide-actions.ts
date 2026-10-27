@@ -197,9 +197,9 @@ export async function removeSectionWithSlides(ctx: ActionCtx, id: string | null)
     if (group.end - group.start >= ctx.slides.length) ctx.setStatus(t('appStatusKeepOneSlide'))
     return
   }
-  ctx.setSlides(r.slides)
+  ctx.setSlides((current) => mergeSlideUpdate(current, r))
   ctx.setSections(r.sections)
-  ctx.setCurrent((c) => currentAfterRemoval(c, group, r.slides.length))
+  ctx.setCurrent((c) => currentAfterRemoval(c, group, r.order.length))
   ctx.setSelectedIds([])
   ctx.setEditing(null)
   ctx.setDirty(true)
@@ -217,9 +217,9 @@ export async function moveSectionDir(
     // Re-anchor on the same slide by its part path, as moveSlidesTo does by position.
     const landedIndex = (i: number): number => {
       const partPath = ctx.slides[i]?.partPath
-      return partPath ? r.slides.findIndex((s) => s.partPath === partPath) : -1
+      return partPath ? r.order.indexOf(partPath) : -1
     }
-    ctx.setSlides(r.slides)
+    ctx.setSlides((current) => mergeSlideUpdate(current, r))
     ctx.setSections(r.sections)
     const current = landedIndex(ctx.current)
     if (current >= 0) ctx.setCurrent(current)
@@ -244,7 +244,7 @@ export async function moveSlidesTo(
   const r = await window.slidesApi.moveSlides({ slideIndexes: sel, insertAt })
   if (r) {
     const anchor = landed[Math.max(0, sel.indexOf(ctx.current))]!
-    ctx.setSlides(r.slides)
+    ctx.setSlides((current) => mergeSlideUpdate(current, r))
     ctx.setSections(r.sections)
     ctx.setCurrent(anchor)
     ctx.setSelectedSlides(landed)

@@ -206,7 +206,7 @@ async function insertSummarySlide(
   if (before > 0) return added
   // The layout op only appends after a slide; landing at position 0 takes one more move
   const moved = await window.slidesApi.moveSlide({ fromIndex: r.index, toIndex: 0 })
-  return moved ? { slides: moved.slides, index: 0 } : added
+  return moved ? { slides: mergeSlideUpdate(added.slides, moved), index: 0 } : added
 }
 
 /**

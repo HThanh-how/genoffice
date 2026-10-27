@@ -160,6 +160,118 @@ describe('slide media IPC payload', () => {
     },
   )
 
+  it.each([1024, 50 * 1024 * 1024])(
+    'reorders, hides and deletes without transferring %i byte media',
+    async (size) => {
+      const bytes = addImage(size)
+      duplicateSlide(session.opened, 1)
+      let current = buildAllRenderSlides(session.opened, FIT)
+      const original = current.map((s) => s.partPath)
+      for (const [channel, op] of [
+        ['slides:move-slide', { fromIndex: 0, toIndex: 2 }],
+        ['slides:move-slides', { slideIndexes: [0, 1], insertAt: 3 }],
+        ['slides:set-slides-hidden', { slideIndexes: [0, 1], hidden: true }],
+        ['slides:delete-slide', 1],
+      ] as const) {
+        const result = call(channel, op)
+        const payloadBytes = serialize(result).byteLength
+        process.stdout.write(`${channel} (${size} byte image): V8 payload ${payloadBytes} bytes\n`)
+        expect(payloadBytes).toBeLessThan(32 * 1024)
+        current = mergeSlideUpdate(current, result)
+        expect(current).toEqual(buildAllRenderSlides(session.opened, FIT))
+        const undone = call('slides:undo') as RenderSlide[]
+        expect(serialize(undone).byteLength).toBeLessThan(32 * 1024)
+        const redone = call('slides:redo') as RenderSlide[]
+        expect(redone).toEqual(current)
+      }
+      expect(current.map((s) => s.partPath)).not.toEqual(original)
+      const reopened = await openPptx(await savePptx(session.opened))
+      expect(reopened.deck.slides.map((s) => s.path)).toEqual(current.map((s) => s.partPath))
+      const picture = reopened.deck.slides
+        .flatMap((s) => s.elements)
+        .find((e) => e.type === 'picture') as PictureElement
+      expect(
+        Buffer.compare(
+          Buffer.from(reopened.archive.readBytes(picture.mediaRef!)!),
+          Buffer.from(bytes),
+        ),
+      ).toBe(0)
+    },
+  )
+
+  it('keeps a paste into a 200-slide deck below 1 MB', () => {
+    addImage(1024 * 1024)
+    for (let i = 2; i < 200; i++) expect(duplicateSlide(session.opened, 0)).toBeTruthy()
+    const before = buildAllRenderSlides(session.opened, FIT)
+    call('slides:copy-slides', { slideIndexes: [0] })
+    const result = call('slides:paste-slide', { afterIndex: 99, fitWidthPx: FIT })
+    const payloadBytes = serialize(result).byteLength
+    process.stdout.write(`200-slide paste: V8 payload ${payloadBytes} bytes\n`)
+    expect(payloadBytes).toBeLessThan(1024 * 1024)
+    expect(mergeSlideUpdate(before, result).map((s) => s.partPath)).toEqual(result.order)
+  })
+
+  it.each([1024, 50 * 1024 * 1024])(
+    'updates only the background target with %i byte media',
+    async (size) => {
+      const bytes = addImage(size)
+      const before = buildAllRenderSlides(session.opened, FIT)
+      const result = await call('slides:edit-background', {
+        slideIndex: 0,
+        kind: 'solid',
+        color: 'FF0000',
+        fitWidthPx: FIT,
+      })
+      expect(serialize(result).byteLength).toBeLessThan(32 * 1024)
+      expect(result.slides).toHaveLength(1)
+      const updated = mergeSlideUpdate(before, result)
+      expect(updated).toEqual(buildAllRenderSlides(session.opened, FIT))
+      expect(call('slides:undo')).toEqual(before)
+      expect(call('slides:redo')).toEqual(updated)
+      const reopened = await openPptx(await savePptx(session.opened))
+      const picture = reopened.deck.slides[0]!.elements.find(
+        (e) => e.type === 'picture',
+      ) as PictureElement
+      expect(
+        Buffer.compare(
+          Buffer.from(reopened.archive.readBytes(picture.mediaRef!)!),
+          Buffer.from(bytes),
+        ),
+      ).toBe(0)
+    },
+  )
+
+  it.each([1024, 50 * 1024 * 1024])(
+    'replaces text without transferring %i byte media',
+    async (size) => {
+      const bytes = addImage(size)
+      addElement(session.opened.deck.slides[0]!, {
+        kind: 'textbox',
+        offset: { x: 0, y: 0, cx: 914400, cy: 914400 },
+        paragraphs: [{ runs: [{ text: 'needle' }] }],
+      })
+      const before = buildAllRenderSlides(session.opened, FIT)
+      const result = call('slides:find-replace', { find: 'needle', replace: 'replacement' })
+      expect(result.count).toBe(1)
+      expect(result.update.slides).toHaveLength(1)
+      expect(serialize(result).byteLength).toBeLessThan(32 * 1024)
+      const updated = mergeSlideUpdate(before, result.update)
+      expect(updated).toEqual(buildAllRenderSlides(session.opened, FIT))
+      expect(call('slides:undo')).toEqual(before)
+      expect(call('slides:redo')).toEqual(updated)
+      const reopened = await openPptx(await savePptx(session.opened))
+      const picture = reopened.deck.slides[0]!.elements.find(
+        (e) => e.type === 'picture',
+      ) as PictureElement
+      expect(
+        Buffer.compare(
+          Buffer.from(reopened.archive.readBytes(picture.mediaRef!)!),
+          Buffer.from(bytes),
+        ),
+      ).toBe(0)
+    },
+  )
+
   it('keeps multiple large images outside the update and the open result', () => {
     const bytes = addImage(8 * 1024 * 1024)
     for (let i = 1; i < 6; i++) {

@@ -473,7 +473,8 @@ describe('insert actions use the measured frames', () => {
     const moved = [fresh, slides[0], slides[1], slides[2], slides[3]]
     // What the engine really reports after the move: the summary slide folded into Intro
     api.moveSlide.mockResolvedValue({
-      slides: moved,
+      order: moved.map((s) => s.partPath),
+      slides: [],
       sections: [
         { id: '{A}', name: 'Intro', slideIndices: [0, 1, 2] },
         { id: '{B}', name: 'Body', slideIndices: [3, 4] },
