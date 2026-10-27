@@ -5,7 +5,11 @@ import { launchShell, closeAndSaveVideo, waitForPageWithUrl, screenshotPath } fr
 
 test('AI panel side persists across restart and updates an open Docs tab without losing the draft', async () => {
   const fixture = join(__dirname, 'assets/justify-pagegap-fr.docx')
-  const launched = await launchShell({ onboardingSeen: true, videoDir: 'ai-panel-side' })
+  const launched = await launchShell({
+    onboardingSeen: true,
+    settings: { starPrompt: { resolved: true } },
+    videoDir: 'ai-panel-side',
+  })
   const { page } = launched
   try {
     await page.getByRole('button', { name: 'Settings', exact: true }).click()
