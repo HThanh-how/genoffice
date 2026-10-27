@@ -646,8 +646,12 @@ describe('KnownSourcesManager and Known Search Sources IPC', () => {
       })
       const freshDir = join(testDir, 'AsyncProbeFresh')
       mkdirSync(freshDir)
-      await probePathAvailable(freshDir)
+      const pending = probePathAvailable(freshDir)
+      expect(pending).toBeInstanceOf(Promise)
+      expect(immediateFired).toBe(false)
+      await new Promise<void>((resolve) => setImmediate(resolve))
       expect(immediateFired).toBe(true)
+      await expect(pending).resolves.toBe(true)
     })
 
     it('KS-05: Source ON, retry đang in-flight (probe chưa resolve), user tắt source (OFF). Sau đó probe cũ resolve available -> scanner.start TUYỆT ĐỐI KHÔNG được gọi, root không có owner', async () => {
