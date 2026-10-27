@@ -199,6 +199,43 @@ describe('slide media IPC payload', () => {
     },
   )
 
+  it.each(['slides:paste-slide', 'slides:duplicate-slides'] as const)(
+    'preserves untouched package parts after %s and reopening',
+    async (channel) => {
+      const bytes = addImage(1024)
+      const fixture = await savePptx(session.opened)
+      session.opened = await openPptx(fixture)
+      const JSZip = (await import('jszip')).default
+      const original = await JSZip.loadAsync(fixture)
+      call('slides:copy-slides', { slideIndexes: [0] })
+      const result = call(channel, {
+        afterIndex: 0,
+        slideIndexes: [0],
+        fitWidthPx: FIT,
+      }) as PasteSlideResult
+      const saved = await savePptx(session.opened)
+      const reopened = await openPptx(saved)
+      const output = await JSZip.loadAsync(saved)
+      // Insertion changes the presentation manifest and its relationships.
+      const changed = new Set([
+        '[Content_Types].xml',
+        'ppt/presentation.xml',
+        'ppt/_rels/presentation.xml.rels',
+      ])
+      for (const [path, entry] of Object.entries(original.files)) {
+        if (entry.dir || changed.has(path)) continue
+        expect(output.file(path), path).not.toBeNull()
+        expect(await output.file(path)!.async('uint8array'), path).toEqual(
+          await entry.async('uint8array'),
+        )
+      }
+      const picture = reopened.deck.slides[result.index]!.elements.find(
+        (element) => element.type === 'picture',
+      ) as PictureElement
+      expect(reopened.archive.readBytes(picture.mediaRef!)).toEqual(bytes)
+    },
+  )
+
   it('keeps a paste into a 200-slide deck below 1 MB', () => {
     addImage(1024 * 1024)
     for (let i = 2; i < 200; i++) expect(duplicateSlide(session.opened, 0)).toBeTruthy()
