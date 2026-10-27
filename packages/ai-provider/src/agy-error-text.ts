@@ -19,6 +19,7 @@ import { he } from './i18n/agy-errors/he'
 import { hi } from './i18n/agy-errors/hi'
 import { zhTW } from './i18n/agy-errors/zh-TW'
 import { vi } from './i18n/agy-errors/vi'
+import { tr } from './i18n/agy-errors/tr'
 
 /**
  * Localized messages for typed Antigravity failures. Browser-safe (no Node imports): the editors'
@@ -49,6 +50,7 @@ export type AgyErrorLang =
   | 'hi'
   | 'zh-TW'
   | 'vi'
+  | 'tr'
 
 type Dict = Record<keyof typeof zh, string>
 
@@ -74,6 +76,7 @@ const DICTS: Record<AgyErrorLang, Dict> = {
   hi: hi,
   'zh-TW': zhTW,
   vi: vi,
+  tr: tr,
 }
 
 export type AgyErrorTextCode = 'quota' | 'auth'

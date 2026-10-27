@@ -1,10 +1,10 @@
 /**
  * Placement for the fixed-position folder context menu.
  *
- * The menu opens to the RIGHT of its anchor (pointer x, or the "..." button's
- * right edge) and flips above the anchor when there is no room below. Both
- * axes are clamped to the viewport with a margin, so the menu is never cut off
- * at any edge.
+ * A right-click menu opens to the RIGHT of the pointer; a "..." button menu stays
+ * right-aligned under its button (align 'end'). Either one flips above the anchor
+ * when there is no room below, and both axes are clamped to the viewport with a
+ * margin, so the menu is never cut off at any edge.
  */
 
 export interface FolderMenuAnchor {
@@ -14,6 +14,11 @@ export interface FolderMenuAnchor {
   y: number
   /** bottom edge of the anchor; used to flip the menu above when it does not fit below */
   above: number
+  /**
+   * 'start' (default): `x` is the menu's left edge, so it opens to the right of the pointer.
+   * 'end': `x` is the menu's right edge, so a "..." button menu stays right-aligned under its button.
+   */
+  align?: 'start' | 'end'
 }
 
 export interface FolderMenuSize {
@@ -44,7 +49,8 @@ export function placeFolderMenu(
   viewport: FolderMenuViewport,
   margin: number = FOLDER_MENU_MARGIN,
 ): FolderMenuPosition {
-  const left = clamp(anchor.x, margin, viewport.width - menu.width - margin)
+  const preferredLeft = anchor.align === 'end' ? anchor.x - menu.width : anchor.x
+  const left = clamp(preferredLeft, margin, viewport.width - menu.width - margin)
   const fitsBelow = anchor.y + menu.height <= viewport.height - margin
   const preferredTop = fitsBelow ? anchor.y : anchor.above - menu.height
   const top = clamp(preferredTop, margin, viewport.height - menu.height - margin)

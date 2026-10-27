@@ -427,10 +427,31 @@ const zhTW = {
   clipActOrganize: '整理聯絡資訊',
 } satisfies Dict
 
+const tr = {
+  clipSetting: 'Kopyaladıklarım için eylem öner',
+  clipSettingDesc:
+    'Varsayılan olarak açıktır. Açıkken ve GenOffice odaktayken, panonuzda az önce kopyaladığınız metni denetler ve Ana ekranda bir AI eylemi önerir. Bu işlem cihazınızda gerçekleşir; bir öneriye tıklayana kadar hiçbir AI’ya veri gönderilmez. Parolalar, anahtarlar, kart numaraları ve parola yöneticilerinden gelen içerik atlanır; pano içeriği asla kaydedilmez.',
+  clipRegion: 'Pano önerisi',
+  clipHeader: 'Panonuzdan',
+  clipDismiss: 'Kapat',
+  clipTurnOff: 'Önerileri kapat',
+  clipTruncated: 'Yalnızca ilk 20.000 karakter kullanılacak.',
+  clipActSummarize: 'Özetle',
+  clipActTranslate: 'Şu dile çevir: {lang}',
+  clipActRewrite: 'Yeniden yaz',
+  clipActAsk: 'AI’ya sor',
+  clipActFindRelated: 'İlgili dosyaları bul',
+  clipActAnalyze: 'Bu verileri analiz et',
+  clipActToSheet: 'Elektronik tabloya dönüştür',
+  clipActExplainCode: 'Bu kodu açıkla',
+  clipActOrganize: 'İletişim bilgilerini düzenle',
+} satisfies Dict
+
 const dicts: LangDicts<Dict> = {
   zh,
   en,
   vi,
+  tr,
   ja,
   ko,
   fr,

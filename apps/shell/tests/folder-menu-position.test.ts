@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
-import { placeFolderMenu } from '../src/renderer/src/fork/folder-menu-position'
+
+import { placeFolderMenu } from '../src/renderer/src/folder-menu-position'
 
 const viewport = { width: 1000, height: 700 }
 const menu = { width: 180, height: 220 }
@@ -10,6 +11,19 @@ describe('placeFolderMenu', () => {
       left: 120,
       top: 200,
     })
+  })
+
+  it('right-aligns a "..." button menu under its button', () => {
+    expect(placeFolderMenu({ x: 400, y: 200, above: 180, align: 'end' }, menu, viewport)).toEqual({
+      left: 400 - 180,
+      top: 200,
+    })
+  })
+
+  it('clamps a right-aligned menu inside the left edge', () => {
+    expect(placeFolderMenu({ x: 50, y: 200, above: 180, align: 'end' }, menu, viewport).left).toBe(
+      8,
+    )
   })
 
   it('keeps the menu inside the left edge when the anchor is near it', () => {

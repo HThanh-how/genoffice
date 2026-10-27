@@ -1,6 +1,6 @@
 import { useEffect, useLayoutEffect, useRef, useState, type ReactNode } from 'react'
 import { createPortal } from 'react-dom'
-import { placeFolderMenu } from './folder-menu-position'
+import { placeFolderMenu } from '../folder-menu-position'
 
 /**
  * A small popover menu anchored to a button. It is drawn in the document body with fixed

@@ -373,6 +373,19 @@ const INDEX_STRINGS: Record<Lang, IndexStrings> = {
     chunks: 'đoạn',
     percent: '{value}%',
   },
+  tr: {
+    index: 'Dizin',
+    queued: 'Dizinlenmeyi bekliyor',
+    extracting: 'Belge okunuyor',
+    indexing: 'Belge dizinleniyor',
+    ready: 'Dizinleme tamamlandı',
+    empty: 'Dizinlenecek içerik yok',
+    error: 'Dizinleme başarısız oldu',
+    excluded: 'Dizinlemenin dışında tutuldu',
+    paused: 'Dizinleme duraklatıldı',
+    chunks: 'parça',
+    percent: '%{value}',
+  },
 }
 
 export interface DocumentIndexIndicatorProps {

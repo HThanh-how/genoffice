@@ -52,6 +52,10 @@ export const de = {
     'Die KI-Anfrage hat das Zeitlimit überschritten und wurde gestoppt. Versuche es erneut oder wähle für eine lange Anfrage ein schnelleres Modell.',
   aiToolWebSearch: 'Websuche',
   aiToolWebSearchDone: '„{query}" gesucht · {count} Treffer',
+  aiToolImageSearch: 'Bildersuche',
+  aiToolImageSearchDone: 'Bildersuche „{query}“ ({count} Bilder)',
+  aiToolGenImage: 'Bild generieren',
+  aiToolGenImageDone: 'KI-generiertes Bild eingefügt',
   aiTruncatedNote:
     '(Die Antwort wurde durch das Längenlimit abgeschnitten und ist möglicherweise unvollständig.)',
   aiTurnLimit: 'Schrittlimit pro Lauf erreicht — senden Sie eine weitere Anweisung.',

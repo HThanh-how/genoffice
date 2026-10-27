@@ -48,6 +48,7 @@ const INSTALL_LABEL: Record<string, string> = {
   ms: 'Buka pemasang',
   he: 'פתיחת תוכנית ההתקנה',
   hi: 'अपडेट इंस्टॉलर खोलें',
+  tr: 'Güncelleme yükleyicisini aç',
 }
 const RESTART_LABEL: Record<string, string> = {
   vi: 'Khởi động lại để cập nhật',

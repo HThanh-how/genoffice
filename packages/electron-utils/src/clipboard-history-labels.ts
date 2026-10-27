@@ -43,6 +43,14 @@ const LABELS: Record<string, ClipboardHistoryBaseLabels> = {
     cleared: '已清除',
     pasteMore: '貼上更多',
   },
+  tr: {
+    title: 'Pano geçmişi',
+    description:
+      'Varsayılan olarak açıktır. Uygulama odaktayken bu cihazda en fazla 20 son metin ve görsel parçasını saklar. Parola, anahtar veya alışılmadık uzunlukta bir kod gibi görünen metin listede •••••• olarak gizlenir ancak yine de yapıştırılabilir ve yalnızca bellekte tutulur. Parola yöneticilerinden gelen içerik asla kaydedilmez. Bunu kapatmak geçmişi temizler.',
+    clear: 'Geçmişi temizle',
+    cleared: 'Temizlendi',
+    pasteMore: 'Daha fazlasını yapıştır',
+  },
   vi: {
     title: 'Lịch sử clipboard',
     description:
@@ -211,6 +219,7 @@ const PASTE_MORE_EMPTY: Record<string, string> = {
   ms: 'Salin teks dahulu',
   he: 'יש להעתיק טקסט תחילה',
   hi: 'पहले कुछ टेक्स्ट कॉपी करें',
+  tr: 'Önce biraz metin veya görsel kopyalayın',
 }
 
 const NORMAL_PASTE_NOTE: Record<string, string> = {
@@ -235,18 +244,21 @@ const NORMAL_PASTE_NOTE: Record<string, string> = {
   ms: 'Tampal biasa terus menggunakan papan klip semasa dan mengekalkan pemformatan.',
   he: 'ההדבקה הרגילה ממשיכה להשתמש בלוח הנוכחי ולשמור על העיצוב.',
   hi: 'सामान्य पेस्ट मौजूदा क्लिपबोर्ड का उपयोग करता रहेगा और फ़ॉर्मैटिंग बनाए रखेगा।',
+  tr: 'Normal Yapıştır hâlâ geçerli panoyu kullanır ve zengin biçimlendirmeyi korur.',
 }
 
 const PASTE_MORE_DISABLED: Record<string, string> = {
   vi: 'Bật trong Cài đặt → Chung → Lịch sử clipboard',
   zh: '请在 设置 → 通用 → 剪贴板历史记录 中开启',
   'zh-TW': '請在 設定 → 一般 → 剪貼簿歷史記錄 中開啟',
+  tr: 'Ayarlar → Genel → Pano geçmişi bölümünden açın',
 }
 
 const SENSITIVE_HINT: Record<string, string> = {
   vi: 'Đã ẩn: trông giống mật khẩu hoặc khóa. Vẫn dán được.',
   zh: '已隐藏：看起来像密码或密钥，仍可粘贴。',
   'zh-TW': '已隱藏：看起來像密碼或金鑰，仍可貼上。',
+  tr: 'Gizlendi: parola veya anahtar gibi görünüyor. Yine de yapıştırılır.',
 }
 
 export function clipboardHistoryLabels(lang: string): ClipboardHistoryLabels {

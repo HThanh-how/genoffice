@@ -37,6 +37,7 @@ const LANGUAGES = [
   'pt',
   'ru',
   'th',
+  'tr',
   'vi',
   'zh',
   'zh-TW',

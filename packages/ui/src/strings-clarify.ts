@@ -17,6 +17,7 @@ import pl from './i18n/clarify/pl'
 import pt from './i18n/clarify/pt'
 import ru from './i18n/clarify/ru'
 import th from './i18n/clarify/th'
+import tr from './i18n/clarify/tr'
 import vi from './i18n/clarify/vi'
 import zhTW from './i18n/clarify/zh-TW'
 import zh from './i18n/clarify/zh'
@@ -41,6 +42,7 @@ const strings = {
   pt: pt,
   ru: ru,
   th: th,
+  tr: tr,
   vi: vi,
   'zh-TW': zhTW,
   zh: zh,

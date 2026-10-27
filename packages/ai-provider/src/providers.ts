@@ -145,8 +145,10 @@ export const AI_PROVIDERS: AiProviderMeta[] = [
   {
     id: 'kimi',
     label: 'Kimi',
-    models: ['kimi-k3'],
-    defaultModel: 'kimi-k3',
+    // K3.1 Pro opens the K3.1 series: 3T-class parameters, native vision, 1M
+    // context (2026-10). K3 stays listed while the vendor still sells it.
+    models: ['kimi-k3.1-pro', 'kimi-k3'],
+    defaultModel: 'kimi-k3.1-pro',
     keyPlaceholder: 'sk-...',
   },
   {
@@ -277,6 +279,7 @@ export const AI_PROVIDERS: AiProviderMeta[] = [
       'anthropic/claude-sonnet-5',
       'openai/gpt-6-astra',
       'openai/gpt-5.6-sol',
+      'moonshotai/kimi-k3.1-pro',
       'moonshotai/kimi-k3',
       'minimax/minimax-m3.1-flash:free',
       'minimax/minimax-m3',

@@ -272,8 +272,8 @@ const KEYS: QuotaStringKey[] = [
 const raw = (lang: Lang, key: QuotaStringKey) => quotaString(lang, key) // unfilled: placeholders stay visible
 
 describe('index size strings in every locale', () => {
-  it('all 21 locales define every key, with the same placeholders as Chinese (the key-set owner)', () => {
-    expect(LANGS).toHaveLength(21)
+  it('all 22 locales define every key, with the same placeholders as Chinese (the key-set owner)', () => {
+    expect(LANGS).toHaveLength(22)
     const placeholders = (text: string) => (text.match(/\{\w+\}/g) ?? []).sort().join(',')
     for (const lang of LANGS) {
       for (const key of KEYS) {

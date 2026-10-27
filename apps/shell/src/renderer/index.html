@@ -8,8 +8,9 @@
     />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>GenOffice</title>
-    <!-- first paint before the bundle: the window's colour scheme already follows the saved theme
-         (nativeTheme.themeSource), so prefers-color-scheme paints the right surface, not white -->
+    <!-- First paint, before the bundle loads: nativeTheme.themeSource follows the saved theme, so
+         prefers-color-scheme already resolves to the right surface instead of a white flash.
+         Values mirror --surface in packages/ui/src/tokens.css. -->
     <style>
       :root {
         --boot-bg: #ffffff;
@@ -20,10 +21,10 @@
           --boot-bg: #1e1e1e;
         }
       }
-      html,
+      /* body only: html stays transparent so body.vib can clear it for macOS vibrancy */
       body {
-        background: var(--boot-bg);
         margin: 0;
+        background: var(--boot-bg);
       }
     </style>
   </head>

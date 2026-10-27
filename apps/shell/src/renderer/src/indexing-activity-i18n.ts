@@ -25,7 +25,8 @@ export const en = {
   open: 'Show index progress',
   local: 'Processing on this device',
   released: 'Released',
-  releasedHint: 'Vector memory released to save space. Still searchable by name and text; reloads when you open the file.',
+  releasedHint:
+    'Vector memory released to save space. Still searchable by name and text; reloads when you open the file.',
 }
 export const strings: Record<Lang, typeof en> = {
   en,
@@ -69,7 +70,8 @@ export const strings: Record<Lang, typeof en> = {
     open: '索引の進行状況を表示',
     local: 'このデバイスで処理',
     released: '解放済み',
-    releasedHint: '容量節約のためベクトルを解放しました。名前とテキストで検索でき、開くと再読み込みされます。',
+    releasedHint:
+      '容量節約のためベクトルを解放しました。名前とテキストで検索でき、開くと再読み込みされます。',
   },
   ko: {
     title: '문서 색인',
@@ -90,7 +92,8 @@ export const strings: Record<Lang, typeof en> = {
     open: '색인 진행 상황 표시',
     local: '이 기기에서 처리',
     released: '해제됨',
-    releasedHint: '공간을 절약하려고 벡터 메모리를 해제했습니다. 이름과 텍스트로 검색할 수 있으며 파일을 열면 다시 불러옵니다.',
+    releasedHint:
+      '공간을 절약하려고 벡터 메모리를 해제했습니다. 이름과 텍스트로 검색할 수 있으며 파일을 열면 다시 불러옵니다.',
   },
   fr: {
     title: 'Index des documents',
@@ -111,7 +114,8 @@ export const strings: Record<Lang, typeof en> = {
     open: 'Afficher la progression de l’indexation',
     local: 'Traitement sur cet appareil',
     released: 'Libéré',
-    releasedHint: 'Mémoire vectorielle libérée pour gagner de la place. Toujours trouvable par nom et texte ; rechargée à l’ouverture du fichier.',
+    releasedHint:
+      'Mémoire vectorielle libérée pour gagner de la place. Toujours trouvable par nom et texte ; rechargée à l’ouverture du fichier.',
   },
   de: {
     title: 'Dokumentindex',
@@ -132,7 +136,8 @@ export const strings: Record<Lang, typeof en> = {
     open: 'Indexierungsfortschritt anzeigen',
     local: 'Verarbeitung auf diesem Gerät',
     released: 'Freigegeben',
-    releasedHint: 'Vektorspeicher zum Platzsparen freigegeben. Weiter per Name und Text auffindbar; wird beim Öffnen neu geladen.',
+    releasedHint:
+      'Vektorspeicher zum Platzsparen freigegeben. Weiter per Name und Text auffindbar; wird beim Öffnen neu geladen.',
   },
   es: {
     title: 'Índice de documentos',
@@ -153,7 +158,8 @@ export const strings: Record<Lang, typeof en> = {
     open: 'Mostrar progreso de indexación',
     local: 'Procesamiento en este dispositivo',
     released: 'Liberado',
-    releasedHint: 'Memoria vectorial liberada para ahorrar espacio. Se sigue encontrando por nombre y texto; se recarga al abrir el archivo.',
+    releasedHint:
+      'Memoria vectorial liberada para ahorrar espacio. Se sigue encontrando por nombre y texto; se recarga al abrir el archivo.',
   },
   th: {
     title: 'ดัชนีเอกสาร',
@@ -174,7 +180,8 @@ export const strings: Record<Lang, typeof en> = {
     open: 'แสดงความคืบหน้าการจัดทำดัชนี',
     local: 'ประมวลผลบนอุปกรณ์นี้',
     released: 'คืนพื้นที่แล้ว',
-    releasedHint: 'คืนหน่วยความจำเวกเตอร์เพื่อประหยัดพื้นที่ ยังค้นหาได้ด้วยชื่อและข้อความ และจะโหลดใหม่เมื่อคุณเปิดไฟล์',
+    releasedHint:
+      'คืนหน่วยความจำเวกเตอร์เพื่อประหยัดพื้นที่ ยังค้นหาได้ด้วยชื่อและข้อความ และจะโหลดใหม่เมื่อคุณเปิดไฟล์',
   },
   id: {
     title: 'Indeks dokumen',
@@ -195,7 +202,8 @@ export const strings: Record<Lang, typeof en> = {
     open: 'Tampilkan progres pengindeksan',
     local: 'Diproses di perangkat ini',
     released: 'Dilepas',
-    releasedHint: 'Memori vektor dilepas untuk menghemat ruang. Tetap bisa dicari lewat nama dan teks; dimuat ulang saat file dibuka.',
+    releasedHint:
+      'Memori vektor dilepas untuk menghemat ruang. Tetap bisa dicari lewat nama dan teks; dimuat ulang saat file dibuka.',
   },
   ru: {
     title: 'Индекс документов',
@@ -216,7 +224,8 @@ export const strings: Record<Lang, typeof en> = {
     open: 'Показать ход индексации',
     local: 'Обработка на этом устройстве',
     released: 'Освобождено',
-    releasedHint: 'Векторная память освобождена для экономии места. Файл по-прежнему находится по имени и тексту; при открытии данные загрузятся снова.',
+    releasedHint:
+      'Векторная память освобождена для экономии места. Файл по-прежнему находится по имени и тексту; при открытии данные загрузятся снова.',
   },
   ar: {
     title: 'فهرس المستندات',
@@ -237,7 +246,8 @@ export const strings: Record<Lang, typeof en> = {
     open: 'عرض تقدم الفهرسة',
     local: 'تتم المعالجة على هذا الجهاز',
     released: 'تم التحرير',
-    releasedHint: 'تم تحرير ذاكرة المتجهات لتوفير المساحة. لا يزال بالإمكان البحث بالاسم والنص، وسيُعاد التحميل عند فتح الملف.',
+    releasedHint:
+      'تم تحرير ذاكرة المتجهات لتوفير المساحة. لا يزال بالإمكان البحث بالاسم والنص، وسيُعاد التحميل عند فتح الملف.',
   },
   pt: {
     title: 'Índice de documentos',
@@ -258,7 +268,8 @@ export const strings: Record<Lang, typeof en> = {
     open: 'Mostrar progresso da indexação',
     local: 'Processamento neste dispositivo',
     released: 'Liberado',
-    releasedHint: 'Memória vetorial liberada para economizar espaço. Continua pesquisável por nome e texto; recarrega ao abrir o arquivo.',
+    releasedHint:
+      'Memória vetorial liberada para economizar espaço. Continua pesquisável por nome e texto; recarrega ao abrir o arquivo.',
   },
   it: {
     title: 'Indice dei documenti',
@@ -279,7 +290,8 @@ export const strings: Record<Lang, typeof en> = {
     open: 'Mostra avanzamento indicizzazione',
     local: 'Elaborazione su questo dispositivo',
     released: 'Liberato',
-    releasedHint: 'Memoria vettoriale liberata per risparmiare spazio. Resta ricercabile per nome e testo; si ricarica quando apri il file.',
+    releasedHint:
+      'Memoria vettoriale liberata per risparmiare spazio. Resta ricercabile per nome e testo; si ricarica quando apri il file.',
   },
   pl: {
     title: 'Indeks dokumentów',
@@ -300,7 +312,8 @@ export const strings: Record<Lang, typeof en> = {
     open: 'Pokaż postęp indeksowania',
     local: 'Przetwarzanie na tym urządzeniu',
     released: 'Zwolnione',
-    releasedHint: 'Pamięć wektorowa zwolniona, by oszczędzić miejsce. Nadal można szukać po nazwie i tekście; po otwarciu pliku zostanie wczytana ponownie.',
+    releasedHint:
+      'Pamięć wektorowa zwolniona, by oszczędzić miejsce. Nadal można szukać po nazwie i tekście; po otwarciu pliku zostanie wczytana ponownie.',
   },
   cs: {
     title: 'Index dokumentů',
@@ -321,7 +334,8 @@ export const strings: Record<Lang, typeof en> = {
     open: 'Zobrazit průběh indexování',
     local: 'Zpracování na tomto zařízení',
     released: 'Uvolněno',
-    releasedHint: 'Vektorová paměť byla uvolněna kvůli úspoře místa. Soubor lze dál hledat podle názvu a textu; po otevření se znovu načte.',
+    releasedHint:
+      'Vektorová paměť byla uvolněna kvůli úspoře místa. Soubor lze dál hledat podle názvu a textu; po otevření se znovu načte.',
   },
   nl: {
     title: 'Documentindex',
@@ -342,7 +356,8 @@ export const strings: Record<Lang, typeof en> = {
     open: 'Voortgang van indexering weergeven',
     local: 'Verwerking op dit apparaat',
     released: 'Vrijgegeven',
-    releasedHint: 'Vectorgeheugen vrijgegeven om ruimte te besparen. Nog steeds vindbaar op naam en tekst; wordt opnieuw geladen als je het bestand opent.',
+    releasedHint:
+      'Vectorgeheugen vrijgegeven om ruimte te besparen. Nog steeds vindbaar op naam en tekst; wordt opnieuw geladen als je het bestand opent.',
   },
   ms: {
     title: 'Indeks dokumen',
@@ -363,7 +378,8 @@ export const strings: Record<Lang, typeof en> = {
     open: 'Tunjukkan kemajuan pengindeksan',
     local: 'Diproses pada peranti ini',
     released: 'Dilepaskan',
-    releasedHint: 'Memori vektor dilepaskan untuk jimat ruang. Masih boleh dicari mengikut nama dan teks; dimuat semula apabila anda membuka fail.',
+    releasedHint:
+      'Memori vektor dilepaskan untuk jimat ruang. Masih boleh dicari mengikut nama dan teks; dimuat semula apabila anda membuka fail.',
   },
   he: {
     title: 'אינדקס מסמכים',
@@ -384,7 +400,8 @@ export const strings: Record<Lang, typeof en> = {
     open: 'הצג את התקדמות האינדוקס',
     local: 'העיבוד מתבצע במכשיר הזה',
     released: 'שוחרר',
-    releasedHint: 'זיכרון הווקטורים שוחרר כדי לחסוך מקום. עדיין אפשר לחפש לפי שם וטקסט, והוא ייטען מחדש כשתפתחו את הקובץ.',
+    releasedHint:
+      'זיכרון הווקטורים שוחרר כדי לחסוך מקום. עדיין אפשר לחפש לפי שם וטקסט, והוא ייטען מחדש כשתפתחו את הקובץ.',
   },
   hi: {
     title: 'दस्तावेज़ अनुक्रमणिका',
@@ -405,7 +422,8 @@ export const strings: Record<Lang, typeof en> = {
     open: 'अनुक्रमण की प्रगति दिखाएँ',
     local: 'इस डिवाइस पर संसाधित',
     released: 'मुक्त किया गया',
-    releasedHint: 'जगह बचाने के लिए वेक्टर मेमोरी मुक्त की गई। नाम और टेक्स्ट से खोज अब भी संभव है; फ़ाइल खोलने पर यह फिर से लोड होगी।',
+    releasedHint:
+      'जगह बचाने के लिए वेक्टर मेमोरी मुक्त की गई। नाम और टेक्स्ट से खोज अब भी संभव है; फ़ाइल खोलने पर यह फिर से लोड होगी।',
   },
   'zh-TW': {
     title: '文件索引',
@@ -447,7 +465,30 @@ export const strings: Record<Lang, typeof en> = {
     open: 'Xem tiến độ lập chỉ mục',
     local: 'Xử lý trên máy này',
     released: 'Đã giải phóng',
-    releasedHint: 'Đã giải phóng bộ nhớ vector để tiết kiệm dung lượng — vẫn tìm được theo tên và nội dung, sẽ nạp lại khi bạn mở tài liệu.',
+    releasedHint:
+      'Đã giải phóng bộ nhớ vector để tiết kiệm dung lượng — vẫn tìm được theo tên và nội dung, sẽ nạp lại khi bạn mở tài liệu.',
+  },
+  tr: {
+    title: 'Belge dizini',
+    scanning: 'Belgeler bulunuyor',
+    indexing: 'İçerikler dizinleniyor',
+    done: 'Dizin tamamlandı',
+    paused: 'Dizin duraklatıldı',
+    stopped: 'Dosya bulma durduruldu',
+    error: 'Bazı dosyalar ilgi gerektiriyor',
+    downloading: 'Yerel model indiriliyor',
+    found: 'Bulunan',
+    ready: 'Hazır',
+    waiting: 'Bekleyen',
+    errors: 'Hatalar',
+    stop: 'Dosya bulmayı durdur',
+    close: 'Daralt',
+    dismiss: 'Kapat',
+    open: 'Dizin ilerlemesini göster',
+    local: 'Bu cihazda işleniyor',
+    released: 'Serbest bırakıldı',
+    releasedHint:
+      'Yer açmak için vektör belleği serbest bırakıldı. Ad ve metne göre hâlâ aranabilir; dosyayı açtığınızda yeniden yüklenir.',
   },
 }
 
@@ -949,6 +990,29 @@ export const issueWords: Record<
       'too-large': 'Tệp quá lớn',
       changed: 'Tệp đã thay đổi',
       other: 'Không thể lập chỉ mục',
+    },
+  },
+  tr: {
+    issues: 'İlgi gerektiren dosyalar',
+    warnings: '{count} uyarı',
+    retry: 'Yeniden dene',
+    showInFolder: 'Klasörde göster',
+    next: 'Sonraki',
+    previous: 'Önceki',
+    page: 'Sayfa {page} / {pages}',
+    loading: 'Dosyalar yükleniyor…',
+    noIssues: 'İlgi gerektiren dosya yok',
+    actionFailed: 'İşlem başarısız oldu',
+    gentle: 'Hafif CPU modu',
+    reasons: {
+      unavailable: 'Dosya kullanılamıyor',
+      password: 'Parola korumalı',
+      unsupported: 'Desteklenmeyen biçim',
+      timeout: 'Zaman aşımına uğradı',
+      'no-text': 'Okunabilir metin yok; taranmış PDF’ler için OCR gerekir',
+      'too-large': 'Dosya çok büyük',
+      changed: 'Dosya değişti',
+      other: 'Dizinlenemedi',
     },
   },
 }

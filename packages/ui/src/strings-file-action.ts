@@ -1,6 +1,7 @@
 import type { Lang } from '@genoffice/i18n'
 import { zh as zh } from './i18n/file-action/zh'
 import { strings as en } from './i18n/file-action/en'
+import { strings as tr } from './i18n/file-action/tr'
 import { strings as vi } from './i18n/file-action/vi'
 import { strings as zh_TW } from './i18n/file-action/zh-TW'
 import { strings as ja } from './i18n/file-action/ja'
@@ -24,6 +25,7 @@ import { strings as hi } from './i18n/file-action/hi'
 export const FILE_ACTION_LABELS = {
   zh: zh,
   en: en,
+  tr: tr,
   vi: vi,
   'zh-TW': zh_TW,
   ja: ja,

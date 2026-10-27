@@ -87,6 +87,7 @@ export type UiLanguage =
   | 'hi'
   | 'zh-TW'
   | 'vi'
+  | 'tr'
 
 /** UI theme preference */
 import type { OpeningApp, OpeningPrefs } from './opening-scenes-meta'
@@ -265,6 +266,7 @@ export type DecisionEndpoint =
   | 'perplexity-flash'
   | 'liquid'
   | 'liquid-ultra'
+  | 'openai'
   | 'cloudflare'
   | 'cloudflare-flash'
   | 'kev'
@@ -508,6 +510,9 @@ export interface HomeApi extends ForkHomeApi, FileManagementBridge {
   getUpdateChannel(): Promise<UpdateChannel>
   /** switch + persist the update channel; triggers an immediate update check */
   setUpdateChannel(channel: UpdateChannel): Promise<void>
+  /** whether the launch and periodic background update checks run (default on) */
+  getAutoUpdateCheck(): Promise<boolean>
+  setAutoUpdateCheck(on: boolean): Promise<void>
   /** Genspark account status (gsk login state; to be upgraded to a signup/account system later) */
   accountStatus(): Promise<AccountStatus>
   /** start Genspark login (opens the browser; accountStatus flips to logged-in on completion); returns whether the launch succeeded */
@@ -588,6 +593,9 @@ export interface HomeApi extends ForkHomeApi, FileManagementBridge {
   /** whether long-idle background tabs release their renderer once many are open (default on) */
   getTabSleepEnabled(): Promise<boolean>
   setTabSleepEnabled(on: boolean): Promise<void>
+  /** whether the documents open at the last close reopen at launch (default off) */
+  getRestoreLastSession(): Promise<boolean>
+  setRestoreLastSession(on: boolean): Promise<void>
   /** current local MCP server state (running/enabled/port/url) */
   getMcpStatus(): Promise<McpStatus>
   /** enable/disable the MCP server and/or change its port/background/logging; applies and persists, returns the new state */
@@ -899,6 +907,8 @@ export const HOME_CHANNELS = {
   checkForUpdates: 'home:check-for-updates',
   getUpdateChannel: 'home:get-update-channel',
   setUpdateChannel: 'home:set-update-channel',
+  getAutoUpdateCheck: 'home:get-auto-update-check',
+  setAutoUpdateCheck: 'home:set-auto-update-check',
   accountStatus: 'home:account-status',
   accountLogin: 'home:account-login',
   accountLoginEvent: 'home:account-login-event',
@@ -939,6 +949,8 @@ export const HOME_CHANNELS = {
   setAutoSaveDefault: 'home:set-auto-save-default',
   getTabSleepEnabled: 'home:get-tab-sleep-enabled',
   setTabSleepEnabled: 'home:set-tab-sleep-enabled',
+  getRestoreLastSession: 'home:get-restore-last-session',
+  setRestoreLastSession: 'home:set-restore-last-session',
   getMcpStatus: 'home:get-mcp-status',
   setMcpSettings: 'home:set-mcp-settings',
   getMcpLogs: 'home:get-mcp-logs',

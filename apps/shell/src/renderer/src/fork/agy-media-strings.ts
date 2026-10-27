@@ -40,10 +40,23 @@ const vi = {
     'Để trống để dùng đường dẫn trong cài đặt Mô hình AI, sau đó tự động phát hiện ({where}).',
 } satisfies Dict
 
+const tr = {
+  agyMediaHint:
+    'Antigravity hesabınızı kullanır, API anahtarı gerekmez. Doğrudan API’den daha yavaştır (görsel başına yaklaşık 10–40 sn) ve Antigravity kotanızdan düşer.',
+  agyMediaLimits:
+    'Her istekte tek görsel üretir; analiz görselleri, kısa videoları ve sesi okur (dosya başına en fazla 20 MB).',
+  agyMediaTest: 'Bağlantıyı sına',
+  agyMediaTestOk: 'Bağlandı · {n} model (kota kullanılmadı)',
+  agyMediaPathPlaceholderShared: 'Boş bırakılırsa AI Modeli yolu kullanılır: {path}',
+  agyMediaPathHint:
+    'AI Modeli ayarlarındaki yolu kullanmak için boş bırakın, ardından otomatik algılanır ({where}).',
+} satisfies Dict
+
 const dicts: LangDicts<Dict> = {
   zh,
   en,
   vi,
+  tr,
   ja: en,
   ko: en,
   'zh-TW': en,

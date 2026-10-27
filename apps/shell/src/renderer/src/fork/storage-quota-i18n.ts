@@ -24,7 +24,8 @@ const dicts = defineStrings({
     estimate: '估算：约可容纳 {n} 份文本文档（含语义搜索）',
     estimateLexical: '仅保留文字搜索时约 {n} 份',
     estimateNote: '按普通文本文档估算；扫描件、图片和超长文件占用更多。',
-    nameFull: 'Name/path storage is full. Automatic compaction cannot remove live file identities; select fewer folders.',
+    nameFull:
+      'Name/path storage is full. Automatic compaction cannot remove live file identities; select fewer folders.',
     nameReserve: 'File names and paths: {used} of {quota}, reserved within the selected quota.',
     grace: '整理期间，索引可临时超出此大小最多 10%。',
     graceActive: '已超出上限 {over}。索引正在自动整理，新文件仍会继续加入。',
@@ -34,9 +35,11 @@ const dicts = defineStrings({
     statusPending: '等待索引程序…',
     statusError: '无法应用：{error}',
     backupTitle: '旧索引备份',
-    backupText: '升级前的索引（{size}）已保留为备份。它不计入索引大小，并会在 {days} 天后自动清除。你的原始文件不会被改动。',
+    backupText:
+      '升级前的索引（{size}）已保留为备份。它不计入索引大小，并会在 {days} 天后自动清除。你的原始文件不会被改动。',
     backupDelete: '删除旧索引备份（释放 {size}）',
-    backupConfirm: '删除旧索引备份并释放 {size}？当前索引和你的原始文件不受影响。删除后无法恢复该备份。',
+    backupConfirm:
+      '删除旧索引备份并释放 {size}？当前索引和你的原始文件不受影响。删除后无法恢复该备份。',
     backupConfirmLabel: '删除备份',
     backupDeleted: '旧索引备份已删除，已释放 {size}。',
     backupFailed: '无法删除备份：{error}',
@@ -59,20 +62,26 @@ const dicts = defineStrings({
     used: '{used} used of {quota} ({pct}%)',
     estimate: 'Estimate: room for about {n} text documents with semantic search',
     estimateLexical: 'about {n} if only text search is kept',
-    estimateNote: 'Estimate for average text documents; scans, images and very long files take more space.',
-    nameFull: 'Name/path storage is full. Automatic compaction cannot remove live file identities; select fewer folders.',
+    estimateNote:
+      'Estimate for average text documents; scans, images and very long files take more space.',
+    nameFull:
+      'Name/path storage is full. Automatic compaction cannot remove live file identities; select fewer folders.',
     nameReserve: 'File names and paths: {used} of {quota}, reserved within the selected quota.',
     grace: 'While it tidies itself, the index can temporarily exceed this size by up to 10%.',
-    graceActive: 'Over the limit by {over}. The index is tidying itself automatically; new files are still being added.',
+    graceActive:
+      'Over the limit by {over}. The index is tidying itself automatically; new files are still being added.',
     full: 'The index is full. Free up space or raise the size. Searching and reading still work.',
-    lowerNote: 'Lowering the size compacts the index automatically. Your original files are never touched.',
+    lowerNote:
+      'Lowering the size compacts the index automatically. Your original files are never touched.',
     statusApplied: 'Applied',
     statusPending: 'Waiting for the indexer…',
     statusError: 'Could not apply: {error}',
     backupTitle: 'Old index backup',
-    backupText: 'The index from before the upgrade ({size}) is kept as a backup. It does not count toward the index size and is removed automatically after {days} days. Your original files are never touched.',
+    backupText:
+      'The index from before the upgrade ({size}) is kept as a backup. It does not count toward the index size and is removed automatically after {days} days. Your original files are never touched.',
     backupDelete: 'Delete old index backup (frees {size})',
-    backupConfirm: 'Delete the old index backup and free {size}? The current index and your original files are not affected. The backup cannot be restored afterwards.',
+    backupConfirm:
+      'Delete the old index backup and free {size}? The current index and your original files are not affected. The backup cannot be restored afterwards.',
     backupConfirmLabel: 'Delete backup',
     backupDeleted: 'Old index backup deleted. Freed {size}.',
     backupFailed: 'Could not delete the backup: {error}',
@@ -95,8 +104,10 @@ const dicts = defineStrings({
     used: 'Đã dùng {used} / {quota} ({pct}%)',
     estimate: 'Ước tính: chứa được khoảng {n} tài liệu văn bản (có tìm kiếm theo ngữ nghĩa)',
     estimateLexical: 'khoảng {n} nếu chỉ giữ tìm kiếm theo chữ',
-    estimateNote: 'Chỉ là ước tính cho tài liệu văn bản thông thường; bản quét, ảnh và tệp rất dài tốn nhiều chỗ hơn.',
-    nameFull: 'Phần tên/đường dẫn đã đầy. Dọn tự động không xóa tên file còn tồn tại; hãy chọn ít thư mục hơn.',
+    estimateNote:
+      'Chỉ là ước tính cho tài liệu văn bản thông thường; bản quét, ảnh và tệp rất dài tốn nhiều chỗ hơn.',
+    nameFull:
+      'Phần tên/đường dẫn đã đầy. Dọn tự động không xóa tên file còn tồn tại; hãy chọn ít thư mục hơn.',
     nameReserve: 'Tên và đường dẫn: {used} / {quota}, dành riêng trong mức dung lượng đã chọn.',
     grace: 'Trong lúc tự dọn dẹp, chỉ mục có thể tạm vượt mức này tối đa 10%.',
     graceActive: 'Đang vượt giới hạn {over}. Chỉ mục đang tự dọn dẹp; tệp mới vẫn được thêm vào.',
@@ -106,13 +117,58 @@ const dicts = defineStrings({
     statusPending: 'Đang chờ tiến trình lập chỉ mục…',
     statusError: 'Chưa áp dụng được: {error}',
     backupTitle: 'Bản sao lưu chỉ mục cũ',
-    backupText: 'Chỉ mục trước khi nâng cấp ({size}) được giữ lại làm bản sao lưu. Nó không tính vào dung lượng chỉ mục và sẽ tự động bị xoá sau {days} ngày. Tệp gốc của bạn không bao giờ bị động đến.',
+    backupText:
+      'Chỉ mục trước khi nâng cấp ({size}) được giữ lại làm bản sao lưu. Nó không tính vào dung lượng chỉ mục và sẽ tự động bị xoá sau {days} ngày. Tệp gốc của bạn không bao giờ bị động đến.',
     backupDelete: 'Xoá bản sao lưu chỉ mục cũ (giải phóng {size})',
-    backupConfirm: 'Xoá bản sao lưu chỉ mục cũ và giải phóng {size}? Chỉ mục hiện tại và tệp gốc của bạn không bị ảnh hưởng. Sau khi xoá không thể khôi phục bản sao lưu.',
+    backupConfirm:
+      'Xoá bản sao lưu chỉ mục cũ và giải phóng {size}? Chỉ mục hiện tại và tệp gốc của bạn không bị ảnh hưởng. Sau khi xoá không thể khôi phục bản sao lưu.',
     backupConfirmLabel: 'Xoá bản sao lưu',
     backupDeleted: 'Đã xoá bản sao lưu chỉ mục cũ. Đã giải phóng {size}.',
     backupFailed: 'Không xoá được bản sao lưu: {error}',
     backupBlocked: 'Hiện chưa thể xoá bản sao lưu (có thể quá trình nâng cấp vẫn đang chạy).',
+  },
+  tr: {
+    title: 'Dizin boyutu',
+    hint: 'Belge dizininin kullanabileceği en fazla disk alanı. Özgün dosyalarınıza asla dokunulmaz.',
+    presetSaver: 'Tasarruflu',
+    presetDefault: 'Varsayılan',
+    presetHigh: 'Yüksek',
+    presetCustom: 'Özel',
+    forRam: '4 GB RAM’li bilgisayarlar için',
+    recommended: 'Bu bilgisayar için önerilen',
+    customLabel: 'Özel boyut (MB, en az 500)',
+    save: 'Kaydet',
+    saved: 'Dizin boyutu güncellendi',
+    savedPending: 'Kaydedildi. Dizinleyicinin uygulaması bekleniyor…',
+    invalid: 'Boyut 500 MB ile 100 GB arasında olmalıdır',
+    used: '{quota} içinden {used} kullanıldı (%{pct})',
+    estimate: 'Tahmin: anlamsal aramayla yaklaşık {n} metin belgesine yer var',
+    estimateLexical: 'yalnızca metin araması tutulursa yaklaşık {n}',
+    estimateNote:
+      'Ortalama metin belgeleri için tahmindir; taramalar, görseller ve çok uzun dosyalar daha fazla yer kaplar.',
+    nameFull:
+      'Ad/yol alanı dolu. Otomatik sıkıştırma kullanımdaki dosya kimliklerini kaldıramaz; daha az klasör seçin.',
+    nameReserve:
+      'Dosya adları ve yolları: {quota} içinden {used}, seçilen kota içinde ayrılmıştır.',
+    grace: 'Kendini düzenlerken dizin bu boyutu geçici olarak en fazla %10 aşabilir.',
+    graceActive:
+      'Sınır {over} aşıldı. Dizin kendini otomatik olarak düzenliyor; yeni dosyalar eklenmeye devam ediyor.',
+    full: 'Dizin dolu. Yer açın veya boyutu artırın. Arama ve okuma yine de çalışır.',
+    lowerNote:
+      'Boyutu küçültmek dizini otomatik olarak sıkıştırır. Özgün dosyalarınıza asla dokunulmaz.',
+    statusApplied: 'Uygulandı',
+    statusPending: 'Dizinleyici bekleniyor…',
+    statusError: 'Uygulanamadı: {error}',
+    backupTitle: 'Eski dizin yedeği',
+    backupText:
+      'Yükseltmeden önceki dizin ({size}) yedek olarak saklanır. Dizin boyutuna sayılmaz ve {days} gün sonra otomatik olarak silinir. Özgün dosyalarınıza asla dokunulmaz.',
+    backupDelete: 'Eski dizin yedeğini sil ({size} boşaltır)',
+    backupConfirm:
+      'Eski dizin yedeği silinsin ve {size} boşaltılsın mı? Geçerli dizin ve özgün dosyalarınız etkilenmez. Yedek daha sonra geri yüklenemez.',
+    backupConfirmLabel: 'Yedeği sil',
+    backupDeleted: 'Eski dizin yedeği silindi. {size} boşaltıldı.',
+    backupFailed: 'Yedek silinemedi: {error}',
+    backupBlocked: 'Yedek şu anda silinemiyor (bir yükseltme hâlâ sürüyor olabilir).',
   },
   ja: {
     title: '索引のサイズ',
@@ -131,24 +187,30 @@ const dicts = defineStrings({
     used: '{quota} 中 {used} を使用（{pct}%）',
     estimate: '目安：セマンティック検索付きで約 {n} 件のテキスト文書',
     estimateLexical: 'テキスト検索のみなら約 {n} 件',
-    estimateNote: '一般的なテキスト文書での目安です。スキャン、画像、非常に長いファイルはより多く使います。',
-    nameFull: 'Name/path storage is full. Automatic compaction cannot remove live file identities; select fewer folders.',
+    estimateNote:
+      '一般的なテキスト文書での目安です。スキャン、画像、非常に長いファイルはより多く使います。',
+    nameFull:
+      'Name/path storage is full. Automatic compaction cannot remove live file identities; select fewer folders.',
     nameReserve: 'File names and paths: {used} of {quota}, reserved within the selected quota.',
     grace: '自動整理中は、この上限を一時的に最大 10% 超えることがあります。',
-    graceActive: '上限を {over} 超えています。自動で整理中です。新しいファイルも引き続き追加されます。',
+    graceActive:
+      '上限を {over} 超えています。自動で整理中です。新しいファイルも引き続き追加されます。',
     full: '索引がいっぱいです。空き容量を増やすかサイズを上げてください。検索と閲覧は引き続き使えます。',
     lowerNote: 'サイズを小さくすると索引は自動的に圧縮されます。元のファイルには手を加えません。',
     statusApplied: '適用済み',
     statusPending: 'インデックス処理を待機中…',
     statusError: '適用できませんでした：{error}',
     backupTitle: '古い索引のバックアップ',
-    backupText: 'アップグレード前の索引（{size}）をバックアップとして保管しています。索引のサイズには含まれず、{days} 日後に自動的に削除されます。元のファイルには一切手を加えません。',
+    backupText:
+      'アップグレード前の索引（{size}）をバックアップとして保管しています。索引のサイズには含まれず、{days} 日後に自動的に削除されます。元のファイルには一切手を加えません。',
     backupDelete: '古い索引のバックアップを削除（{size} を解放）',
-    backupConfirm: '古い索引のバックアップを削除して {size} を解放しますか？現在の索引と元のファイルには影響しません。削除後はバックアップを復元できません。',
+    backupConfirm:
+      '古い索引のバックアップを削除して {size} を解放しますか？現在の索引と元のファイルには影響しません。削除後はバックアップを復元できません。',
     backupConfirmLabel: 'バックアップを削除',
     backupDeleted: '古い索引のバックアップを削除しました。{size} を解放しました。',
     backupFailed: 'バックアップを削除できませんでした: {error}',
-    backupBlocked: '現在はバックアップを削除できません（アップグレードが進行中の可能性があります）。',
+    backupBlocked:
+      '現在はバックアップを削除できません（アップグレードが進行中の可能性があります）。',
   },
   ko: {
     title: '색인 크기',
@@ -167,20 +229,25 @@ const dicts = defineStrings({
     used: '{quota} 중 {used} 사용({pct}%)',
     estimate: '추정: 의미 검색 포함 텍스트 문서 약 {n}개',
     estimateLexical: '텍스트 검색만 유지하면 약 {n}개',
-    estimateNote: '일반적인 텍스트 문서 기준 추정치입니다. 스캔본, 이미지, 매우 긴 파일은 더 많이 차지합니다.',
-    nameFull: 'Name/path storage is full. Automatic compaction cannot remove live file identities; select fewer folders.',
+    estimateNote:
+      '일반적인 텍스트 문서 기준 추정치입니다. 스캔본, 이미지, 매우 긴 파일은 더 많이 차지합니다.',
+    nameFull:
+      'Name/path storage is full. Automatic compaction cannot remove live file identities; select fewer folders.',
     nameReserve: 'File names and paths: {used} of {quota}, reserved within the selected quota.',
     grace: '스스로 정리하는 동안 색인은 이 크기를 일시적으로 최대 10%까지 넘을 수 있습니다.',
-    graceActive: '한도를 {over} 초과했습니다. 색인이 자동으로 정리 중이며 새 파일도 계속 추가됩니다.',
+    graceActive:
+      '한도를 {over} 초과했습니다. 색인이 자동으로 정리 중이며 새 파일도 계속 추가됩니다.',
     full: '색인이 가득 찼습니다. 공간을 확보하거나 크기를 늘리세요. 검색과 읽기는 계속 가능합니다.',
     lowerNote: '크기를 줄이면 색인이 자동으로 압축됩니다. 원본 파일은 건드리지 않습니다.',
     statusApplied: '적용됨',
     statusPending: '색인 작업 대기 중…',
     statusError: '적용하지 못했습니다: {error}',
     backupTitle: '이전 색인 백업',
-    backupText: '업그레이드 전의 색인({size})이 백업으로 보관되어 있습니다. 색인 크기에 포함되지 않으며 {days}일 후 자동으로 삭제됩니다. 원본 파일은 절대 변경되지 않습니다.',
+    backupText:
+      '업그레이드 전의 색인({size})이 백업으로 보관되어 있습니다. 색인 크기에 포함되지 않으며 {days}일 후 자동으로 삭제됩니다. 원본 파일은 절대 변경되지 않습니다.',
     backupDelete: '이전 색인 백업 삭제({size} 확보)',
-    backupConfirm: '이전 색인 백업을 삭제하고 {size}를 확보할까요? 현재 색인과 원본 파일에는 영향이 없습니다. 삭제한 백업은 복원할 수 없습니다.',
+    backupConfirm:
+      '이전 색인 백업을 삭제하고 {size}를 확보할까요? 현재 색인과 원본 파일에는 영향이 없습니다. 삭제한 백업은 복원할 수 없습니다.',
     backupConfirmLabel: '백업 삭제',
     backupDeleted: '이전 색인 백업을 삭제했습니다. {size}를 확보했습니다.',
     backupFailed: '백업을 삭제하지 못했습니다: {error}',
@@ -203,24 +270,32 @@ const dicts = defineStrings({
     used: '{used} utilisés sur {quota} ({pct} %)',
     estimate: 'Estimation : environ {n} documents texte avec recherche sémantique',
     estimateLexical: 'environ {n} avec la recherche textuelle seule',
-    estimateNote: 'Estimation pour des documents texte moyens ; les scans, images et fichiers très longs prennent plus de place.',
-    nameFull: 'Name/path storage is full. Automatic compaction cannot remove live file identities; select fewer folders.',
+    estimateNote:
+      'Estimation pour des documents texte moyens ; les scans, images et fichiers très longs prennent plus de place.',
+    nameFull:
+      'Name/path storage is full. Automatic compaction cannot remove live file identities; select fewer folders.',
     nameReserve: 'File names and paths: {used} of {quota}, reserved within the selected quota.',
-    grace: 'Pendant son nettoyage, l’index peut dépasser temporairement cette taille de 10 % au plus.',
-    graceActive: 'Limite dépassée de {over}. L’index se nettoie automatiquement ; les nouveaux fichiers sont toujours ajoutés.',
+    grace:
+      'Pendant son nettoyage, l’index peut dépasser temporairement cette taille de 10 % au plus.',
+    graceActive:
+      'Limite dépassée de {over}. L’index se nettoie automatiquement ; les nouveaux fichiers sont toujours ajoutés.',
     full: 'L’index est plein. Libérez de l’espace ou augmentez la taille. La recherche et la lecture restent possibles.',
-    lowerNote: 'Réduire la taille compacte automatiquement l’index. Vos fichiers d’origine ne sont jamais modifiés.',
+    lowerNote:
+      'Réduire la taille compacte automatiquement l’index. Vos fichiers d’origine ne sont jamais modifiés.',
     statusApplied: 'Appliqué',
     statusPending: 'En attente de l’indexeur…',
     statusError: 'Application impossible : {error}',
     backupTitle: "Ancienne sauvegarde de l'index",
-    backupText: "L'index d'avant la mise à jour ({size}) est conservé comme sauvegarde. Il n'est pas compté dans la taille de l'index et sera supprimé automatiquement après {days} jours. Vos fichiers d'origine ne sont jamais modifiés.",
+    backupText:
+      "L'index d'avant la mise à jour ({size}) est conservé comme sauvegarde. Il n'est pas compté dans la taille de l'index et sera supprimé automatiquement après {days} jours. Vos fichiers d'origine ne sont jamais modifiés.",
     backupDelete: "Supprimer l'ancienne sauvegarde de l'index (libère {size})",
-    backupConfirm: "Supprimer l'ancienne sauvegarde de l'index et libérer {size} ? L'index actuel et vos fichiers d'origine ne sont pas affectés. La sauvegarde ne pourra pas être restaurée ensuite.",
+    backupConfirm:
+      "Supprimer l'ancienne sauvegarde de l'index et libérer {size} ? L'index actuel et vos fichiers d'origine ne sont pas affectés. La sauvegarde ne pourra pas être restaurée ensuite.",
     backupConfirmLabel: 'Supprimer la sauvegarde',
     backupDeleted: "Ancienne sauvegarde de l'index supprimée. {size} libérés.",
     backupFailed: 'Impossible de supprimer la sauvegarde : {error}',
-    backupBlocked: 'La sauvegarde ne peut pas être supprimée pour le moment (une mise à jour est peut-être encore en cours).',
+    backupBlocked:
+      'La sauvegarde ne peut pas être supprimée pour le moment (une mise à jour est peut-être encore en cours).',
   },
   de: {
     title: 'Indexgröße',
@@ -239,24 +314,32 @@ const dicts = defineStrings({
     used: '{used} von {quota} belegt ({pct} %)',
     estimate: 'Schätzung: Platz für etwa {n} Textdokumente mit semantischer Suche',
     estimateLexical: 'etwa {n}, wenn nur die Textsuche behalten wird',
-    estimateNote: 'Schätzung für durchschnittliche Textdokumente; Scans, Bilder und sehr lange Dateien brauchen mehr Platz.',
-    nameFull: 'Name/path storage is full. Automatic compaction cannot remove live file identities; select fewer folders.',
+    estimateNote:
+      'Schätzung für durchschnittliche Textdokumente; Scans, Bilder und sehr lange Dateien brauchen mehr Platz.',
+    nameFull:
+      'Name/path storage is full. Automatic compaction cannot remove live file identities; select fewer folders.',
     nameReserve: 'File names and paths: {used} of {quota}, reserved within the selected quota.',
-    grace: 'Beim automatischen Aufräumen darf der Index diese Größe vorübergehend um bis zu 10 % überschreiten.',
-    graceActive: 'Limit um {over} überschritten. Der Index räumt sich automatisch auf; neue Dateien werden weiter hinzugefügt.',
+    grace:
+      'Beim automatischen Aufräumen darf der Index diese Größe vorübergehend um bis zu 10 % überschreiten.',
+    graceActive:
+      'Limit um {over} überschritten. Der Index räumt sich automatisch auf; neue Dateien werden weiter hinzugefügt.',
     full: 'Der Index ist voll. Geben Sie Speicher frei oder erhöhen Sie die Größe. Suchen und Lesen funktionieren weiterhin.',
-    lowerNote: 'Eine kleinere Größe verdichtet den Index automatisch. Ihre Originaldateien werden nie verändert.',
+    lowerNote:
+      'Eine kleinere Größe verdichtet den Index automatisch. Ihre Originaldateien werden nie verändert.',
     statusApplied: 'Übernommen',
     statusPending: 'Warten auf den Indexer…',
     statusError: 'Konnte nicht übernommen werden: {error}',
     backupTitle: 'Altes Index-Backup',
-    backupText: 'Der Index vor dem Upgrade ({size}) wird als Backup aufbewahrt. Er zählt nicht zur Indexgröße und wird nach {days} Tagen automatisch entfernt. Ihre Originaldateien werden nie verändert.',
+    backupText:
+      'Der Index vor dem Upgrade ({size}) wird als Backup aufbewahrt. Er zählt nicht zur Indexgröße und wird nach {days} Tagen automatisch entfernt. Ihre Originaldateien werden nie verändert.',
     backupDelete: 'Altes Index-Backup löschen (gibt {size} frei)',
-    backupConfirm: 'Das alte Index-Backup löschen und {size} freigeben? Der aktuelle Index und Ihre Originaldateien sind nicht betroffen. Das Backup lässt sich danach nicht wiederherstellen.',
+    backupConfirm:
+      'Das alte Index-Backup löschen und {size} freigeben? Der aktuelle Index und Ihre Originaldateien sind nicht betroffen. Das Backup lässt sich danach nicht wiederherstellen.',
     backupConfirmLabel: 'Backup löschen',
     backupDeleted: 'Altes Index-Backup gelöscht. {size} freigegeben.',
     backupFailed: 'Das Backup konnte nicht gelöscht werden: {error}',
-    backupBlocked: 'Das Backup kann derzeit nicht gelöscht werden (ein Upgrade läuft möglicherweise noch).',
+    backupBlocked:
+      'Das Backup kann derzeit nicht gelöscht werden (ein Upgrade läuft möglicherweise noch).',
   },
   es: {
     title: 'Tamaño del índice',
@@ -275,24 +358,32 @@ const dicts = defineStrings({
     used: '{used} usados de {quota} ({pct} %)',
     estimate: 'Estimación: caben unos {n} documentos de texto con búsqueda semántica',
     estimateLexical: 'unos {n} si solo se conserva la búsqueda de texto',
-    estimateNote: 'Estimación para documentos de texto medios; los escaneos, imágenes y archivos muy largos ocupan más.',
-    nameFull: 'Name/path storage is full. Automatic compaction cannot remove live file identities; select fewer folders.',
+    estimateNote:
+      'Estimación para documentos de texto medios; los escaneos, imágenes y archivos muy largos ocupan más.',
+    nameFull:
+      'Name/path storage is full. Automatic compaction cannot remove live file identities; select fewer folders.',
     nameReserve: 'File names and paths: {used} of {quota}, reserved within the selected quota.',
-    grace: 'Mientras se ordena solo, el índice puede superar temporalmente este tamaño hasta un 10 %.',
-    graceActive: 'Límite superado en {over}. El índice se está ordenando solo; los archivos nuevos se siguen añadiendo.',
+    grace:
+      'Mientras se ordena solo, el índice puede superar temporalmente este tamaño hasta un 10 %.',
+    graceActive:
+      'Límite superado en {over}. El índice se está ordenando solo; los archivos nuevos se siguen añadiendo.',
     full: 'El índice está lleno. Libera espacio o aumenta el tamaño. Buscar y leer sigue funcionando.',
-    lowerNote: 'Reducir el tamaño compacta el índice automáticamente. Tus archivos originales nunca se tocan.',
+    lowerNote:
+      'Reducir el tamaño compacta el índice automáticamente. Tus archivos originales nunca se tocan.',
     statusApplied: 'Aplicado',
     statusPending: 'Esperando al indexador…',
     statusError: 'No se pudo aplicar: {error}',
     backupTitle: 'Copia de seguridad del índice anterior',
-    backupText: 'El índice anterior a la actualización ({size}) se conserva como copia de seguridad. No cuenta para el tamaño del índice y se eliminará automáticamente tras {days} días. Tus archivos originales nunca se tocan.',
+    backupText:
+      'El índice anterior a la actualización ({size}) se conserva como copia de seguridad. No cuenta para el tamaño del índice y se eliminará automáticamente tras {days} días. Tus archivos originales nunca se tocan.',
     backupDelete: 'Eliminar la copia del índice anterior (libera {size})',
-    backupConfirm: '¿Eliminar la copia de seguridad del índice anterior y liberar {size}? El índice actual y tus archivos originales no se ven afectados. Después no se podrá restaurar la copia.',
+    backupConfirm:
+      '¿Eliminar la copia de seguridad del índice anterior y liberar {size}? El índice actual y tus archivos originales no se ven afectados. Después no se podrá restaurar la copia.',
     backupConfirmLabel: 'Eliminar copia',
     backupDeleted: 'Copia de seguridad del índice anterior eliminada. Se liberaron {size}.',
     backupFailed: 'No se pudo eliminar la copia de seguridad: {error}',
-    backupBlocked: 'Ahora mismo no se puede eliminar la copia (puede que la actualización siga en curso).',
+    backupBlocked:
+      'Ahora mismo no se puede eliminar la copia (puede que la actualización siga en curso).',
   },
   th: {
     title: 'ขนาดดัชนี',
@@ -311,8 +402,10 @@ const dicts = defineStrings({
     used: 'ใช้ไป {used} จาก {quota} ({pct}%)',
     estimate: 'ประมาณการ: เก็บเอกสารข้อความได้ราว {n} ฉบับพร้อมการค้นหาเชิงความหมาย',
     estimateLexical: 'ราว {n} ฉบับหากเก็บเฉพาะการค้นหาข้อความ',
-    estimateNote: 'เป็นค่าประมาณสำหรับเอกสารข้อความทั่วไป ไฟล์สแกน รูปภาพ และไฟล์ยาวมากใช้พื้นที่มากกว่า',
-    nameFull: 'Name/path storage is full. Automatic compaction cannot remove live file identities; select fewer folders.',
+    estimateNote:
+      'เป็นค่าประมาณสำหรับเอกสารข้อความทั่วไป ไฟล์สแกน รูปภาพ และไฟล์ยาวมากใช้พื้นที่มากกว่า',
+    nameFull:
+      'Name/path storage is full. Automatic compaction cannot remove live file identities; select fewer folders.',
     nameReserve: 'File names and paths: {used} of {quota}, reserved within the selected quota.',
     grace: 'ระหว่างจัดระเบียบตัวเอง ดัชนีอาจเกินขนาดนี้ชั่วคราวได้สูงสุด 10%',
     graceActive: 'เกินขีดจำกัด {over} ดัชนีกำลังจัดระเบียบอัตโนมัติ ไฟล์ใหม่ยังคงถูกเพิ่มต่อไป',
@@ -322,9 +415,11 @@ const dicts = defineStrings({
     statusPending: 'กำลังรอตัวจัดทำดัชนี…',
     statusError: 'ใช้ไม่สำเร็จ: {error}',
     backupTitle: 'ข้อมูลสำรองของดัชนีเก่า',
-    backupText: 'ดัชนีก่อนการอัปเกรด ({size}) ถูกเก็บไว้เป็นข้อมูลสำรอง ไม่นับรวมในขนาดดัชนี และจะถูกลบอัตโนมัติหลังจาก {days} วัน ไฟล์ต้นฉบับของคุณจะไม่ถูกแตะต้อง',
+    backupText:
+      'ดัชนีก่อนการอัปเกรด ({size}) ถูกเก็บไว้เป็นข้อมูลสำรอง ไม่นับรวมในขนาดดัชนี และจะถูกลบอัตโนมัติหลังจาก {days} วัน ไฟล์ต้นฉบับของคุณจะไม่ถูกแตะต้อง',
     backupDelete: 'ลบข้อมูลสำรองของดัชนีเก่า (คืนพื้นที่ {size})',
-    backupConfirm: 'ลบข้อมูลสำรองของดัชนีเก่าและคืนพื้นที่ {size} หรือไม่ ดัชนีปัจจุบันและไฟล์ต้นฉบับของคุณไม่ได้รับผลกระทบ หลังลบแล้วจะกู้คืนข้อมูลสำรองไม่ได้',
+    backupConfirm:
+      'ลบข้อมูลสำรองของดัชนีเก่าและคืนพื้นที่ {size} หรือไม่ ดัชนีปัจจุบันและไฟล์ต้นฉบับของคุณไม่ได้รับผลกระทบ หลังลบแล้วจะกู้คืนข้อมูลสำรองไม่ได้',
     backupConfirmLabel: 'ลบข้อมูลสำรอง',
     backupDeleted: 'ลบข้อมูลสำรองของดัชนีเก่าแล้ว คืนพื้นที่ {size}',
     backupFailed: 'ลบข้อมูลสำรองไม่สำเร็จ: {error}',
@@ -347,20 +442,26 @@ const dicts = defineStrings({
     used: '{used} terpakai dari {quota} ({pct}%)',
     estimate: 'Perkiraan: muat sekitar {n} dokumen teks dengan pencarian semantik',
     estimateLexical: 'sekitar {n} jika hanya pencarian teks yang disimpan',
-    estimateNote: 'Perkiraan untuk dokumen teks rata-rata; hasil pindai, gambar, dan file sangat panjang memakan lebih banyak ruang.',
-    nameFull: 'Name/path storage is full. Automatic compaction cannot remove live file identities; select fewer folders.',
+    estimateNote:
+      'Perkiraan untuk dokumen teks rata-rata; hasil pindai, gambar, dan file sangat panjang memakan lebih banyak ruang.',
+    nameFull:
+      'Name/path storage is full. Automatic compaction cannot remove live file identities; select fewer folders.',
     nameReserve: 'File names and paths: {used} of {quota}, reserved within the selected quota.',
     grace: 'Saat merapikan diri, indeks dapat sementara melebihi ukuran ini hingga 10%.',
-    graceActive: 'Melebihi batas {over}. Indeks sedang merapikan diri secara otomatis; file baru tetap ditambahkan.',
+    graceActive:
+      'Melebihi batas {over}. Indeks sedang merapikan diri secara otomatis; file baru tetap ditambahkan.',
     full: 'Indeks penuh. Kosongkan ruang atau naikkan ukuran. Pencarian dan membaca tetap berfungsi.',
-    lowerNote: 'Mengecilkan ukuran akan memadatkan indeks secara otomatis. File asli Anda tidak pernah disentuh.',
+    lowerNote:
+      'Mengecilkan ukuran akan memadatkan indeks secara otomatis. File asli Anda tidak pernah disentuh.',
     statusApplied: 'Diterapkan',
     statusPending: 'Menunggu pengindeks…',
     statusError: 'Tidak dapat diterapkan: {error}',
     backupTitle: 'Cadangan indeks lama',
-    backupText: 'Indeks sebelum peningkatan ({size}) disimpan sebagai cadangan. Tidak dihitung dalam ukuran indeks dan akan dihapus otomatis setelah {days} hari. File asli Anda tidak pernah disentuh.',
+    backupText:
+      'Indeks sebelum peningkatan ({size}) disimpan sebagai cadangan. Tidak dihitung dalam ukuran indeks dan akan dihapus otomatis setelah {days} hari. File asli Anda tidak pernah disentuh.',
     backupDelete: 'Hapus cadangan indeks lama (membebaskan {size})',
-    backupConfirm: 'Hapus cadangan indeks lama dan bebaskan {size}? Indeks saat ini dan file asli Anda tidak terpengaruh. Cadangan tidak dapat dipulihkan setelahnya.',
+    backupConfirm:
+      'Hapus cadangan indeks lama dan bebaskan {size}? Indeks saat ini dan file asli Anda tidak terpengaruh. Cadangan tidak dapat dipulihkan setelahnya.',
     backupConfirmLabel: 'Hapus cadangan',
     backupDeleted: 'Cadangan indeks lama dihapus. {size} dibebaskan.',
     backupFailed: 'Tidak dapat menghapus cadangan: {error}',
@@ -383,20 +484,26 @@ const dicts = defineStrings({
     used: 'Занято {used} из {quota} ({pct}%)',
     estimate: 'Оценка: поместится около {n} текстовых документов с семантическим поиском',
     estimateLexical: 'около {n}, если оставить только текстовый поиск',
-    estimateNote: 'Оценка для обычных текстовых документов; сканы, изображения и очень длинные файлы занимают больше места.',
-    nameFull: 'Name/path storage is full. Automatic compaction cannot remove live file identities; select fewer folders.',
+    estimateNote:
+      'Оценка для обычных текстовых документов; сканы, изображения и очень длинные файлы занимают больше места.',
+    nameFull:
+      'Name/path storage is full. Automatic compaction cannot remove live file identities; select fewer folders.',
     nameReserve: 'File names and paths: {used} of {quota}, reserved within the selected quota.',
     grace: 'Во время самоочистки индекс может временно превышать этот размер не более чем на 10%.',
-    graceActive: 'Превышение лимита на {over}. Индекс автоматически наводит порядок; новые файлы по-прежнему добавляются.',
+    graceActive:
+      'Превышение лимита на {over}. Индекс автоматически наводит порядок; новые файлы по-прежнему добавляются.',
     full: 'Индекс заполнен. Освободите место или увеличьте размер. Поиск и чтение продолжают работать.',
-    lowerNote: 'При уменьшении размера индекс сжимается автоматически. Ваши исходные файлы не затрагиваются.',
+    lowerNote:
+      'При уменьшении размера индекс сжимается автоматически. Ваши исходные файлы не затрагиваются.',
     statusApplied: 'Применено',
     statusPending: 'Ждём индексатор…',
     statusError: 'Не удалось применить: {error}',
     backupTitle: 'Резервная копия старого индекса',
-    backupText: 'Индекс до обновления ({size}) сохранён как резервная копия. Он не входит в размер индекса и будет удалён автоматически через {days} дн. Ваши исходные файлы никогда не изменяются.',
+    backupText:
+      'Индекс до обновления ({size}) сохранён как резервная копия. Он не входит в размер индекса и будет удалён автоматически через {days} дн. Ваши исходные файлы никогда не изменяются.',
     backupDelete: 'Удалить резервную копию старого индекса (освободит {size})',
-    backupConfirm: 'Удалить резервную копию старого индекса и освободить {size}? Текущий индекс и ваши исходные файлы не затрагиваются. Восстановить копию после удаления будет нельзя.',
+    backupConfirm:
+      'Удалить резервную копию старого индекса и освободить {size}? Текущий индекс и ваши исходные файлы не затрагиваются. Восстановить копию после удаления будет нельзя.',
     backupConfirmLabel: 'Удалить копию',
     backupDeleted: 'Резервная копия старого индекса удалена. Освобождено {size}.',
     backupFailed: 'Не удалось удалить резервную копию: {error}',
@@ -419,20 +526,25 @@ const dicts = defineStrings({
     used: 'مستخدم {used} من {quota} ({pct}%)',
     estimate: 'تقدير: يتسع لنحو {n} مستند نصي مع البحث الدلالي',
     estimateLexical: 'نحو {n} إذا أُبقي البحث النصي فقط',
-    estimateNote: 'تقدير للمستندات النصية المعتادة؛ الملفات الممسوحة والصور والملفات الطويلة جدًا تستهلك مساحة أكبر.',
-    nameFull: 'Name/path storage is full. Automatic compaction cannot remove live file identities; select fewer folders.',
+    estimateNote:
+      'تقدير للمستندات النصية المعتادة؛ الملفات الممسوحة والصور والملفات الطويلة جدًا تستهلك مساحة أكبر.',
+    nameFull:
+      'Name/path storage is full. Automatic compaction cannot remove live file identities; select fewer folders.',
     nameReserve: 'File names and paths: {used} of {quota}, reserved within the selected quota.',
     grace: 'أثناء ترتيبه لنفسه، قد يتجاوز الفهرس هذا الحجم مؤقتًا بما يصل إلى 10%.',
-    graceActive: 'تم تجاوز الحد بمقدار {over}. يرتّب الفهرس نفسه تلقائيًا، ولا تزال الملفات الجديدة تُضاف.',
+    graceActive:
+      'تم تجاوز الحد بمقدار {over}. يرتّب الفهرس نفسه تلقائيًا، ولا تزال الملفات الجديدة تُضاف.',
     full: 'الفهرس ممتلئ. حرّر مساحة أو ارفع الحجم. يظل البحث والقراءة يعملان.',
     lowerNote: 'خفض الحجم يضغط الفهرس تلقائيًا. ملفاتك الأصلية لا تُمَسّ أبدًا.',
     statusApplied: 'تم التطبيق',
     statusPending: 'بانتظار المفهرس…',
     statusError: 'تعذّر التطبيق: {error}',
     backupTitle: 'نسخة احتياطية للفهرس القديم',
-    backupText: 'تم الاحتفاظ بالفهرس السابق للترقية ({size}) كنسخة احتياطية. لا يُحتسب ضمن حجم الفهرس وسيُحذف تلقائيًا بعد {days} يومًا. ملفاتك الأصلية لا تُمس أبدًا.',
+    backupText:
+      'تم الاحتفاظ بالفهرس السابق للترقية ({size}) كنسخة احتياطية. لا يُحتسب ضمن حجم الفهرس وسيُحذف تلقائيًا بعد {days} يومًا. ملفاتك الأصلية لا تُمس أبدًا.',
     backupDelete: 'حذف النسخة الاحتياطية للفهرس القديم (توفير {size})',
-    backupConfirm: 'هل تريد حذف النسخة الاحتياطية للفهرس القديم وتوفير {size}؟ لن يتأثر الفهرس الحالي ولا ملفاتك الأصلية. لا يمكن استعادة النسخة بعد الحذف.',
+    backupConfirm:
+      'هل تريد حذف النسخة الاحتياطية للفهرس القديم وتوفير {size}؟ لن يتأثر الفهرس الحالي ولا ملفاتك الأصلية. لا يمكن استعادة النسخة بعد الحذف.',
     backupConfirmLabel: 'حذف النسخة',
     backupDeleted: 'تم حذف النسخة الاحتياطية للفهرس القديم. تم توفير {size}.',
     backupFailed: 'تعذّر حذف النسخة الاحتياطية: {error}',
@@ -455,24 +567,31 @@ const dicts = defineStrings({
     used: '{used} usados de {quota} ({pct}%)',
     estimate: 'Estimativa: cabem cerca de {n} documentos de texto com busca semântica',
     estimateLexical: 'cerca de {n} se só a busca por texto for mantida',
-    estimateNote: 'Estimativa para documentos de texto médios; digitalizações, imagens e arquivos muito longos ocupam mais espaço.',
-    nameFull: 'Name/path storage is full. Automatic compaction cannot remove live file identities; select fewer folders.',
+    estimateNote:
+      'Estimativa para documentos de texto médios; digitalizações, imagens e arquivos muito longos ocupam mais espaço.',
+    nameFull:
+      'Name/path storage is full. Automatic compaction cannot remove live file identities; select fewer folders.',
     nameReserve: 'File names and paths: {used} of {quota}, reserved within the selected quota.',
     grace: 'Enquanto se organiza, o índice pode exceder temporariamente este tamanho em até 10%.',
-    graceActive: 'Limite excedido em {over}. O índice está se organizando automaticamente; novos arquivos continuam sendo adicionados.',
+    graceActive:
+      'Limite excedido em {over}. O índice está se organizando automaticamente; novos arquivos continuam sendo adicionados.',
     full: 'O índice está cheio. Libere espaço ou aumente o tamanho. Buscar e ler continuam funcionando.',
-    lowerNote: 'Reduzir o tamanho compacta o índice automaticamente. Seus arquivos originais nunca são alterados.',
+    lowerNote:
+      'Reduzir o tamanho compacta o índice automaticamente. Seus arquivos originais nunca são alterados.',
     statusApplied: 'Aplicado',
     statusPending: 'Aguardando o indexador…',
     statusError: 'Não foi possível aplicar: {error}',
     backupTitle: 'Cópia de segurança do índice antigo',
-    backupText: 'O índice anterior à atualização ({size}) foi mantido como cópia de segurança. Ele não conta para o tamanho do índice e será removido automaticamente após {days} dias. Os seus arquivos originais nunca são alterados.',
+    backupText:
+      'O índice anterior à atualização ({size}) foi mantido como cópia de segurança. Ele não conta para o tamanho do índice e será removido automaticamente após {days} dias. Os seus arquivos originais nunca são alterados.',
     backupDelete: 'Excluir a cópia do índice antigo (libera {size})',
-    backupConfirm: 'Excluir a cópia de segurança do índice antigo e liberar {size}? O índice atual e os seus arquivos originais não são afetados. Depois não será possível restaurar a cópia.',
+    backupConfirm:
+      'Excluir a cópia de segurança do índice antigo e liberar {size}? O índice atual e os seus arquivos originais não são afetados. Depois não será possível restaurar a cópia.',
     backupConfirmLabel: 'Excluir cópia',
     backupDeleted: 'Cópia de segurança do índice antigo excluída. {size} liberados.',
     backupFailed: 'Não foi possível excluir a cópia de segurança: {error}',
-    backupBlocked: 'A cópia não pode ser excluída agora (a atualização pode ainda estar em andamento).',
+    backupBlocked:
+      'A cópia não pode ser excluída agora (a atualização pode ainda estar em andamento).',
   },
   it: {
     title: 'Dimensione dell’indice',
@@ -491,24 +610,32 @@ const dicts = defineStrings({
     used: '{used} usati su {quota} ({pct}%)',
     estimate: 'Stima: spazio per circa {n} documenti di testo con ricerca semantica',
     estimateLexical: 'circa {n} se si mantiene solo la ricerca testuale',
-    estimateNote: 'Stima per documenti di testo medi; scansioni, immagini e file molto lunghi occupano più spazio.',
-    nameFull: 'Name/path storage is full. Automatic compaction cannot remove live file identities; select fewer folders.',
+    estimateNote:
+      'Stima per documenti di testo medi; scansioni, immagini e file molto lunghi occupano più spazio.',
+    nameFull:
+      'Name/path storage is full. Automatic compaction cannot remove live file identities; select fewer folders.',
     nameReserve: 'File names and paths: {used} of {quota}, reserved within the selected quota.',
-    grace: 'Mentre si riordina, l’indice può superare temporaneamente questa dimensione fino al 10%.',
-    graceActive: 'Limite superato di {over}. L’indice si sta riordinando automaticamente; i nuovi file vengono comunque aggiunti.',
+    grace:
+      'Mentre si riordina, l’indice può superare temporaneamente questa dimensione fino al 10%.',
+    graceActive:
+      'Limite superato di {over}. L’indice si sta riordinando automaticamente; i nuovi file vengono comunque aggiunti.',
     full: 'L’indice è pieno. Libera spazio o aumenta la dimensione. Ricerca e lettura continuano a funzionare.',
-    lowerNote: 'Riducendo la dimensione l’indice viene compattato automaticamente. I tuoi file originali non vengono mai toccati.',
+    lowerNote:
+      'Riducendo la dimensione l’indice viene compattato automaticamente. I tuoi file originali non vengono mai toccati.',
     statusApplied: 'Applicato',
     statusPending: 'In attesa dell’indicizzatore…',
     statusError: 'Impossibile applicare: {error}',
     backupTitle: 'Backup del vecchio indice',
-    backupText: "L'indice precedente all'aggiornamento ({size}) è conservato come backup. Non conta nella dimensione dell'indice e verrà rimosso automaticamente dopo {days} giorni. I tuoi file originali non vengono mai toccati.",
+    backupText:
+      "L'indice precedente all'aggiornamento ({size}) è conservato come backup. Non conta nella dimensione dell'indice e verrà rimosso automaticamente dopo {days} giorni. I tuoi file originali non vengono mai toccati.",
     backupDelete: 'Elimina il backup del vecchio indice (libera {size})',
-    backupConfirm: "Eliminare il backup del vecchio indice e liberare {size}? L'indice attuale e i tuoi file originali non sono interessati. Il backup non potrà essere ripristinato.",
+    backupConfirm:
+      "Eliminare il backup del vecchio indice e liberare {size}? L'indice attuale e i tuoi file originali non sono interessati. Il backup non potrà essere ripristinato.",
     backupConfirmLabel: 'Elimina backup',
     backupDeleted: 'Backup del vecchio indice eliminato. Liberati {size}.',
     backupFailed: 'Impossibile eliminare il backup: {error}',
-    backupBlocked: "Al momento il backup non può essere eliminato (l'aggiornamento potrebbe essere ancora in corso).",
+    backupBlocked:
+      "Al momento il backup non può essere eliminato (l'aggiornamento potrebbe essere ancora in corso).",
   },
   pl: {
     title: 'Rozmiar indeksu',
@@ -527,20 +654,26 @@ const dicts = defineStrings({
     used: 'Użyto {used} z {quota} ({pct}%)',
     estimate: 'Szacunek: zmieści się około {n} dokumentów tekstowych z wyszukiwaniem semantycznym',
     estimateLexical: 'około {n}, jeśli zostanie tylko wyszukiwanie tekstowe',
-    estimateNote: 'Szacunek dla przeciętnych dokumentów tekstowych; skany, obrazy i bardzo długie pliki zajmują więcej miejsca.',
-    nameFull: 'Name/path storage is full. Automatic compaction cannot remove live file identities; select fewer folders.',
+    estimateNote:
+      'Szacunek dla przeciętnych dokumentów tekstowych; skany, obrazy i bardzo długie pliki zajmują więcej miejsca.',
+    nameFull:
+      'Name/path storage is full. Automatic compaction cannot remove live file identities; select fewer folders.',
     nameReserve: 'File names and paths: {used} of {quota}, reserved within the selected quota.',
     grace: 'Podczas porządkowania indeks może tymczasowo przekroczyć ten rozmiar nawet o 10%.',
-    graceActive: 'Limit przekroczony o {over}. Indeks porządkuje się automatycznie; nowe pliki nadal są dodawane.',
+    graceActive:
+      'Limit przekroczony o {over}. Indeks porządkuje się automatycznie; nowe pliki nadal są dodawane.',
     full: 'Indeks jest pełny. Zwolnij miejsce lub zwiększ rozmiar. Wyszukiwanie i czytanie nadal działają.',
-    lowerNote: 'Zmniejszenie rozmiaru automatycznie kompaktuje indeks. Twoje oryginalne pliki nigdy nie są zmieniane.',
+    lowerNote:
+      'Zmniejszenie rozmiaru automatycznie kompaktuje indeks. Twoje oryginalne pliki nigdy nie są zmieniane.',
     statusApplied: 'Zastosowano',
     statusPending: 'Czekam na indeksator…',
     statusError: 'Nie udało się zastosować: {error}',
     backupTitle: 'Kopia zapasowa starego indeksu',
-    backupText: 'Indeks sprzed aktualizacji ({size}) jest zachowany jako kopia zapasowa. Nie wlicza się do rozmiaru indeksu i zostanie automatycznie usunięty po {days} dniach. Twoje oryginalne pliki nigdy nie są zmieniane.',
+    backupText:
+      'Indeks sprzed aktualizacji ({size}) jest zachowany jako kopia zapasowa. Nie wlicza się do rozmiaru indeksu i zostanie automatycznie usunięty po {days} dniach. Twoje oryginalne pliki nigdy nie są zmieniane.',
     backupDelete: 'Usuń kopię zapasową starego indeksu (zwolni {size})',
-    backupConfirm: 'Usunąć kopię zapasową starego indeksu i zwolnić {size}? Obecny indeks i Twoje oryginalne pliki nie zostaną naruszone. Kopii nie będzie można potem przywrócić.',
+    backupConfirm:
+      'Usunąć kopię zapasową starego indeksu i zwolnić {size}? Obecny indeks i Twoje oryginalne pliki nie zostaną naruszone. Kopii nie będzie można potem przywrócić.',
     backupConfirmLabel: 'Usuń kopię',
     backupDeleted: 'Usunięto kopię zapasową starego indeksu. Zwolniono {size}.',
     backupFailed: 'Nie udało się usunąć kopii zapasowej: {error}',
@@ -563,20 +696,25 @@ const dicts = defineStrings({
     used: 'Využito {used} z {quota} ({pct} %)',
     estimate: 'Odhad: vejde se asi {n} textových dokumentů se sémantickým vyhledáváním',
     estimateLexical: 'asi {n}, pokud zůstane jen textové vyhledávání',
-    estimateNote: 'Odhad pro běžné textové dokumenty; skeny, obrázky a velmi dlouhé soubory zabírají více místa.',
-    nameFull: 'Name/path storage is full. Automatic compaction cannot remove live file identities; select fewer folders.',
+    estimateNote:
+      'Odhad pro běžné textové dokumenty; skeny, obrázky a velmi dlouhé soubory zabírají více místa.',
+    nameFull:
+      'Name/path storage is full. Automatic compaction cannot remove live file identities; select fewer folders.',
     nameReserve: 'File names and paths: {used} of {quota}, reserved within the selected quota.',
     grace: 'Při samočinném úklidu může index dočasně překročit tuto velikost nejvýše o 10 %.',
-    graceActive: 'Limit překročen o {over}. Index se automaticky uklízí; nové soubory se stále přidávají.',
+    graceActive:
+      'Limit překročen o {over}. Index se automaticky uklízí; nové soubory se stále přidávají.',
     full: 'Index je plný. Uvolněte místo nebo zvyšte velikost. Hledání a čtení stále fungují.',
     lowerNote: 'Zmenšení velikosti index automaticky zhutní. Vaše původní soubory se nikdy nemění.',
     statusApplied: 'Použito',
     statusPending: 'Čekám na indexer…',
     statusError: 'Nelze použít: {error}',
     backupTitle: 'Záloha starého indexu',
-    backupText: 'Index před aktualizací ({size}) je uchován jako záloha. Nezapočítává se do velikosti indexu a po {days} dnech se automaticky odstraní. Vaše původní soubory se nikdy nemění.',
+    backupText:
+      'Index před aktualizací ({size}) je uchován jako záloha. Nezapočítává se do velikosti indexu a po {days} dnech se automaticky odstraní. Vaše původní soubory se nikdy nemění.',
     backupDelete: 'Smazat zálohu starého indexu (uvolní {size})',
-    backupConfirm: 'Smazat zálohu starého indexu a uvolnit {size}? Aktuální index ani vaše původní soubory to neovlivní. Zálohu pak nelze obnovit.',
+    backupConfirm:
+      'Smazat zálohu starého indexu a uvolnit {size}? Aktuální index ani vaše původní soubory to neovlivní. Zálohu pak nelze obnovit.',
     backupConfirmLabel: 'Smazat zálohu',
     backupDeleted: 'Záloha starého indexu byla smazána. Uvolněno {size}.',
     backupFailed: 'Zálohu se nepodařilo smazat: {error}',
@@ -599,20 +737,27 @@ const dicts = defineStrings({
     used: '{used} gebruikt van {quota} ({pct}%)',
     estimate: 'Schatting: ruimte voor ongeveer {n} tekstdocumenten met semantisch zoeken',
     estimateLexical: 'ongeveer {n} als alleen tekst zoeken blijft',
-    estimateNote: 'Schatting voor gemiddelde tekstdocumenten; scans, afbeeldingen en zeer lange bestanden nemen meer ruimte in.',
-    nameFull: 'Name/path storage is full. Automatic compaction cannot remove live file identities; select fewer folders.',
+    estimateNote:
+      'Schatting voor gemiddelde tekstdocumenten; scans, afbeeldingen en zeer lange bestanden nemen meer ruimte in.',
+    nameFull:
+      'Name/path storage is full. Automatic compaction cannot remove live file identities; select fewer folders.',
     nameReserve: 'File names and paths: {used} of {quota}, reserved within the selected quota.',
-    grace: 'Tijdens het opruimen kan de index deze grootte tijdelijk met maximaal 10% overschrijden.',
-    graceActive: 'Limiet {over} overschreden. De index ruimt zichzelf automatisch op; nieuwe bestanden worden nog steeds toegevoegd.',
+    grace:
+      'Tijdens het opruimen kan de index deze grootte tijdelijk met maximaal 10% overschrijden.',
+    graceActive:
+      'Limiet {over} overschreden. De index ruimt zichzelf automatisch op; nieuwe bestanden worden nog steeds toegevoegd.',
     full: 'De index is vol. Maak ruimte vrij of verhoog de grootte. Zoeken en lezen blijven werken.',
-    lowerNote: 'Een kleinere grootte comprimeert de index automatisch. Je originele bestanden worden nooit aangeraakt.',
+    lowerNote:
+      'Een kleinere grootte comprimeert de index automatisch. Je originele bestanden worden nooit aangeraakt.',
     statusApplied: 'Toegepast',
     statusPending: 'Wachten op de indexeerder…',
     statusError: 'Kon niet worden toegepast: {error}',
     backupTitle: 'Back-up van de oude index',
-    backupText: 'De index van vóór de update ({size}) wordt bewaard als back-up. Hij telt niet mee voor de indexgrootte en wordt na {days} dagen automatisch verwijderd. Je originele bestanden worden nooit aangeraakt.',
+    backupText:
+      'De index van vóór de update ({size}) wordt bewaard als back-up. Hij telt niet mee voor de indexgrootte en wordt na {days} dagen automatisch verwijderd. Je originele bestanden worden nooit aangeraakt.',
     backupDelete: 'Back-up van oude index verwijderen (maakt {size} vrij)',
-    backupConfirm: 'De back-up van de oude index verwijderen en {size} vrijmaken? De huidige index en je originele bestanden blijven ongemoeid. De back-up kan daarna niet worden hersteld.',
+    backupConfirm:
+      'De back-up van de oude index verwijderen en {size} vrijmaken? De huidige index en je originele bestanden blijven ongemoeid. De back-up kan daarna niet worden hersteld.',
     backupConfirmLabel: 'Back-up verwijderen',
     backupDeleted: 'Back-up van de oude index verwijderd. {size} vrijgemaakt.',
     backupFailed: 'De back-up kon niet worden verwijderd: {error}',
@@ -635,20 +780,26 @@ const dicts = defineStrings({
     used: '{used} digunakan daripada {quota} ({pct}%)',
     estimate: 'Anggaran: muat kira-kira {n} dokumen teks dengan carian semantik',
     estimateLexical: 'kira-kira {n} jika hanya carian teks dikekalkan',
-    estimateNote: 'Anggaran untuk dokumen teks purata; imbasan, imej dan fail yang sangat panjang memerlukan lebih ruang.',
-    nameFull: 'Name/path storage is full. Automatic compaction cannot remove live file identities; select fewer folders.',
+    estimateNote:
+      'Anggaran untuk dokumen teks purata; imbasan, imej dan fail yang sangat panjang memerlukan lebih ruang.',
+    nameFull:
+      'Name/path storage is full. Automatic compaction cannot remove live file identities; select fewer folders.',
     nameReserve: 'File names and paths: {used} of {quota}, reserved within the selected quota.',
     grace: 'Semasa mengemas sendiri, indeks boleh melebihi saiz ini buat sementara sehingga 10%.',
-    graceActive: 'Melebihi had sebanyak {over}. Indeks sedang mengemas secara automatik; fail baharu masih ditambah.',
+    graceActive:
+      'Melebihi had sebanyak {over}. Indeks sedang mengemas secara automatik; fail baharu masih ditambah.',
     full: 'Indeks penuh. Kosongkan ruang atau tambah saiz. Carian dan bacaan masih berfungsi.',
-    lowerNote: 'Mengecilkan saiz akan memampatkan indeks secara automatik. Fail asal anda tidak pernah disentuh.',
+    lowerNote:
+      'Mengecilkan saiz akan memampatkan indeks secara automatik. Fail asal anda tidak pernah disentuh.',
     statusApplied: 'Digunakan',
     statusPending: 'Menunggu pengindeks…',
     statusError: 'Tidak dapat digunakan: {error}',
     backupTitle: 'Sandaran indeks lama',
-    backupText: 'Indeks sebelum naik taraf ({size}) disimpan sebagai sandaran. Ia tidak dikira dalam saiz indeks dan akan dipadam secara automatik selepas {days} hari. Fail asal anda tidak pernah disentuh.',
+    backupText:
+      'Indeks sebelum naik taraf ({size}) disimpan sebagai sandaran. Ia tidak dikira dalam saiz indeks dan akan dipadam secara automatik selepas {days} hari. Fail asal anda tidak pernah disentuh.',
     backupDelete: 'Padam sandaran indeks lama (membebaskan {size})',
-    backupConfirm: 'Padam sandaran indeks lama dan bebaskan {size}? Indeks semasa dan fail asal anda tidak terjejas. Sandaran tidak boleh dipulihkan selepas itu.',
+    backupConfirm:
+      'Padam sandaran indeks lama dan bebaskan {size}? Indeks semasa dan fail asal anda tidak terjejas. Sandaran tidak boleh dipulihkan selepas itu.',
     backupConfirmLabel: 'Padam sandaran',
     backupDeleted: 'Sandaran indeks lama dipadam. {size} dibebaskan.',
     backupFailed: 'Sandaran tidak dapat dipadam: {error}',
@@ -672,7 +823,8 @@ const dicts = defineStrings({
     estimate: 'הערכה: יש מקום לכ-{n} מסמכי טקסט עם חיפוש סמנטי',
     estimateLexical: 'כ-{n} אם נשאר רק חיפוש טקסט',
     estimateNote: 'הערכה למסמכי טקסט ממוצעים; סריקות, תמונות וקבצים ארוכים מאוד תופסים יותר מקום.',
-    nameFull: 'Name/path storage is full. Automatic compaction cannot remove live file identities; select fewer folders.',
+    nameFull:
+      'Name/path storage is full. Automatic compaction cannot remove live file identities; select fewer folders.',
     nameReserve: 'File names and paths: {used} of {quota}, reserved within the selected quota.',
     grace: 'בזמן שהוא מסדר את עצמו, האינדקס עשוי לחרוג זמנית מגודל זה בעד 10%.',
     graceActive: 'חריגה מהמגבלה ב-{over}. האינדקס מסדר את עצמו אוטומטית; קבצים חדשים עדיין נוספים.',
@@ -682,9 +834,11 @@ const dicts = defineStrings({
     statusPending: 'ממתין למאנדקס…',
     statusError: 'לא ניתן להחיל: {error}',
     backupTitle: 'גיבוי של האינדקס הישן',
-    backupText: 'האינדקס שלפני השדרוג ({size}) נשמר כגיבוי. הוא אינו נספר בגודל האינדקס ויימחק אוטומטית לאחר {days} ימים. הקבצים המקוריים שלך אינם משתנים לעולם.',
+    backupText:
+      'האינדקס שלפני השדרוג ({size}) נשמר כגיבוי. הוא אינו נספר בגודל האינדקס ויימחק אוטומטית לאחר {days} ימים. הקבצים המקוריים שלך אינם משתנים לעולם.',
     backupDelete: 'מחיקת הגיבוי של האינדקס הישן (משחררת {size})',
-    backupConfirm: 'למחוק את הגיבוי של האינדקס הישן ולשחרר {size}? האינדקס הנוכחי והקבצים המקוריים שלך לא יושפעו. לא ניתן יהיה לשחזר את הגיבוי לאחר מכן.',
+    backupConfirm:
+      'למחוק את הגיבוי של האינדקס הישן ולשחרר {size}? האינדקס הנוכחי והקבצים המקוריים שלך לא יושפעו. לא ניתן יהיה לשחזר את הגיבוי לאחר מכן.',
     backupConfirmLabel: 'מחיקת הגיבוי',
     backupDeleted: 'הגיבוי של האינדקס הישן נמחק. שוחררו {size}.',
     backupFailed: 'לא ניתן היה למחוק את הגיבוי: {error}',
@@ -707,20 +861,27 @@ const dicts = defineStrings({
     used: '{quota} में से {used} उपयोग में ({pct}%)',
     estimate: 'अनुमान: सिमेंटिक खोज के साथ लगभग {n} टेक्स्ट दस्तावेज़ समा सकते हैं',
     estimateLexical: 'केवल टेक्स्ट खोज रखने पर लगभग {n}',
-    estimateNote: 'औसत टेक्स्ट दस्तावेज़ों का अनुमान; स्कैन, चित्र और बहुत लंबी फ़ाइलें ज़्यादा जगह लेती हैं।',
-    nameFull: 'Name/path storage is full. Automatic compaction cannot remove live file identities; select fewer folders.',
+    estimateNote:
+      'औसत टेक्स्ट दस्तावेज़ों का अनुमान; स्कैन, चित्र और बहुत लंबी फ़ाइलें ज़्यादा जगह लेती हैं।',
+    nameFull:
+      'Name/path storage is full. Automatic compaction cannot remove live file identities; select fewer folders.',
     nameReserve: 'File names and paths: {used} of {quota}, reserved within the selected quota.',
-    grace: 'खुद को व्यवस्थित करते समय इंडेक्स अस्थायी रूप से इस आकार से अधिकतम 10% अधिक हो सकता है।',
-    graceActive: 'सीमा से {over} अधिक। इंडेक्स अपने आप व्यवस्थित हो रहा है; नई फ़ाइलें अब भी जुड़ रही हैं।',
+    grace:
+      'खुद को व्यवस्थित करते समय इंडेक्स अस्थायी रूप से इस आकार से अधिकतम 10% अधिक हो सकता है।',
+    graceActive:
+      'सीमा से {over} अधिक। इंडेक्स अपने आप व्यवस्थित हो रहा है; नई फ़ाइलें अब भी जुड़ रही हैं।',
     full: 'इंडेक्स भर गया है। जगह खाली करें या आकार बढ़ाएँ। खोज और पढ़ना अब भी काम करते हैं।',
-    lowerNote: 'आकार घटाने पर इंडेक्स अपने आप संकुचित हो जाता है। आपकी मूल फ़ाइलों को कभी छुआ नहीं जाता।',
+    lowerNote:
+      'आकार घटाने पर इंडेक्स अपने आप संकुचित हो जाता है। आपकी मूल फ़ाइलों को कभी छुआ नहीं जाता।',
     statusApplied: 'लागू हो गया',
     statusPending: 'इंडेक्सर की प्रतीक्षा है…',
     statusError: 'लागू नहीं हो सका: {error}',
     backupTitle: 'पुराने इंडेक्स का बैकअप',
-    backupText: 'अपग्रेड से पहले का इंडेक्स ({size}) बैकअप के रूप में रखा गया है। यह इंडेक्स के आकार में नहीं गिना जाता और {days} दिन बाद अपने-आप हटा दिया जाएगा। आपकी मूल फ़ाइलों को कभी नहीं छुआ जाता।',
+    backupText:
+      'अपग्रेड से पहले का इंडेक्स ({size}) बैकअप के रूप में रखा गया है। यह इंडेक्स के आकार में नहीं गिना जाता और {days} दिन बाद अपने-आप हटा दिया जाएगा। आपकी मूल फ़ाइलों को कभी नहीं छुआ जाता।',
     backupDelete: 'पुराने इंडेक्स का बैकअप हटाएँ ({size} खाली होगा)',
-    backupConfirm: 'पुराने इंडेक्स का बैकअप हटाकर {size} खाली करें? मौजूदा इंडेक्स और आपकी मूल फ़ाइलों पर कोई असर नहीं पड़ेगा। इसके बाद बैकअप वापस नहीं लाया जा सकेगा।',
+    backupConfirm:
+      'पुराने इंडेक्स का बैकअप हटाकर {size} खाली करें? मौजूदा इंडेक्स और आपकी मूल फ़ाइलों पर कोई असर नहीं पड़ेगा। इसके बाद बैकअप वापस नहीं लाया जा सकेगा।',
     backupConfirmLabel: 'बैकअप हटाएँ',
     backupDeleted: 'पुराने इंडेक्स का बैकअप हटा दिया गया। {size} खाली हुआ।',
     backupFailed: 'बैकअप हटाया नहीं जा सका: {error}',
@@ -744,7 +905,8 @@ const dicts = defineStrings({
     estimate: '估算：約可容納 {n} 份文字文件（含語意搜尋）',
     estimateLexical: '僅保留文字搜尋時約 {n} 份',
     estimateNote: '依一般文字文件估算；掃描檔、圖片和超長檔案佔用更多。',
-    nameFull: 'Name/path storage is full. Automatic compaction cannot remove live file identities; select fewer folders.',
+    nameFull:
+      'Name/path storage is full. Automatic compaction cannot remove live file identities; select fewer folders.',
     nameReserve: 'File names and paths: {used} of {quota}, reserved within the selected quota.',
     grace: '整理期間，索引可暫時超出此大小最多 10%。',
     graceActive: '已超出上限 {over}。索引正在自動整理，新檔案仍會繼續加入。',
@@ -754,9 +916,11 @@ const dicts = defineStrings({
     statusPending: '等待索引程式…',
     statusError: '無法套用：{error}',
     backupTitle: '舊索引備份',
-    backupText: '升級前的索引（{size}）已保留為備份。它不計入索引大小，並會在 {days} 天後自動清除。你的原始檔案不會被更動。',
+    backupText:
+      '升級前的索引（{size}）已保留為備份。它不計入索引大小，並會在 {days} 天後自動清除。你的原始檔案不會被更動。',
     backupDelete: '刪除舊索引備份（釋放 {size}）',
-    backupConfirm: '刪除舊索引備份並釋放 {size}？目前的索引和你的原始檔案不受影響。刪除後無法還原該備份。',
+    backupConfirm:
+      '刪除舊索引備份並釋放 {size}？目前的索引和你的原始檔案不受影響。刪除後無法還原該備份。',
     backupConfirmLabel: '刪除備份',
     backupDeleted: '舊索引備份已刪除，已釋放 {size}。',
     backupFailed: '無法刪除備份：{error}',

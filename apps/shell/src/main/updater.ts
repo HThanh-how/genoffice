@@ -93,6 +93,23 @@ const tUpd = createI18n({
     updCheckFailed: 'Không thể kiểm tra bản cập nhật. Kiểm tra mạng của bạn và thử lại.',
     updOpenDownload: 'Mở trang tải xuống',
   },
+  tr: {
+    updTitle: 'Yazılım Güncellemesi',
+    updHeadline: 'Yeni bir sürüm mevcut',
+    updDesc:
+      'Bu güncelleme performans iyileştirmeleri ve hata düzeltmeleri içerir. Şimdi güncellemenizi öneririz.',
+    updDownload: 'Şimdi Güncelle',
+    updLater: 'Simge Durumuna Küçült',
+    updInstall: 'Yeniden Başlat ve Yükle',
+    updDownloading: 'Güncelleme indiriliyor…',
+    updFailed: 'Güncelleme indirilemedi. Ağ bağlantınızı kontrol edip yeniden deneyin.',
+    updRetry: 'Yeniden Dene',
+    updManual:
+      'Otomatik güncelleme başarısız oldu. Lütfen en son sürümü indirme sayfasından alıp elle yükleyin.',
+    updUpToDate: 'Güncel sürümü kullanıyorsunuz (sürüm {version}).',
+    updCheckFailed: 'Güncellemeler denetlenemedi. Ağ bağlantınızı kontrol edip yeniden deneyin.',
+    updOpenDownload: 'İndirme Sayfasını Aç',
+  },
   ja: {
     updTitle: 'ソフトウェアアップデート',
     updHeadline: '新しいバージョンがあります',
@@ -622,7 +639,10 @@ export async function checkForNativeUpdatesNow(): Promise<UpdateCheckResult | vo
 export function initAutoUpdater(
   getWindow: () => BrowserWindow | null,
   initialChannel: UpdateChannel = 'stable',
+  /** fork: false while a custom (fork) update source is selected — the bundled feed is then suspended */
   sourceSelected: () => boolean = () => true,
+  /** Settings › "Check for updates automatically"; read at every background check (genoffice#2127) */
+  autoCheckEnabled: () => boolean = () => true,
 ): void {
   if (started) return
   started = true
@@ -827,6 +847,8 @@ export function initAutoUpdater(
 
   const check = (): void => {
     if (!nativeSourceSelected()) return
+    // turned off: only an explicit check (Help › Check for Updates…, a channel switch) asks the feed
+    if (!autoCheckEnabled()) return
     autoUpdater.checkForUpdates().catch((err) => log('check failed:', err?.message ?? err))
   }
   setTimeout(check, FIRST_CHECK_DELAY_MS)

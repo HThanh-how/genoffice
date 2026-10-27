@@ -52,6 +52,10 @@ export const fr = {
     'La requête de l’IA a dépassé le délai imparti et a été arrêtée. Réessayez ou choisissez un modèle plus rapide pour une longue requête.',
   aiToolWebSearch: 'Recherche Web',
   aiToolWebSearchDone: 'Recherche « {query} » · {count} résultats',
+  aiToolImageSearch: "Recherche d'images",
+  aiToolImageSearchDone: "Recherche d'images « {query} » ({count} images)",
+  aiToolGenImage: 'Générer une image',
+  aiToolGenImageDone: 'Image générée par IA insérée',
   aiTruncatedNote: '(La réponse a été tronquée par la limite de longueur et peut être incomplète.)',
   aiTurnLimit:
     "Limite d'étapes atteinte pour cette exécution — envoyez une autre instruction pour continuer.",
