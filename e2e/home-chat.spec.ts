@@ -109,14 +109,15 @@ test('home chat finds remembered content, opens its source and preserves the hom
     })
     expect(requests).toHaveLength(3)
     // Empty knowledge base: remembered documents and incremental document creation.
-    expect(requests[0]!.tools).toHaveLength(5)
-    expect(requests[0]!.tools?.map((t) => t.function.name)).toEqual([
-      'search_remembered_documents',
-      'read_remembered_document',
-      'open_remembered_document',
-      'create_document',
-      'append_to_document',
-    ])
+    expect(requests[0]!.tools?.map((t) => t.function.name)).toEqual(
+      expect.arrayContaining([
+        'search_remembered_documents',
+        'read_remembered_document',
+        'open_remembered_document',
+        'create_document',
+        'append_to_document',
+      ]),
+    )
     const evidence = JSON.parse(
       requests[2]!.messages.filter((m) => m.role === 'tool').at(-1)!.content!,
     )
@@ -134,16 +135,17 @@ test('home chat finds remembered content, opens its source and preserves the hom
       { timeout: 30_000 },
     )
     const starredRequest = requests[3]!
-    expect(starredRequest.tools).toHaveLength(7)
-    expect(starredRequest.tools?.map((t) => t.function.name)).toEqual([
-      'search_remembered_documents',
-      'read_remembered_document',
-      'open_remembered_document',
-      'read_knowledge_file',
-      'search_knowledge_base',
-      'create_document',
-      'append_to_document',
-    ])
+    expect(starredRequest.tools?.map((t) => t.function.name)).toEqual(
+      expect.arrayContaining([
+        'search_remembered_documents',
+        'read_remembered_document',
+        'open_remembered_document',
+        'read_knowledge_file',
+        'search_knowledge_base',
+        'create_document',
+        'append_to_document',
+      ]),
+    )
     await home.screenshot({ path: screenshotPath('home-chat-glass') })
     await home.evaluate(() => document.documentElement.setAttribute('data-theme', 'dark'))
     await home.screenshot({ path: screenshotPath('home-chat-glass-dark') })

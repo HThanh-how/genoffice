@@ -1,7 +1,7 @@
 {
   "name": "@genoffice/shell",
   "productName": "GenOffice",
-  "version": "0.12.35",
+  "version": "0.12.36",
   "license": "Apache-2.0",
   "homepage": "https://github.com/HThanh-how/genoffice",
   "private": true,
@@ -41,7 +41,7 @@
     "@types/react": "^19.2.14",
     "@types/react-dom": "^19.2.3",
     "@vitejs/plugin-react": "^5.0.4",
-    "electron": "^43.7.6",
+    "electron": "^43.8.3",
     "electron-builder": "^26.0.12",
     "electron-updater": "^6.8.9",
     "electron-vite": "^5.0.0",

@@ -163,6 +163,7 @@ const LANGUAGE_NAMES: Record<string, string> = {
   ms: 'Malay',
   he: 'Hebrew',
   hi: 'Hindi',
+  tr: 'Turkish',
 }
 
 const rafSchedule = (run: () => void) => {

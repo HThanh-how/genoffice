@@ -288,6 +288,7 @@ export class LocalOcrJob {
     let touched = false
     let stopReason: string | null = null
     let first = true
+    const failedBefore = summary.failed
     for (const page of rendered.pages) {
       if (present.includes(page.page) || skip.includes(page.page)) continue
       const why = await this.guarded(signal)
@@ -364,7 +365,11 @@ export class LocalOcrJob {
       await this.cool((first ? renderMs : 0) + (performance.now() - started))
       first = false
     }
-    if (touched) this.deps.reindex(row.path)
+    if (touched) {
+      // pages of this version were stored and none failed: an earlier failure row is stale
+      if (summary.failed === failedBefore) this.ocr.clearLocalFailure(row.path, file)
+      this.deps.reindex(row.path)
+    }
     return stopReason
   }
 
@@ -455,6 +460,7 @@ export class LocalOcrJob {
     }
     if (saved === 'denied') return 'storage-denied'
     markImageOcr(db, image.documentId, IMAGE_OCR_STATE.done)
+    this.ocr.clearLocalFailure(image.path, image)
     // a photo without text stays the lean media row it is, unless an older version of the file left chunks behind
     if (this.lastChars > 0 || this.hasChunks(image.documentId)) this.deps.reindex(image.path)
     await this.cool(performance.now() - started)

@@ -3,6 +3,7 @@ import { mkdirSync, mkdtempSync, realpathSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { launchShell, closeAndSaveVideo } from './helpers'
+import { FOLDER_MENU_MARGIN } from '../apps/shell/src/renderer/src/folder-menu-position'
 
 /**
  * Row menus (the ⋯ button on folder rows) are position:fixed and anchor via
@@ -39,9 +40,13 @@ test.describe('home row menu position', () => {
       await expect(row).toBeVisible()
       const more = row.locator('.folder-more-btn')
       await more.hover()
+      const anchor = (await more.boundingBox())!
       await more.click()
       const menu = page.locator('.folder-menu')
       await expect(menu).toBeVisible()
+      await menu.evaluate(async (el) => {
+        await Promise.all(el.getAnimations().map((animation) => animation.finished))
+      })
 
       const {
         menu: m,
@@ -61,12 +66,51 @@ test.describe('home row menu position', () => {
           },
         }
       })
-      // inside the window, left edge just to the right of the button, below it
+      // inside the window, right-aligned with the button, below it
       expect(m.left).toBeGreaterThanOrEqual(0)
       expect(m.right).toBeLessThanOrEqual(vp.w)
-      expect(Math.abs(m.left - (b.right + 4))).toBeLessThanOrEqual(2)
+      expect(
+        Math.abs(
+          m.left - Math.max(FOLDER_MENU_MARGIN, anchor.x + anchor.width - (m.right - m.left)),
+        ),
+      ).toBeLessThanOrEqual(8)
       expect(m.top).toBeGreaterThanOrEqual(b.bottom - 1)
       expect(m.top).toBeLessThanOrEqual(b.bottom + 12)
+    } finally {
+      await closeAndSaveVideo(launched, 'home-menu-position')
+    }
+  })
+
+  test('the tree right-click menu opens to the right of the pointer and inside the window', async () => {
+    const launched = await launchShell({
+      onboardingSeen: true,
+      settings: { defaultSaveDir: root },
+      videoDir: 'home-menu-position',
+    })
+    const { page } = launched
+    try {
+      const row = page.locator('.folder-panel .tree .tree-row', {
+        has: page.locator('.tree-name', { hasText: 'Clients' }),
+      })
+      await expect(row).toBeVisible()
+      const box = (await row.boundingBox())!
+      const pointer = { x: box.x + 24, y: box.y + box.height / 2 }
+      await page.mouse.click(pointer.x, pointer.y, { button: 'right' })
+      const menu = page.locator('.folder-menu')
+      await expect(menu).toBeVisible()
+      const m = await page.evaluate(() => {
+        const r = document.querySelector('.folder-menu')!.getBoundingClientRect()
+        return {
+          left: r.left,
+          right: r.right,
+          top: r.top,
+          w: document.documentElement.clientWidth,
+        }
+      })
+      // never cut off at the left edge, and it starts at the pointer instead of ending there
+      expect(m.left).toBeGreaterThanOrEqual(0)
+      expect(m.right).toBeLessThanOrEqual(m.w)
+      expect(Math.abs(m.left - (pointer.x + 2))).toBeLessThanOrEqual(2)
     } finally {
       await closeAndSaveVideo(launched, 'home-menu-position')
     }

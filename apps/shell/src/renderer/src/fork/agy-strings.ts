@@ -70,10 +70,33 @@ const vi = {
   agyContextHeader: 'Tài liệu đã truy xuất (trích đoạn)',
 } satisfies Dict
 
+const tr = {
+  agySearchNote:
+    'Antigravity hesabınız üzerinden API anahtarı olmadan web’de arama yapın. Hesap kotanızı ve AI Modelleri’ndeki yolu ve modeli kullanır. Görsel arama yine ücretsiz kaynakları kullanır.',
+  agyNote:
+    'Antigravity hesabınız üzerinden Google’ın sunucularında çalışır. Her istek Antigravity aracısını başlattığı için doğrudan API çağrısından daha yavaştır; belge ve görsel okumak için en uygunudur. GenOffice araçlarıyla belgeleri okuyabilir ve düzenleyebilir. API anahtarı gerekmez.',
+  agyPathLabel: 'Antigravity çalıştırılabilir dosyası',
+  agyPathHint:
+    'Bunu yalnızca özel kurulumlar için ayarlayın; otomatik algılamak için boş bırakın ({where}).',
+  agyPathPlaceholder: 'Otomatik algıla (önerilir)',
+  agyWhereWin: 'PATH, ardından %LOCALAPPDATA%\\agy\\bin\\agy.exe',
+  agyWhereMac:
+    'PATH, ~/.local/bin, ~/.agy/bin, /opt/homebrew/bin, /usr/local/bin, ardından oturum açma kabuğunuz',
+  agyChecking: 'Antigravity denetleniyor…',
+  agyConnected: 'Bağlandı · {n} model',
+  agyNotFound: 'Bağlı değil: {error}',
+  agyRecheck: 'Yeniden denetle',
+  agyTestFailed: 'Antigravity CLI’ya ulaşılamadı',
+  agyStarting: 'Antigravity başlatılıyor…',
+  agyStartingHint: 'Her mesaj aracıyı başlatır; bu birkaç saniye sürer.',
+  agyContextHeader: 'Getirilen belgeler (alıntılar)',
+} satisfies Dict
+
 const dicts: LangDicts<Dict> = {
   zh,
   en,
   vi,
+  tr,
   ja: {
     ...en,
     agySearchNote:

@@ -17,7 +17,10 @@ import {
 } from '../src/main/document-memory/known-sources'
 import { FolderScanManager } from '../src/main/document-memory/folder-scan'
 import { registerDocumentIndexIpc } from '../src/main/fork/document-index-ipc'
-import { DOCUMENT_INDEX_CHANNELS, type KnownSearchSourceEntry } from '../src/shared/fork/document-index-api'
+import {
+  DOCUMENT_INDEX_CHANNELS,
+  type KnownSearchSourceEntry,
+} from '../src/shared/fork/document-index-api'
 
 type Handler = (event: unknown, ...args: unknown[]) => unknown
 
@@ -641,8 +644,14 @@ describe('KnownSourcesManager and Known Search Sources IPC', () => {
       setImmediate(() => {
         immediateFired = true
       })
-      await probePathAvailable(probeDir)
+      const freshDir = join(testDir, 'AsyncProbeFresh')
+      mkdirSync(freshDir)
+      const pending = probePathAvailable(freshDir)
+      expect(pending).toBeInstanceOf(Promise)
+      expect(immediateFired).toBe(false)
+      await new Promise<void>((resolve) => setImmediate(resolve))
       expect(immediateFired).toBe(true)
+      await expect(pending).resolves.toBe(true)
     })
 
     it('KS-05: Source ON, retry đang in-flight (probe chưa resolve), user tắt source (OFF). Sau đó probe cũ resolve available -> scanner.start TUYỆT ĐỐI KHÔNG được gọi, root không có owner', async () => {
@@ -1013,10 +1022,7 @@ describe('KnownSourcesManager and Known Search Sources IPC', () => {
       const manager = new KnownSourcesManager({
         settingsPath: () => settingsFile,
         scanner: mockScanner as any,
-        getPath: (id) =>
-          id === 'documents'
-            ? docsDir
-            : join(testDir, id),
+        getPath: (id) => (id === 'documents' ? docsDir : join(testDir, id)),
         initialState: {
           documents: true,
           downloads: false,
@@ -1045,10 +1051,7 @@ describe('KnownSourcesManager and Known Search Sources IPC', () => {
       // The user disables Documents while the old startup probe is still pending.
       await manager.setKnownSearchSource('documents', false)
 
-      expect(unregisterMock).toHaveBeenCalledWith(
-        resolve(docsDir),
-        'known:documents',
-      )
+      expect(unregisterMock).toHaveBeenCalledWith(resolve(docsDir), 'known:documents')
 
       expect(manager.getStatus('documents')).toEqual({
         status: 'disabled',
@@ -1072,4 +1075,3 @@ describe('KnownSourcesManager and Known Search Sources IPC', () => {
     })
   })
 })
-

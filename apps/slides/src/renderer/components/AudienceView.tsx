@@ -18,6 +18,7 @@ import { ShowMediaLayer } from './ShowMediaLayer'
 import { useI18n } from '../i18n/locale'
 import { MorphStage } from './MorphStage'
 import { InkLayer, type InkStroke } from './ShowInk'
+import { mergeSlideUpdate } from '../../shared/slide-update'
 
 const ANIMATED = ['fade', 'push', 'wipe', 'split', 'circle'] as const
 
@@ -112,10 +113,12 @@ export function AudienceView() {
   // the fresh deck instead of keeping stale animation state.
   useEffect(
     () =>
-      window.slidesApi.onDeckChanged?.(({ slides: all }) => {
-        if (all.length === 0) return
+      window.slidesApi.onDeckChanged?.(({ slides: all, order }) => {
+        if ((order?.length ?? all.length) === 0) return
         cursorRef.current = ''
-        setSlides(all)
+        setSlides((current) =>
+          order ? mergeSlideUpdate(current ?? [], { slides: all, order }) : all,
+        )
       }),
     [],
   )

@@ -118,4 +118,10 @@ export const AI_MODEL_PICKER_STRINGS: Record<Lang, AiModelPickerStrings> = {
     manage: 'Quản lý mô hình…',
     unavailable: 'không khả dụng',
   },
+  tr: {
+    title: 'Model',
+    choose: 'Model seç',
+    manage: 'Modelleri yönet…',
+    unavailable: 'kullanılamıyor',
+  },
 }

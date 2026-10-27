@@ -52,6 +52,10 @@ export const it = {
     'La richiesta AI ha superato il limite di tempo ed è stata interrotta. Riprova oppure scegli un modello più veloce per una richiesta lunga.',
   aiToolWebSearch: 'Ricerca web',
   aiToolWebSearchDone: 'Cercato "{query}" · {count} risultati',
+  aiToolImageSearch: 'Ricerca immagini',
+  aiToolImageSearchDone: 'Ricerca immagini "{query}" ({count} immagini)',
+  aiToolGenImage: 'Genera immagine',
+  aiToolGenImageDone: 'Immagine generata dall’IA inserita',
   aiTruncatedNote:
     '(La risposta è stata troncata dal limite di lunghezza e potrebbe essere incompleta.)',
   aiTurnLimit: "Raggiunto il limite di passaggi per esecuzione — invia un'altra istruzione.",

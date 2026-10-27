@@ -119,6 +119,8 @@ import {
   toggleRepeatHeaderRows,
 } from '../editor/table-properties'
 import { useI18n, type StringKey } from '../i18n/locale'
+import type { MergeDataSource } from '../../shared/ipc'
+import type { MailMergeRequest, MailMergeResponse } from '../mail-merge/output'
 import { pxToTwips, twipsToPx } from '../units'
 import { LengthInput } from './LengthInput'
 import {
@@ -150,6 +152,7 @@ import {
   imageSizeOf,
   InsertTab,
   LayoutTab,
+  MailingsTab,
   ReferencesTab,
   ReviewTab,
   ViewTab,
@@ -383,6 +386,12 @@ interface RibbonProps {
   protectActive: boolean
   onProtectDoc: () => void
   onCompare: () => void
+  /** Mailings: the data source the user picked, null when there is none yet */
+  mergeSource: MergeDataSource | null
+  /** Mailings: open the file dialog and read the recipient list */
+  onPickMergeDataSource: () => void
+  /** Mailings: build the merged documents and write them */
+  onMergeMailings: (request: MailMergeRequest) => Promise<MailMergeResponse>
   /** current document path (View → New Window opens it in another window) */
   filePath: string | null
   viewMode: ViewMode
@@ -508,8 +517,19 @@ const IN_TAB = new URLSearchParams(window.location.search).get('mode') === 'tab'
 
 const TABS = (
   IS_MAC
-    ? ['home', 'insert', 'draw', 'design', 'layout', 'references', 'review', 'view']
-    : ['file', 'home', 'insert', 'draw', 'design', 'layout', 'references', 'review', 'view']
+    ? ['home', 'insert', 'draw', 'design', 'layout', 'references', 'mailings', 'review', 'view']
+    : [
+        'file',
+        'home',
+        'insert',
+        'draw',
+        'design',
+        'layout',
+        'references',
+        'mailings',
+        'review',
+        'view',
+      ]
 ) as readonly string[]
 const TABLE_TABS = ['tableDesign', 'tableLayout'] as const
 
@@ -641,6 +661,7 @@ const TAB_LABEL_KEYS: Record<string, StringKey> = {
   design: 'ribbonTabDesign',
   layout: 'ribbonTabLayout',
   references: 'ribbonTabReferences',
+  mailings: 'ribbonTabMailings',
   review: 'ribbonTabReview',
   view: 'ribbonTabView',
   tableDesign: 'ribbonTabTableDesign',
@@ -772,6 +793,9 @@ function RibbonInner({
   onHeader,
   onPageNumFormat,
   onInsertField,
+  mergeSource,
+  onPickMergeDataSource,
+  onMergeMailings,
   footer,
   onFooter,
   hfEditing,
@@ -1556,7 +1580,29 @@ function RibbonInner({
   }
 
   const toggleList = (kind: 'bullet' | 'ordered') => {
-    if (sub) return // textboxes have no list numbering
+    // a focused textbox: the paragraph's list identity rides on its listMarker
+    // attr (parse fills it from w:numPr, the editor rewrites it); Enter keeps
+    // the attrs, so the list continues item after item
+    if (sub) {
+      if (!canEdit) return
+      const marker = sub.getAttributes('docParagraph').listMarker as { kind?: string } | undefined
+      if (marker?.kind === kind) {
+        chain().updateAttributes('docParagraph', { listMarker: null }).run()
+        return
+      }
+      const numId =
+        kind === 'ordered'
+          ? (allocateNumId?.(kind) ?? null)
+          : (findNumIdOfKind(blocks, kind) ?? allocateNumId?.(kind) ?? null)
+      if (!numId) return
+      const text = kind === 'bullet' ? '•' : '1.'
+      chain()
+        .updateAttributes('docParagraph', {
+          listMarker: { text, kind, numId, ilvl: 0 },
+        })
+        .run()
+      return
+    }
     if (editor.isActive('docListItem', { kind })) {
       chain().setNode('docParagraph').run()
       return
@@ -1675,7 +1721,15 @@ function RibbonInner({
     ))
 
   const changeIndent = (delta: 1 | -1) => {
-    if (sub || !canEdit) return
+    if (!canEdit) return
+    // textboxes indent through the paragraph's own indentLeft attr; the main
+    // document routes through the ops layer (style and grid interactions)
+    if (sub) {
+      const cur = Number(sub.getAttributes('docParagraph').indentLeft ?? 0)
+      const next = Math.max(0, cur + delta * 720)
+      chain().updateAttributes('docParagraph', { indentLeft: next }).run()
+      return
+    }
     stepParagraphIndent(editor, delta)
   }
 
@@ -3722,7 +3776,7 @@ function RibbonInner({
                   <div className="rb-split-wrap">
                     <button
                       className={`rb-icon ${fs.listBullet ? 'active' : ''}`}
-                      disabled={!canEdit || !!sub}
+                      disabled={!canEdit}
                       data-tip={t('ribbonBullets')}
                       aria-label={t('ribbonBullets')}
                       onClick={() => toggleList('bullet')}
@@ -3790,7 +3844,7 @@ function RibbonInner({
                   <div className="rb-split-wrap">
                     <button
                       className={`rb-icon ${fs.listOrdered ? 'active' : ''}`}
-                      disabled={!canEdit || !!sub}
+                      disabled={!canEdit}
                       data-tip={t('ribbonNumbering')}
                       aria-label={t('ribbonNumbering')}
                       onClick={() => toggleList('ordered')}
@@ -3921,7 +3975,7 @@ function RibbonInner({
                   <span className="rb-mini-sep" />
                   <button
                     className="rb-icon"
-                    disabled={!canEdit || !!sub}
+                    disabled={!canEdit}
                     data-tip={t('ribbonDecreaseIndent')}
                     aria-label={t('ribbonDecreaseIndent')}
                     onClick={() => changeIndent(-1)}
@@ -3930,7 +3984,7 @@ function RibbonInner({
                   </button>
                   <button
                     className="rb-icon"
-                    disabled={!canEdit || !!sub}
+                    disabled={!canEdit}
                     data-tip={t('ribbonIncreaseIndent')}
                     aria-label={t('ribbonIncreaseIndent')}
                     onClick={() => changeIndent(1)}
@@ -4278,6 +4332,17 @@ function RibbonInner({
             zoteroNoteFields={zoteroNoteFields}
             onAddSource={onAddSource}
             headingPages={headingPages}
+          />
+        ) : tab === 'mailings' ? (
+          <MailingsTab
+            editor={editor}
+            hasDoc={canEdit}
+            dropdown={dropdown}
+            setDropdown={setDropdown}
+            source={mergeSource}
+            onPickSource={onPickMergeDataSource}
+            onInsertField={onInsertField}
+            onMerge={onMergeMailings}
           />
         ) : tab === 'review' ? (
           <ReviewTab
