@@ -185,6 +185,55 @@ function parseScanned(value: string | null): number[] | null {
   }
 }
 
+/** Source faults have their own recovery pass; the ledger repair never touches them. */
+const STALE_FAILURE_SQL = `FROM ocr_local_failures
+  WHERE code NOT IN ('missing', 'offline', 'source-busy', 'source-permission')
+    AND EXISTS (SELECT 1 FROM ocr_pages p
+      WHERE p.path = ocr_local_failures.path AND p.mtime_ms = ocr_local_failures.mtime_ms
+        AND p.size_bytes = ocr_local_failures.size_bytes AND p.tier = 'local'
+        AND p.created_at > ocr_local_failures.updated_at)`
+/**
+ * Up to 0.12.34 transient gates (worker not ready, storage budget pending, memory stopped) came back
+ * as code 'render' and spent a file's attempts; those rows never carry a detail. Rows written since
+ * always store the message, so `detail IS NULL` marks the legacy ones, and the marker written by the
+ * reset keeps it from running twice.
+ */
+const LEGACY_RENDER_SQL = `FROM ocr_local_failures WHERE code = 'render' AND detail IS NULL`
+export const LEGACY_RENDER_RESET_DETAIL = 'legacy-render-reset'
+
+/**
+ * One-pass repair of the local failure ledger, safe on every open:
+ *  - a failure row whose file version later got local pages is stale: removed;
+ *  - a legacy 'render' row without such pages gets its attempts back once, so the file is read again.
+ * Reads first and takes the write lock only when there is something to change (ocr_local_failures is
+ * small; each row probes ocr_pages by its primary key prefix `path`).
+ */
+export function healLegacyLocalFailures(db: DatabaseSync): { cleared: number; reset: number } {
+  const stale = db.prepare(`SELECT 1 ${STALE_FAILURE_SQL} LIMIT 1`).get()
+  const legacy = db.prepare(`SELECT 1 ${LEGACY_RENDER_SQL} LIMIT 1`).get()
+  if (!stale && !legacy) return { cleared: 0, reset: 0 }
+  db.exec('BEGIN IMMEDIATE')
+  try {
+    const cleared = Number(db.prepare(`DELETE ${STALE_FAILURE_SQL}`).run().changes)
+    const reset = Number(
+      db
+        .prepare(
+          `UPDATE ocr_local_failures SET attempts = 0, detail = ? WHERE code = 'render' AND detail IS NULL`,
+        )
+        .run(LEGACY_RENDER_RESET_DETAIL).changes,
+    )
+    db.exec('COMMIT')
+    return { cleared, reset }
+  } catch (error) {
+    try {
+      db.exec('ROLLBACK')
+    } catch {
+      // already rolled back
+    }
+    throw error
+  }
+}
+
 /** All OCR SQL. Works on whatever connection the document store already has open. */
 export class OcrSidecar {
   constructor(private readonly db: DatabaseSync) {}
@@ -209,17 +258,19 @@ export class OcrSidecar {
       ['escalate', 'INTEGER NOT NULL DEFAULT 0'],
     ] as const)
       if (!have.has(name)) db.exec(`ALTER TABLE ocr_pages ADD COLUMN ${name} ${definition}`)
-    // Self-heal: older builds never cleared a file's failure row when a later local read of the SAME
-    // version succeeded, so the file stayed listed as failed (e.g. transient gate failures recorded as
-    // 'render'). A local page stored after the failure proves the version is readable.
-    db.exec(
-      `DELETE FROM ocr_local_failures
-        WHERE code NOT IN ('missing', 'offline', 'source-busy', 'source-permission')
-          AND EXISTS (SELECT 1 FROM ocr_pages p
-            WHERE p.path = ocr_local_failures.path AND p.mtime_ms = ocr_local_failures.mtime_ms
-              AND p.size_bytes = ocr_local_failures.size_bytes AND p.tier = 'local'
-              AND p.created_at > ocr_local_failures.updated_at)`,
-    )
+    // Opening the store must never fail because the repair could not take the write lock.
+    try {
+      const healed = healLegacyLocalFailures(db)
+      if (healed.cleared || healed.reset)
+        console.info(
+          `[document-memory] OCR failure ledger repaired: ${healed.cleared} stale row(s) cleared, ${healed.reset} legacy 'render' row(s) reopened`,
+        )
+    } catch (error) {
+      console.warn(
+        '[document-memory] OCR failure ledger repair skipped, retried at next open:',
+        error,
+      )
+    }
   }
 
   /**

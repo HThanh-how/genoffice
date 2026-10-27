@@ -20,7 +20,11 @@ import {
   IMAGE_OCR_STATE,
   selectImageOcrCandidates,
 } from '../src/main/document-memory/media/media-ocr-gate'
-import { OcrSidecar, LOCAL_OCR_MAX_ATTEMPTS } from '../src/main/document-memory/ocr-sidecar'
+import {
+  OcrSidecar,
+  LOCAL_OCR_MAX_ATTEMPTS,
+  healLegacyLocalFailures,
+} from '../src/main/document-memory/ocr-sidecar'
 import {
   LocalOcrUnavailableError,
   type LocalOcrEngine,
@@ -344,6 +348,62 @@ describe('LocalOcrJob on scanned PDFs (real SQLite, real PDFium render, engine d
     expect(store.ocr.localFailure(ok)).toBeNull()
     expect(store.ocr.localFailure(changed)).toMatchObject({ code: 'render' })
     expect(store.ocr.localFailure(offline)).toMatchObject({ code: 'missing' })
+  })
+
+  it('gives a legacy render failure without pages its attempts back once, and only once', async () => {
+    const db = store.rawDb
+    const legacy = invoicePdf('legacy-render.pdf', 1)
+    const corrupt = invoicePdf('corrupt.pdf', 1)
+    const healed = invoicePdf('healed-later.pdf', 1)
+    for (const path of [legacy, corrupt, healed]) enrollEmpty(path)
+    store.ocr.savePages(
+      healed,
+      {
+        hash: hashOf(healed),
+        ...stat(healed),
+        totalPages: 1,
+        tier: 'local',
+        engine: 'test',
+        quality: 0.9,
+      },
+      [{ page: 1, text: 'x' }],
+    )
+    const insert = db.prepare(
+      'INSERT INTO ocr_local_failures(path, mtime_ms, size_bytes, attempts, code, detail, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)',
+    )
+    // what 0.12.34 left: three spent attempts, no detail
+    insert.run(legacy, stat(legacy).mtimeMs, stat(legacy).sizeBytes, 3, 'render', null, 1)
+    insert.run(corrupt, stat(corrupt).mtimeMs, stat(corrupt).sizeBytes, 3, 'corrupt', null, 1)
+    insert.run(healed, stat(healed).mtimeMs, stat(healed).sizeBytes, 3, 'render', null, 1)
+    expect(new OcrSidecar(db).candidates(2, { mode: 'local' }).map((r) => r.path)).toEqual([])
+
+    expect(healLegacyLocalFailures(db)).toEqual({ cleared: 1, reset: 1 })
+    expect(store.ocr.localFailure(healed)).toBeNull()
+    expect(store.ocr.localFailure(legacy)).toMatchObject({ code: 'render', attempts: 0 })
+    expect(store.ocr.localFailure(corrupt)).toMatchObject({ code: 'corrupt', attempts: 3 })
+    // the legacy file is local OCR work again; the corrupt one stays out
+    expect(new OcrSidecar(db).candidates(2, { mode: 'local' }).map((r) => r.path)).toEqual([legacy])
+
+    // a second open changes nothing, even after the retry fails for real again
+    expect(healLegacyLocalFailures(db)).toEqual({ cleared: 0, reset: 0 })
+    await makeJob(new ScriptedEngine(['good']), {
+      render: async () => ({ ok: false, code: 'render', message: 'Failed to rasterize page 1' }),
+    }).runOnce()
+    expect(store.ocr.localFailure(legacy)).toMatchObject({ code: 'render', attempts: 1 })
+    expect(healLegacyLocalFailures(db)).toEqual({ cleared: 0, reset: 0 })
+    expect(store.ocr.localFailure(legacy)).toMatchObject({ attempts: 1 })
+  })
+
+  it('repairs the ledger with primary-key lookups into ocr_pages', () => {
+    const plan = store.rawDb
+      .prepare(
+        `EXPLAIN QUERY PLAN SELECT 1 FROM ocr_local_failures f WHERE EXISTS (SELECT 1 FROM ocr_pages p
+           WHERE p.path = f.path AND p.mtime_ms = f.mtime_ms AND p.size_bytes = f.size_bytes
+             AND p.tier = 'local' AND p.created_at > f.updated_at)`,
+      )
+      .all() as Array<{ detail: string }>
+    const probe = plan.map((row) => row.detail).find((d) => / p\b| ocr_pages\b/.test(d))
+    expect(probe).toMatch(/SEARCH .*PRIMARY KEY \(path=\?/)
   })
 
   it('reads the light pages locally, writes tier=local rows, and the file becomes findable by its OCR text', async () => {
