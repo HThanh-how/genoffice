@@ -302,6 +302,50 @@ describe('LocalOcrJob on scanned PDFs (real SQLite, real PDFium render, engine d
     ).toMatchObject({ detail: 'PDF bitmap could not be allocated' })
   })
 
+  it('clears the failure row once a later read of the same version succeeds', async () => {
+    const path = invoicePdf('recovered-render.pdf', 1)
+    enrollEmpty(path)
+    const engine = new ScriptedEngine(['good', 'good'])
+    await makeJob(engine, {
+      render: async () => ({ ok: false, code: 'render', message: 'Failed to rasterize page 1' }),
+    }).runOnce()
+    expect(store.ocr.localFailure(path)).toMatchObject({ code: 'render', attempts: 1 })
+    expect(await makeJob(engine).runOnce()).toMatchObject({ pages: 1, failed: 0 })
+    // the file no longer shows up as failed (issue list, attempt budget)
+    expect(store.ocr.localFailure(path)).toBeNull()
+  })
+
+  it('heals failure rows that older builds left behind after a successful local read', () => {
+    const db = store.rawDb
+    const ok = invoicePdf('healed.pdf', 1)
+    const changed = invoicePdf('changed-since.pdf', 1)
+    const offline = invoicePdf('offline-source.pdf', 1)
+    const meta = (path: string) => ({
+      hash: hashOf(path),
+      ...stat(path),
+      totalPages: 1,
+      tier: 'local' as const,
+      engine: 'test',
+      quality: 0.9,
+      escalate: false,
+    })
+    for (const path of [ok, changed, offline])
+      store.ocr.savePages(path, meta(path), [{ page: 1, text: 'x' }])
+    const insert = db.prepare(
+      'INSERT INTO ocr_local_failures(path, mtime_ms, size_bytes, attempts, code, updated_at) VALUES (?, ?, ?, ?, ?, ?)',
+    )
+    // failed (as v0.12.34 recorded transient gates) long before its page was stored
+    insert.run(ok, stat(ok).mtimeMs, stat(ok).sizeBytes, 3, 'render', 1)
+    // another version of the file failed: the stored page says nothing about it
+    insert.run(changed, stat(changed).mtimeMs + 1, stat(changed).sizeBytes, 3, 'render', 1)
+    // source faults are handled by the source-recovery pass, not here
+    insert.run(offline, stat(offline).mtimeMs, stat(offline).sizeBytes, 0, 'missing', 1)
+    OcrSidecar.ensureSchema(db)
+    expect(store.ocr.localFailure(ok)).toBeNull()
+    expect(store.ocr.localFailure(changed)).toMatchObject({ code: 'render' })
+    expect(store.ocr.localFailure(offline)).toMatchObject({ code: 'missing' })
+  })
+
   it('reads the light pages locally, writes tier=local rows, and the file becomes findable by its OCR text', async () => {
     const path = invoicePdf('hoa don scan.pdf', 5)
     enrollEmpty(path)

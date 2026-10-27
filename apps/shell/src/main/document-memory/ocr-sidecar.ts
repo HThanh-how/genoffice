@@ -209,6 +209,27 @@ export class OcrSidecar {
       ['escalate', 'INTEGER NOT NULL DEFAULT 0'],
     ] as const)
       if (!have.has(name)) db.exec(`ALTER TABLE ocr_pages ADD COLUMN ${name} ${definition}`)
+    // Self-heal: older builds never cleared a file's failure row when a later local read of the SAME
+    // version succeeded, so the file stayed listed as failed (e.g. transient gate failures recorded as
+    // 'render'). A local page stored after the failure proves the version is readable.
+    db.exec(
+      `DELETE FROM ocr_local_failures
+        WHERE code NOT IN ('missing', 'offline', 'source-busy', 'source-permission')
+          AND EXISTS (SELECT 1 FROM ocr_pages p
+            WHERE p.path = ocr_local_failures.path AND p.mtime_ms = ocr_local_failures.mtime_ms
+              AND p.size_bytes = ocr_local_failures.size_bytes AND p.tier = 'local'
+              AND p.created_at > ocr_local_failures.updated_at)`,
+    )
+  }
+
+  /**
+   * A local read of this file version succeeded: its failure row (attempts, code) no longer applies.
+   * Rows of another version are left alone; that version is not what was just read.
+   */
+  clearLocalFailure(path: string, meta: { mtimeMs: number; sizeBytes: number }): void {
+    this.db
+      .prepare('DELETE FROM ocr_local_failures WHERE path = ? AND mtime_ms = ? AND size_bytes = ?')
+      .run(path, meta.mtimeMs, meta.sizeBytes)
   }
 
   /** Store transcribed pages; rows of an older version of the file are dropped first. */
