@@ -11,3 +11,20 @@ export function mergeSlideUpdate(current: RenderSlide[], update: SlideUpdate): R
     return slide
   })
 }
+
+/** A partial broadcast needs a full refresh when its base deck is unavailable. */
+export function mergeBroadcastUpdate(
+  current: RenderSlide[] | null,
+  update: SlideUpdate,
+  refresh: () => void,
+): RenderSlide[] | null {
+  const paths = new Set([
+    ...(current ?? []).map((slide) => slide.partPath),
+    ...update.slides.map((slide) => slide.partPath),
+  ])
+  if (!current?.length || update.order.some((path) => !paths.has(path))) {
+    queueMicrotask(refresh)
+    return current
+  }
+  return mergeSlideUpdate(current, update)
+}

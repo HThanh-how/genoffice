@@ -1,6 +1,10 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { metafileToDataUrl } from '@genoffice/docx-engine/metafile'
-import { createImageLoader, MAX_METAFILE_BASE64_CHARS } from '../src/renderer/image-loader'
+import {
+  createImageLoader,
+  MAX_METAFILE_BASE64_CHARS,
+  setImageSource,
+} from '../src/renderer/image-loader'
 
 vi.mock('@genoffice/docx-engine/metafile', () => ({
   metafileToDataUrl: vi.fn(async () => 'data:image/png;base64,AA=='),
@@ -176,4 +180,26 @@ describe('metafile rasterization waits for private fonts', () => {
     expect(metafileToDataUrl).not.toHaveBeenCalled()
     expect(apply).not.toHaveBeenCalled()
   })
+})
+
+it('sets anonymous CORS before assigning slide media sources only', () => {
+  const assignments: Array<[string, string | null]> = []
+  const image = {
+    crossOrigin: null as string | null,
+    set src(url: string) {
+      assignments.push([url, this.crossOrigin])
+    },
+  }
+  setImageSource(image as HTMLImageElement, 'genoffice-slide-media://archive/image')
+  const other = {
+    crossOrigin: null as string | null,
+    set src(url: string) {
+      assignments.push([url, this.crossOrigin])
+    },
+  }
+  setImageSource(other as HTMLImageElement, 'data:image/png;base64,AA==')
+  expect(assignments).toEqual([
+    ['genoffice-slide-media://archive/image', 'anonymous'],
+    ['data:image/png;base64,AA==', null],
+  ])
 })

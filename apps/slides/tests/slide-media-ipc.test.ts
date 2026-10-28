@@ -64,6 +64,8 @@ import {
   makeMediaResolver,
   rebuildSlide,
   readSlideMedia,
+  pruneMediaSources,
+  takeSnapshot,
   sessions,
   type Session,
 } from '../src/main/session-state'
@@ -461,6 +463,28 @@ describe('slide media IPC payload', () => {
     // Restoring the snapshot also removes the picture pasted on the anchor.
     expect(current[0]!.nodes.filter((n) => n.type === 'picture')).toHaveLength(1)
     expect(session.undoStack).toHaveLength(1)
+  })
+
+  it('prunes media absent from the archive and history while retaining rollback bytes', () => {
+    addImage(1024)
+    const slide = session.opened.deck.slides[0]!
+    const pic = slide.elements.find((el) => el.type === 'picture') as PictureElement
+    const original = makeMediaResolver(session.opened, slide.path)(pic.mediaRef!)!
+    pruneMediaSources(session)
+    expect(readSlideMedia(original)).not.toBeNull()
+    const oldPath = pic.mediaRef!
+    session.undoStack.push(takeSnapshot(session))
+    const replacement = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 1])
+    expect(replacePictureBytes(session.opened, slide, pic.id, replacement, 'png')).toBe(true)
+    const updated = makeMediaResolver(session.opened, slide.path)(pic.mediaRef!)!
+    session.opened.archive.entries.delete(oldPath)
+    pruneMediaSources(session)
+    expect(readSlideMedia(original)).not.toBeNull()
+    expect(readSlideMedia(updated)).not.toBeNull()
+    session.undoStack = []
+    pruneMediaSources(session)
+    expect(readSlideMedia(original)).toBeNull()
+    expect(readSlideMedia(updated)).not.toBeNull()
   })
 
   it('gives a replaced image a new URL and restores the original URL on undo', () => {

@@ -179,6 +179,7 @@ export function scheduleHistoryNotify(session: Session): void {
   session.historyNotifyScheduled = true
   setImmediate(() => {
     session.historyNotifyScheduled = false
+    pruneMediaSources(session)
     // A shared session (second window on the same file, presenter audience) has
     // several attached webContents; the undo/redo button states change for all.
     for (const id of attachedIds(session)) {
@@ -535,6 +536,29 @@ function byteVersion(bytes: Uint8Array | null): number {
   let version = byteVersions.get(bytes)
   if (version === undefined) byteVersions.set(bytes, (version = ++nextByteVersion))
   return version
+}
+
+/** Keep archive and rollback bytes, including media used by masters, layouts and notes. */
+export function pruneMediaSources(session: Session): void {
+  const urls = mediaUrls.get(session.opened)
+  if (!urls) return
+  const snapshots = [
+    ...session.undoStack,
+    ...session.redoStack,
+    ...(session.previewRedo ?? []),
+    ...(session.historyBatch ? [session.historyBatch.before] : []),
+    ...(session.aiSnapshots?.values() ?? []),
+  ]
+  const retained = new Set(session.opened.archive.entries.values())
+  for (const snapshot of snapshots)
+    for (const bytes of snapshot.entries.values()) retained.add(bytes)
+  for (const [key, url] of urls) {
+    const bytes = mediaSources.get(url)?.bytes.deref()
+    if (!bytes || !retained.has(bytes)) {
+      urls.delete(key)
+      mediaSources.delete(url)
+    }
+  }
 }
 
 /** Resolve opaque media URLs without cloning image bytes across the IPC boundary.
