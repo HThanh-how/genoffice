@@ -11,6 +11,8 @@ describe('the editor ribbon revealing itself while a tab opens', () => {
     expect(OPENING_REVEAL_CSS).toContain('opacity:0!important')
     expect(OPENING_REVEAL_CSS).not.toMatch(/display:\s*none|visibility:\s*hidden/)
     expect(() => new Function(OPENING_REVEAL_SCRIPT)).not.toThrow()
+    // a template-literal escape slip once turned this into /S/, so no label ever decoded
+    expect(OPENING_REVEAL_SCRIPT).toContain('/\S/.test(n.nodeValue)')
   })
 
   it('starts once the page has a document, and reports the ribbon height', async () => {
