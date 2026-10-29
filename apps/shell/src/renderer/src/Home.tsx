@@ -56,6 +56,7 @@ import { onFilesChanged } from './file-events'
 import { HomeChat } from './HomeChat'
 import { HOME_SEARCH_EVENT, showCreateCards, type HomeSearchDetail } from './home-chat/dock-logic'
 import { ClipboardSuggest } from './ClipboardSuggest'
+import { openFromHome } from './open-flight'
 import './home-workspace.css'
 
 import type { ProjectApi } from '@genoffice/project-store'
@@ -2851,12 +2852,12 @@ export function Home() {
           onClick={() => {
             if (isRenaming) return
             if (entry.missing) setConfirmMissing(entry)
-            else void window.aiOffice.openPath(entry.path)
+            else void openFromHome(entry.path)
           }}
           onKeyDown={(event) => {
             if (event.key === 'Enter' && event.target === event.currentTarget) {
               if (entry.missing) setConfirmMissing(entry)
-              else void window.aiOffice.openPath(entry.path)
+              else void openFromHome(entry.path)
             }
           }}
         >
@@ -2939,7 +2940,7 @@ export function Home() {
                   role="menuitem"
                   onClick={() => {
                     setRowMenu(null)
-                    void window.aiOffice.openPath(entry.path)
+                    void openFromHome(entry.path)
                   }}
                 >
                   {t('open')}
@@ -3294,9 +3295,9 @@ export function Home() {
       className="search-row"
       role="button"
       tabIndex={0}
-      onClick={() => void window.aiOffice.openPath(hit.path)}
+      onClick={() => void openFromHome(hit.path)}
       onKeyDown={(e) => {
-        if (e.key === 'Enter') void window.aiOffice.openPath(hit.path)
+        if (e.key === 'Enter') void openFromHome(hit.path)
       }}
     >
       <span className="recent-icon">
@@ -4077,7 +4078,7 @@ export function Home() {
           askMode || settingsModalOpen || Boolean(selectedFolder) || cloudMode || indexOpen
         }
         onNavigateToRecents={() => changeView('recent')}
-        onOpenPath={(path) => window.aiOffice.openPath(path)}
+        onOpenPath={(path) => openFromHome(path)}
         isOpenPath={isOpenPath}
         onOpenAskWorkspace={openAskWorkspace}
         onOpenModelSettings={openModelSettings}

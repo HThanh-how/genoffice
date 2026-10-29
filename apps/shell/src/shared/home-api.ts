@@ -448,7 +448,11 @@ export interface HomeApi extends ForkHomeApi, FileManagementBridge {
   aiGskStatus(): Promise<{ loggedIn: boolean; email?: string }>
   /** open an existing file, routing to the right module by extension */
   openHelp(): Promise<void>
-  openPath(path: string): Promise<boolean>
+  /**
+   * `flight`: the caller plays the file-flies-to-its-tab animation, so a tab this opens is kept behind
+   * Home for a moment before it takes over.
+   */
+  openPath(path: string, flight?: boolean): Promise<boolean>
   /** file picker accepting every supported extension, then routes */
   browse(): Promise<void>
   /** open a docs window at its start screen; `dir` = folder the first save should land in */

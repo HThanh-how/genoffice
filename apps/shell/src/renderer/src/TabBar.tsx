@@ -1,7 +1,9 @@
 import { appNotify } from './ui-feedback'
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useLayoutEffect, useRef, useState } from 'react'
 import type { CSSProperties, PointerEvent as ReactPointerEvent, ReactElement } from 'react'
 import type { TabsApi, TabSummary } from '../../shared/tabs-api'
+import { OPEN_FLIGHT_MS } from '../../shared/open-flight'
+import { playOpenFlight, takeOpenFlight } from './open-flight'
 import { TEAR_OFF_SLACK, insertionIndexForX, isBeyondBand } from '../../shared/tab-drag-geometry'
 import { notifyFilesChanged } from './file-events'
 import { useI18n } from './locale'
@@ -187,6 +189,9 @@ export function TabBar() {
   const [renaming, setRenaming] = useState<{ id: string; value: string } | null>(null)
   const renamingRef = useRef(renaming)
   renamingRef.current = renaming
+  // a tab that has just appeared out of a file flying up from Home grows out of its icon
+  const [arrivingId, setArrivingId] = useState<string | null>(null)
+  const knownTabIds = useRef<Set<string> | null>(null)
   const tabsRef = useRef(tabs)
   tabsRef.current = tabs
   /** open the inline rename box on a file tab (double-click, or "Rename" in the tab menu) */
@@ -439,6 +444,25 @@ export function TabBar() {
     return () => strip.removeEventListener('wheel', onWheel)
   }, [])
 
+  useLayoutEffect(() => {
+    const known = knownTabIds.current
+    knownTabIds.current = new Set(tabs.map((tab) => tab.id))
+    // the first list is what the window opened with: nothing flies
+    if (!known) return
+    const fresh = tabs.find((tab) => !known.has(tab.id) && tab.kind !== 'home')
+    if (!fresh) return
+    const origin = takeOpenFlight()
+    const el = stripRef.current?.querySelector<HTMLElement>(`[data-tab-id="${fresh.id}"]`)
+    if (!origin || !el) return
+    setArrivingId(fresh.id)
+    el.scrollIntoView({ inline: 'nearest', block: 'nearest' })
+    const clear = (): void => setArrivingId((current) => (current === fresh.id ? null : current))
+    playOpenFlight(origin, el, clear)
+    // the flight never leaves the tab hidden if the animation is cancelled
+    const timer = window.setTimeout(clear, OPEN_FLIGHT_MS * 2)
+    return () => window.clearTimeout(timer)
+  }, [tabs])
+
   // keep the active tab in view — new tabs open at the far end of the strip
   const activeId = tabs.find((tab) => tab.active)?.id
   useEffect(() => {
@@ -503,7 +527,8 @@ export function TabBar() {
           return (
             <div
               key={tab.id}
-              className={`tab-item ${tab.kind === 'home' ? 'tab-home' : ''} ${tab.active ? 'active' : ''} ${tab.dormant ? 'tab-dormant' : ''} ${dragVisual?.id === tab.id ? 'drag-source' : ''}`}
+              data-tab-id={tab.id}
+              className={`tab-item ${tab.kind === 'home' ? 'tab-home' : ''} ${arrivingId === tab.id ? 'tab-arriving' : ''} ${tab.active ? 'active' : ''} ${tab.dormant ? 'tab-dormant' : ''} ${dragVisual?.id === tab.id ? 'drag-source' : ''}`}
               // long file names ellipsize in the strip — hover reveals the
               // full title and where the file is (the close button's own tooltip still wins there)
               title={

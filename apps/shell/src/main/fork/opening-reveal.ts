@@ -180,6 +180,8 @@ export const OPENING_REVEAL_SCRIPT = `(function () {
   }
   var tries = 0
   function look() {
+    // a tab still waiting behind Home starts when it comes to the front
+    if (document.hidden) { document.addEventListener('visibilitychange', look, { once: true }); return }
     var ribbon = document.querySelector('.ribbon')
     if (ribbon && ribbon.querySelector('.ribbon-body button')) {
       requestAnimationFrame(function () { requestAnimationFrame(function () { go(ribbon) }) })

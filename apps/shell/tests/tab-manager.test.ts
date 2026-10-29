@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 vi.mock('node:fs', () => {
   const realpathSync = ((path?: string) => {
@@ -1209,5 +1209,43 @@ describe('tab sleep (background renderers released to free memory)', () => {
     await manager.closeTab(a)
     expect(docsQueryDirty).not.toHaveBeenCalled()
     expect(manager.list().some((t) => t.id === a)).toBe(false)
+  })
+})
+
+describe('opening with the flight animation (file icon flies to its tab)', () => {
+  afterEach(() => vi.useRealTimers())
+
+  it('shows the new tab in the strip at once but keeps Home in front until the flight is over', () => {
+    vi.useFakeTimers()
+    const id = manager.runWithFlight(260, () => manager.openDocsTab())
+    const docsView = lastCreatedView(createDocsView)
+    expect(manager.list().some((t) => t.id === id)).toBe(true)
+    expect(manager.list().find((t) => t.id === id)?.active).toBe(false)
+    expect(manager.list().find((t) => t.id === 'home')?.active).toBe(true)
+    expect(docsView.setVisible).not.toHaveBeenCalledWith(true)
+    expect(onChanged).toHaveBeenCalled()
+
+    vi.advanceTimersByTime(260)
+    expect(manager.list().find((t) => t.id === id)?.active).toBe(true)
+    expect(docsView.setVisible).toHaveBeenLastCalledWith(true)
+  })
+
+  it('leaves the tab in the background when the person went elsewhere during the flight', () => {
+    vi.useFakeTimers()
+    const other = manager.openSheetsTab()
+    const id = manager.runWithFlight(260, () => manager.openDocsTab())
+    manager.activateTab('home')
+    vi.advanceTimersByTime(260)
+    expect(manager.list().find((t) => t.id === id)?.active).toBe(false)
+    expect(manager.list().find((t) => t.id === other)?.active).toBe(false)
+  })
+
+  it('does not delay a tab that already existed, or a plain open', () => {
+    const id = manager.openDocsTab()
+    manager.activateTab('home')
+    manager.runWithFlight(260, () => manager.activateTab(id))
+    expect(manager.list().find((t) => t.id === id)?.active).toBe(true)
+    const next = manager.openSheetsTab()
+    expect(manager.list().find((t) => t.id === next)?.active).toBe(true)
   })
 })

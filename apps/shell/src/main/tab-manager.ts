@@ -112,6 +112,8 @@ export class TabManager {
   ]
   private activeId: string = HOME_ID
   private nextId = 1
+  /** set while a file is being opened from Home with the flight animation: its new tab waits behind Home */
+  private flightHold: { ms: number; firstId: number } | null = null
   /** tab whose page entered HTML fullscreen (e.g. slides slideshow) — its view covers the tab strip */
   private htmlFullScreenId: string | null = null
   /** webContents ids whose view must cover the tab strip without HTML fullscreen
@@ -651,9 +653,33 @@ export class TabManager {
     return id
   }
 
+  /**
+   * Run `fn` (which opens a document) so that a tab it creates shows up in the strip at once but only
+   * takes over after `ms`, leaving Home in front for the file's flight to its tab. A tab that already
+   * existed is activated immediately, as before.
+   */
+  runWithFlight<T>(ms: number, fn: () => T): T {
+    this.flightHold = { ms, firstId: this.nextId }
+    try {
+      return fn()
+    } finally {
+      this.flightHold = null
+    }
+  }
+
   activateTab(id: string): void {
     const target = this.tabs.find((t) => t.id === id)
     if (!target) return
+    const hold = this.flightHold
+    if (hold && Number(id.slice(1)) >= hold.firstId) {
+      const was = this.activeId
+      this.onChanged()
+      setTimeout(() => {
+        // the person went elsewhere meanwhile: the tab stays in the strip, in the background
+        if (this.activeId === was && this.tabs.some((t) => t.id === id)) this.activateTab(id)
+      }, hold.ms)
+      return
+    }
     if (target.dormant) this.reviveTab(target)
     const now = Date.now()
     const previous = this.tabs.find((t) => t.id === this.activeId)

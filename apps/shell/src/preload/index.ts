@@ -276,9 +276,9 @@ const homeApi: HomeApi = {
   async aiGskStatus() {
     return ipcRenderer.invoke('ai:gsk-status')
   },
-  async openPath(path) {
+  async openPath(path, flight) {
     if (typeof path !== 'string' || !path) throw new Error('Invalid path.')
-    return ipcRenderer.invoke(HOME_CHANNELS.openPath, path)
+    return ipcRenderer.invoke(HOME_CHANNELS.openPath, path, flight === true)
   },
   async browse() {
     await ipcRenderer.invoke(HOME_CHANNELS.browse)

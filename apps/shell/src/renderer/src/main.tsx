@@ -14,6 +14,7 @@ import '@genoffice/ui/ai-skills.css'
 import './home.css'
 import './tabbar.css'
 import { installScreenTips } from '@genoffice/ui'
+import { installOpenFlight } from './open-flight'
 
 // Anything that throws while the window boots (a missing preload method, a failing first render) must end in the
 // error screen, never in a blank window nobody can diagnose.
@@ -21,6 +22,7 @@ function startShell(): void {
   // set once the persisted language is known, so a later failure is reported in it
   let resolvedLang: string | undefined
   installScreenTips()
+  installOpenFlight()
 
   // macOS shell window is created with vibrancy; a transparent body lets the
   // editor views' translucent regions (e.g. slides thumbnail pane) show it

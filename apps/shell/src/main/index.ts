@@ -486,6 +486,7 @@ import { homeCliContext, runHomeCli, type HomeCliDeps } from './home-cli'
 import { sanitizeFileBase } from './mcp/tools/document-tools'
 import { runHeadlessExport, type HeadlessExporters } from './headless-export'
 import { TabManager } from './tab-manager'
+import { OPEN_FLIGHT_MS } from '../shared/open-flight'
 import { tabMenuTemplate, type TabMenuActions, isProgramFile } from './tab-menu'
 import { runTabDocumentAction, type TabDocumentAction } from './tab-document-actions'
 import { duplicateDocumentFile } from './tab-duplicate'
@@ -6235,9 +6236,12 @@ function registerHomeIpc(): void {
     if (typeof path === 'string') toggleStarredFile(path)
   })
 
-  ipcMain.handle(HOME_CHANNELS.openPath, (_event, path: unknown): boolean => {
+  ipcMain.handle(HOME_CHANNELS.openPath, (_event, path: unknown, flight: unknown): boolean => {
     if (typeof path !== 'string' || !path || path.length > 4096) return false
-    const opened = openDocumentPath(path)
+    const opened =
+      flight === true && tabManager
+        ? tabManager.runWithFlight(OPEN_FLIGHT_MS, () => openDocumentPath(path))
+        : openDocumentPath(path)
     fileIndexer?.refresh()
     return opened
   })
