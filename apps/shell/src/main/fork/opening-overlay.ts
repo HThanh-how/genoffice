@@ -9,6 +9,8 @@ export interface OverlayHandle {
   /** shown only while its own tab is the one in front */
   setVisible(visible: boolean): void
   setBounds(bounds: { x: number; y: number; width: number; height: number }): void
+  /** leave the top `px` of the tab uncovered (the editor's own ribbon, which reveals itself) */
+  setInset?(px: number): void
   /** start the fade-out; the view is removed by `destroy` once it has played */
   fadeOut(): void
   destroy(): void
@@ -75,6 +77,11 @@ export class OpeningOverlays {
     if (!entry || entry.finishing) return
     const wait = Math.max(0, entry.shownAt + this.timing.minShowMs - this.deps.now())
     entry.cancel.push(this.deps.schedule(() => this.finish(tabId), wait))
+  }
+
+  /** The editor's ribbon is showing: stop covering its height. */
+  setInset(tabId: string, px: number): void {
+    this.entries.get(tabId)?.handle.setInset?.(px)
   }
 
   /** Only the overlay of the tab in front is visible. */

@@ -49,6 +49,7 @@ import { rendererUrl, safeExternalUrl } from '@genoffice/electron-utils'
 import type { DocumentTabKind, OpenDocumentTab, TabKind, TabSummary } from '../shared/tabs-api'
 import { isSettledRect, tabStripHeight } from '../shared/tab-drag-geometry'
 import { shellWindowBackground } from './window-background'
+import { attachOpeningReveal } from './fork/opening-reveal'
 import { OpeningOverlays, type OverlayDeps } from './fork/opening-overlay'
 import { attachRendererDiagnostics, type DiagnosticsWrite } from './fork/renderer-diagnostics'
 import type { SplashApp } from './fork/opening-window'
@@ -304,6 +305,10 @@ export class TabManager {
     if (!openPath || !app) return
     if (this.overlays && !this.overlaySuppressed) {
       this.overlays.begin(id, { fileName: basename(openPath), app })
+      // the editor's own ribbon resolves into place; the card then leaves it uncovered
+      if (this.overlays.has(id)) {
+        attachOpeningReveal(view.webContents, (height) => this.overlays?.setInset(id, height))
+      }
     }
     const wc = view.webContents
     wc.once('destroyed', () => this.overlays?.drop(id))

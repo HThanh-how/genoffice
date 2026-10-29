@@ -13,7 +13,7 @@ import {
   SPLASH_THEMES,
   openingWords,
   escapeHtml,
-  skeletonHtml,
+  backdropHtml,
   openingPageHtml,
   chooseSplashTier,
 } from '../../shared/opening-page'
@@ -117,7 +117,7 @@ export function buildOpeningPage(options: {
         {
           reducedMotion: tier === 'minimal',
           isCardLayout: options.layout === 'card',
-          skeletonHtml: options.layout === 'card' ? skeletonHtml(options.app) : undefined,
+          skeletonHtml: options.layout === 'card' ? backdropHtml(options.app) : undefined,
         },
       )
     }

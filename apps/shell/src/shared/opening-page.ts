@@ -116,117 +116,21 @@ export function lighterRgbOf(hex: string): string {
 }
 
 /**
- * The outline of the editor that is opening (tab row, ribbon, and the work area of that kind of
- * file) drawn behind the opening card so the tab never shows a blank page. Every placeholder is a
- * field of monospace glyphs that decode in place (. : - = + * #) in a wave from the middle of the
- * page, the way the ascii-reveal loader resolves content where it will land, so the shapes are
- * already where the real ones will be. Plain markup and CSS, no script: it works on every tier.
+ * Behind the opening card, over the document area only: the page the editor is about to show, in
+ * the app's colour. The editor's own tab strip and ribbon are not drawn here (they are the real
+ * ones, revealing themselves above this); the card leaves them uncovered.
  */
-const GLYPH_RAMP = ['.', ':', '-', '=', '+', '*', '#'] as const
-/** glyphs a field shows at each of the 8 steps of one decode cycle (rises to a peak, then settles back) */
-const GLYPH_STEPS = [0, 1, 2, 3, 4, 3, 2, 1] as const
-const GLYPH_COUNT = 1500
-
-/** One field of glyphs around ramp position `level`; seeded, so the same page is the same every time. */
-function glyphField(level: number, seed: number): string {
-  let state = (seed * 2654435761) >>> 0
-  let out = ''
-  for (let i = 0; i < GLYPH_COUNT; i++) {
-    state = (Math.imul(state, 1664525) + 1013904223) >>> 0
-    const spread = (state >>> 24) % 3 === 0 ? 1 : 0
-    const sign = (state >>> 16) & 1 ? 1 : -1
-    const at = Math.max(0, Math.min(GLYPH_RAMP.length - 1, level + spread * sign))
-    out += GLYPH_RAMP[at]
-  }
-  return out
-}
-
-let boxIndex = 0
-/** `glyphs` fill a box; text rows are one line of 9px glyphs, blocks wrap into rows of larger ones. */
-const box = (style: string, height: number | null, size?: number): string => {
-  const block = height === null || height > 16
-  const fs = size ?? (block ? 12 : 9)
-  const lh = block ? fs : height
-  const h = height === null ? '' : `;height:${height}px`
-  // the wave starts at the middle: boxes are numbered in reading order and delayed by their distance from it
-  const delay = (boxIndex++ % 24) * 0.11
-  return `<i class="sk" style="${style}${h};font-size:${fs}px;line-height:${lh}px;--d:${delay.toFixed(2)}s"></i>`
-}
-const bar = (width: number, height = 10): string => box(`width:${width}px`, height)
-const bars = (widths: readonly number[], height = 10): string =>
-  widths.map((w) => bar(w, height)).join('')
-const TEXT_LINES = [92, 88, 95, 70, 90, 86, 40, 94, 91, 78, 89, 60, 93, 87, 45, 90, 82, 66]
-
-export function skeletonHtml(appName: SplashApp): string {
-  boxIndex = 0
-  const chrome = `<div class="sk-tabs">${bars([44, 52, 72, 60, 50, 58, 46], 12)}</div>
-<div class="sk-ribbon">
-<div class="sk-group">${bars([38, 38, 38], 38)}</div>
-<div class="sk-group sk-col">${bars([130, 130], 14)}</div>
-<div class="sk-group">${bars([28, 28, 28, 28], 28)}</div>
-<div class="sk-group sk-col">${bars([110, 90], 14)}</div>
-<div class="sk-group">${bars([70, 70], 38)}</div>
-</div>`
-  const percent = (w: number): string => box(`width:${w}%`, 10)
-  const lines = TEXT_LINES.map(percent).join('')
-  let work: string
-  switch (appName) {
-    case 'sheets':
-      work = `<div class="sk-formula">${bar(80, 22)}${box('flex:1', 22)}</div>
-<div class="sk-grid" aria-hidden="true"></div>`
-      break
-    case 'slides':
-      work = `<div class="sk-slides"><div class="sk-thumbs">${[0, 1, 2, 3, 4].map(() => box('width:100%', 84)).join('')}</div>
-<div class="sk-stage">${box('width:min(760px,94%);aspect-ratio:16/9;align-self:center', null, 20)}</div></div>`
-      break
-    case 'pdf':
-      work = `<div class="sk-slides"><div class="sk-thumbs">${[0, 1, 2, 3].map(() => box('width:100%', 170)).join('')}</div>
-<div class="sk-stage"><div class="sk-page sk-narrow">${lines}</div></div></div>`
-      break
-    case 'markdown':
-    case 'html':
-      work = `<div class="sk-split"><div class="sk-code">${lines}</div><div class="sk-code">${lines}</div></div>`
-      break
-    default:
-      work = `<div class="sk-ruler">${box('flex:1', 12)}</div>
-<div class="sk-stage"><div class="sk-page">${lines}</div></div>`
-  }
-  return `<div class="skel" aria-hidden="true">${chrome}<div class="sk-work">${work}</div></div>`
+export function backdropHtml(_appName: SplashApp): string {
+  return '<div class="skel" aria-hidden="true"></div>'
 }
 
 /** `root` is `:root` in a page of its own and `:host` when the page is drawn inside a shadow root. */
-const skeletonCss = (root: string): string => {
-  const fields = GLYPH_STEPS.map((level, i) => `--g${i}:"${glyphField(level, i + 1)}"`).join(';')
-  const steps = GLYPH_STEPS.map(
-    (level, i) =>
-      `${Math.round((i * 100) / GLYPH_STEPS.length)}%{content:var(--g${i});color:color-mix(in srgb,var(--sk2) ${Math.round((level / 4) * 100)}%,var(--sk1))}`,
-  ).join('')
-  return `${root}{--sk1:#d3d8df;--sk2:#8993a3;--skbg:#f7f8fa;--skpage:#fff;--skline:#e3e6eb;${fields}}
-@media (prefers-color-scheme:dark){${root}{--sk1:#2b3039;--sk2:#6e7a8f;--skbg:#1a1d22;--skpage:#20242a;--skline:#262a31}}
-.skel{position:absolute;inset:0;display:flex;flex-direction:column;gap:12px;padding:12px 16px;background:var(--skbg);overflow:hidden}
-.sk{display:block;flex:none;position:relative;overflow:hidden;word-break:break-all;font-family:ui-monospace,"Cascadia Mono",Consolas,monospace;letter-spacing:0;color:var(--sk1)}
-.sk::before{content:var(--g3);animation:decode 2.8s linear infinite;animation-delay:calc(var(--d) * -1)}
-@keyframes decode{${steps}100%{content:var(--g0);color:var(--sk1)}}
-.sk-tabs{display:flex;gap:18px;align-items:center;height:22px}
-.sk-ribbon{display:flex;gap:26px;align-items:center;height:76px;padding:8px 6px;border-bottom:1px solid var(--skline)}
-.sk-group{display:flex;gap:8px;align-items:center}.sk-col{flex-direction:column;align-items:flex-start;gap:12px}
-.sk-work{flex:1;min-height:0;display:flex;flex-direction:column;gap:10px}
-.sk-ruler{display:flex;padding:0 80px}
-.sk-stage{flex:1;min-height:0;display:flex;justify-content:center;overflow:hidden}
-.sk-page{width:min(640px,92%);padding:44px 52px;display:flex;flex-direction:column;gap:14px;background:var(--skpage);border-radius:4px;box-shadow:0 1px 8px rgba(0,0,0,.12)}
-.sk-page.sk-narrow{width:min(520px,90%)}
-.sk-formula{display:flex;gap:10px;align-items:center}
-.sk-grid{flex:1;border-radius:4px;background:
-linear-gradient(90deg,var(--skline) 0 44px,transparent 44px),
-linear-gradient(var(--skline) 0 22px,transparent 22px),
-repeating-linear-gradient(90deg,transparent 0 119px,var(--skline) 119px 120px),
-repeating-linear-gradient(transparent 0 25px,var(--skline) 25px 26px);background-color:var(--skpage)}
-.sk-slides{flex:1;min-height:0;display:flex;gap:16px}
-.sk-thumbs{width:150px;flex:none;display:flex;flex-direction:column;gap:12px;overflow:hidden}
-.sk-split{flex:1;display:flex;gap:16px;min-height:0}
-.sk-code{flex:1;padding:22px 26px;display:flex;flex-direction:column;gap:14px;background:var(--skpage);border-radius:6px;overflow:hidden}
-@media (prefers-reduced-motion:reduce){.sk::before{animation:none}}`
-}
+const backdropCss = (root: string): string => `${root}{--skbg:#f7f8fa;--skhaze:rgba(var(--rgb),.14)}
+@media (prefers-color-scheme:dark){${root}{--skbg:#1a1d22;--skhaze:rgba(var(--rgb),.2)}}
+.skel{position:absolute;inset:0;background:var(--skbg);overflow:hidden}
+.skel::before{content:"";position:absolute;left:-10%;right:-10%;top:-60px;height:220px;background:radial-gradient(closest-side,var(--skhaze),transparent);animation:haze 4.6s ease-in-out infinite}
+@keyframes haze{50%{opacity:.55;transform:scale(1.08)}}
+@media (prefers-reduced-motion:reduce){.skel::before{animation:none}}`
 
 /** The pieces of the splash page, so it can be written out as a document or drawn inside a shadow root. */
 export interface OpeningPageParts {
@@ -361,7 +265,7 @@ box-shadow:0 0 0 1px rgba(255,255,255,.18),0 8px 26px rgba(var(--rgb),.55);anima
 .bar i{display:block;width:34%;height:100%;background:linear-gradient(90deg,transparent,var(--accent),transparent);animation:sweep 1.6s ease-in-out infinite}
 @keyframes sweep{from{transform:translateX(-110%)}to{transform:translateX(320%)}}
 ${B}{transition:opacity .3s ease}${B}.leaving{opacity:0}
-${layout === 'card' ? skeletonCss(R) : ''}
+${layout === 'card' ? backdropCss(R) : ''}
 ${materialCss}
 ${mediaStyle}
 @media (prefers-reduced-motion:reduce){.badge,.glow,.bubble,.bar i{animation:none}}
@@ -370,7 +274,7 @@ ${target === 'shadow' ? '.pg{position:relative;width:100%;height:100%}' : ''}`
     css,
     bodyClass: layout === 'card' ? 'card' : '',
     bodyAttrs: ` data-app="${appName}" data-scene="${sceneId}" data-tier="${tier}" data-rgb="${rgb}" data-lt="${lighterRgbOf(theme.color)}"`,
-    bodyInner: `${layout === 'card' ? skeletonHtml(appName) : ''}
+    bodyInner: `${layout === 'card' ? backdropHtml(appName) : ''}
 <div class="stage">
 ${isCanvasScene ? '<canvas id="sea" aria-hidden="true"></canvas><div class="glow"></div>' : ''}
 <span class="bubble b1"></span><span class="bubble b2"></span><span class="bubble b3"></span>

@@ -7,7 +7,7 @@ import {
   type OpeningPrefs,
 } from '../../../../shared/opening-scenes-meta'
 import { buildMaterialCss, sampleFileName } from '../../../../shared/opening-card-css'
-import { skeletonHtml, type SplashTier } from '../../../../shared/opening-page'
+import { backdropHtml, type SplashTier } from '../../../../shared/opening-page'
 import { APP_INFO } from './app-info'
 import { appName as appLabelOf } from './AppMarks'
 import { CardSurface } from './CardSurface'
@@ -97,7 +97,7 @@ export function CardPreview({
             {
               reducedMotion: tier === 'minimal',
               isCardLayout: true,
-              skeletonHtml: skeletonHtml(activeApp),
+              skeletonHtml: backdropHtml(activeApp),
             },
           ),
         )

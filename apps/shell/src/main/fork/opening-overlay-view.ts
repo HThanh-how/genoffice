@@ -42,12 +42,24 @@ export function electronOverlayDeps(
       })
       void view.webContents.loadURL(`data:text/html;charset=utf-8,${encodeURIComponent(html)}`)
       let gone = false
+      let inset = 0
+      let bounds: { x: number; y: number; width: number; height: number } | null = null
+      const place = (): void => {
+        if (gone || !bounds) return
+        const top = Math.min(inset, Math.max(0, bounds.height - 1))
+        view.setBounds({ ...bounds, y: bounds.y + top, height: bounds.height - top })
+      }
       return {
         setVisible: (visible) => {
           if (!gone) view.setVisible(visible)
         },
-        setBounds: (bounds) => {
-          if (!gone) view.setBounds(bounds)
+        setBounds: (next) => {
+          bounds = next
+          place()
+        },
+        setInset: (px) => {
+          inset = Math.max(0, Math.round(px))
+          place()
         },
         fadeOut: () => {
           if (gone || view.webContents.isDestroyed()) return

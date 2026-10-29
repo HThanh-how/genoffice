@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest'
 import {
   SPLASH_THEMES,
   chooseSplashTier,
-  skeletonHtml,
+  backdropHtml,
   lighterRgbOf,
   openingPageHtml,
   openingWords,
@@ -163,26 +163,13 @@ describe('the opening page over a tab is a small card, not a full-size scene', (
   })
 })
 
-describe('the outline of the editor behind the card', () => {
-  it('is drawn for every kind of file, hidden from screen readers, and different for each', () => {
-    const apps = Object.keys(SPLASH_THEMES) as Array<keyof typeof SPLASH_THEMES>
-    const outlines = apps.map((app) => skeletonHtml(app))
-    for (const html of outlines) {
+describe('the backdrop behind the card', () => {
+  it('is a plain page in the app colour over a tab, never an outline of the editor, and not in the small window', () => {
+    for (const app of Object.keys(SPLASH_THEMES) as Array<keyof typeof SPLASH_THEMES>) {
+      const html = backdropHtml(app)
       expect(html).toContain('class="skel" aria-hidden="true"')
-      expect(html).toContain('class="sk-tabs"')
-      expect(html).toContain('class="sk-ribbon"')
+      expect(html).not.toContain('sk-ribbon')
     }
-    expect(skeletonHtml('docs')).toContain('sk-page')
-    expect(skeletonHtml('sheets')).toContain('sk-grid')
-    expect(skeletonHtml('slides')).toContain('sk-slide')
-    expect(skeletonHtml('pdf')).toContain('sk-thumbs')
-    expect(skeletonHtml('markdown')).toContain('sk-split')
-    expect(
-      new Set([skeletonHtml('docs'), skeletonHtml('sheets'), skeletonHtml('slides')]).size,
-    ).toBe(3)
-  })
-
-  it('is behind the card over a tab, with glyphs that decode in place and stop for reduced motion, and not in the small window', () => {
     const card = openingPageHtml(
       openingWords('en', 'open'),
       'a.xlsx',
@@ -192,9 +179,8 @@ describe('the outline of the editor behind the card', () => {
       'card',
     )
     expect(card).toContain('class="skel"')
-    expect(card).toContain('@keyframes decode')
-    expect(card).toContain('prefers-reduced-motion:reduce){.sk::before{animation:none}')
     expect(card.indexOf('class="skel"')).toBeLessThan(card.indexOf('class="stage"'))
+    expect(card).toContain('prefers-reduced-motion:reduce){.skel::before{animation:none}')
     const small = openingPageHtml(openingWords('en', 'open'), 'a.xlsx', 'sheets', 'minimal')
     expect(small).not.toContain('class="skel"')
   })
