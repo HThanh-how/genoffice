@@ -6240,7 +6240,7 @@ function registerHomeIpc(): void {
     if (typeof path !== 'string' || !path || path.length > 4096) return false
     const opened =
       flight === true && tabManager
-        ? tabManager.runWithFlight(OPEN_FLIGHT_MS, () => openDocumentPath(path))
+        ? tabManager.runWithFlight(OPEN_FLIGHT_MS + 50, () => openDocumentPath(path))
         : openDocumentPath(path)
     fileIndexer?.refresh()
     return opened
