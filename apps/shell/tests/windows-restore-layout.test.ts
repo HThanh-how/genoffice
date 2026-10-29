@@ -115,7 +115,9 @@ vi.mock('electron', () => ({
     }
     setBounds = () => {}
     setVisible = () => {}
+    setBackgroundColor = () => {}
   },
+  nativeTheme: { shouldUseDarkColors: false },
 }))
 
 let nextWebContentsId = 1
@@ -137,6 +139,7 @@ function makeFakeView() {
     },
     setVisible: vi.fn(),
     setBounds: vi.fn(),
+    setBackgroundColor: vi.fn(),
   }
 }
 

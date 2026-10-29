@@ -117,7 +117,9 @@ vi.mock('electron', () => ({
     }
     setBounds = () => {}
     setVisible = () => {}
+    setBackgroundColor = () => {}
   },
+  nativeTheme: { shouldUseDarkColors: false },
 }))
 
 interface FakeView {
@@ -132,6 +134,7 @@ interface FakeView {
     listeners: Map<string, Array<(...args: unknown[]) => void>>
   }
   setVisible: ReturnType<typeof vi.fn>
+  setBackgroundColor: ReturnType<typeof vi.fn>
   setBounds: ReturnType<typeof vi.fn>
 }
 
@@ -156,6 +159,7 @@ function makeView(): FakeView {
     },
     setVisible: vi.fn(),
     setBounds: vi.fn(),
+    setBackgroundColor: vi.fn(),
   }
 }
 

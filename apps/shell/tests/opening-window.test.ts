@@ -175,14 +175,14 @@ describe('the outline of the editor behind the card', () => {
     expect(skeletonHtml('docs')).toContain('sk-page')
     expect(skeletonHtml('sheets')).toContain('sk-grid')
     expect(skeletonHtml('slides')).toContain('sk-slide')
-    expect(skeletonHtml('pdf')).toContain('sk-thumb sk-tall')
+    expect(skeletonHtml('pdf')).toContain('sk-thumbs')
     expect(skeletonHtml('markdown')).toContain('sk-split')
     expect(
       new Set([skeletonHtml('docs'), skeletonHtml('sheets'), skeletonHtml('slides')]).size,
     ).toBe(3)
   })
 
-  it('is behind the card over a tab, with a shimmer that stops for reduced motion, and not in the small window', () => {
+  it('is behind the card over a tab, with glyphs that decode in place and stop for reduced motion, and not in the small window', () => {
     const card = openingPageHtml(
       openingWords('en', 'open'),
       'a.xlsx',
@@ -192,8 +192,8 @@ describe('the outline of the editor behind the card', () => {
       'card',
     )
     expect(card).toContain('class="skel"')
-    expect(card).toContain('@keyframes shim')
-    expect(card).toContain('prefers-reduced-motion:reduce){.sk{animation:none}')
+    expect(card).toContain('@keyframes decode')
+    expect(card).toContain('prefers-reduced-motion:reduce){.sk::before{animation:none}')
     expect(card.indexOf('class="skel"')).toBeLessThan(card.indexOf('class="stage"'))
     const small = openingPageHtml(openingWords('en', 'open'), 'a.xlsx', 'sheets', 'minimal')
     expect(small).not.toContain('class="skel"')

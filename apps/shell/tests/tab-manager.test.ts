@@ -40,6 +40,7 @@ interface FakeView {
   webContents: FakeWebContents
   setVisible: ReturnType<typeof vi.fn>
   setBounds: ReturnType<typeof vi.fn>
+  setBackgroundColor: ReturnType<typeof vi.fn>
 }
 
 let nextWebContentsId = 1
@@ -61,6 +62,7 @@ function makeFakeView(): FakeView {
     },
     setVisible: vi.fn(),
     setBounds: vi.fn(),
+    setBackgroundColor: vi.fn(),
   }
 }
 
@@ -85,7 +87,9 @@ vi.mock('electron', () => ({
     }
     setBounds = () => {}
     setVisible = () => {}
+    setBackgroundColor = () => {}
   },
+  nativeTheme: { shouldUseDarkColors: false },
 }))
 
 const createDocsView = vi.fn(() => makeFakeView())

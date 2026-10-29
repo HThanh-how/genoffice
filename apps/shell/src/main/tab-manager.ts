@@ -1,6 +1,6 @@
 import { basename, join, resolve } from 'node:path'
 import { realpathSync } from 'node:fs'
-import { app, BrowserWindow, shell, WebContentsView } from 'electron'
+import { app, BrowserWindow, nativeTheme, shell, WebContentsView } from 'electron'
 import type { Rectangle, WebContents } from 'electron'
 
 import {
@@ -48,6 +48,7 @@ import {
 import { rendererUrl, safeExternalUrl } from '@genoffice/electron-utils'
 import type { DocumentTabKind, OpenDocumentTab, TabKind, TabSummary } from '../shared/tabs-api'
 import { isSettledRect, tabStripHeight } from '../shared/tab-drag-geometry'
+import { shellWindowBackground } from './window-background'
 import { OpeningOverlays, type OverlayDeps } from './fork/opening-overlay'
 import { attachRendererDiagnostics, type DiagnosticsWrite } from './fork/renderer-diagnostics'
 import type { SplashApp } from './fork/opening-window'
@@ -653,6 +654,8 @@ export class TabManager {
     const previous = this.tabs.find((t) => t.id === this.activeId)
     if (previous) previous.lastActiveAt = now
     target.lastActiveAt = now
+    // a view that has not painted yet shows the theme surface, not the default white
+    target.view?.setBackgroundColor(shellWindowBackground(nativeTheme.shouldUseDarkColors))
     for (const t of this.tabs) t.view?.setVisible(t.id === id)
     const bounds = this.contentBounds()
     // a bring-forward while the window is minimized or mid-restore must not
