@@ -26,8 +26,8 @@ export interface OverlayDeps {
 }
 
 /** Never flash for a document that opens in a blink, never hold a tab for ever. */
-export const OVERLAY_MIN_SHOW_MS = 900
-export const OVERLAY_FADE_MS = 350
+export const OVERLAY_MIN_SHOW_MS = 500
+export const OVERLAY_FADE_MS = 250
 export const OVERLAY_MAX_WAIT_MS = 15_000
 
 interface Entry {

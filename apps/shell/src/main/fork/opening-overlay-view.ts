@@ -1,7 +1,6 @@
 import { nativeTheme, WebContentsView } from 'electron'
 import type { BrowserWindow } from 'electron'
 import type { OverlayDeps, OverlayHandle } from './opening-overlay'
-import { shellWindowBackground } from '../window-background'
 import { buildOpeningPage, openingEnabled } from './opening-window'
 
 /** The real thing: a view over the tab content that plays the app's opening scene. */
@@ -25,8 +24,8 @@ export function electronOverlayDeps(
           devTools: false,
         },
       })
-      // until the scene paints, show the theme surface rather than the default white
-      view.setBackgroundColor(shellWindowBackground(nativeTheme.shouldUseDarkColors))
+      // until the scene paints, show the scene's own backdrop (not white, not a different grey)
+      view.setBackgroundColor(nativeTheme.shouldUseDarkColors ? '#15171c' : '#eef0f4')
       view.webContents.on('will-navigate', (event) => event.preventDefault())
       view.webContents.setWindowOpenHandler(() => ({ action: 'deny' }))
       const window = parent()

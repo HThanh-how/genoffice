@@ -121,13 +121,30 @@ export function lighterRgbOf(hex: string): string {
  * ones, revealing themselves above this); the card leaves them uncovered.
  */
 export function backdropHtml(_appName: SplashApp): string {
-  return '<div class="skel" aria-hidden="true"></div>'
+  return `<div class="skel" aria-hidden="true"><canvas id="dz"></canvas></div>${DITHER_SCRIPT}`
 }
+
+/**
+ * While the editor loads, the page behind the card is never blank: a slow field of ascii-reveal's
+ * dither glyphs (░▒▓█) drifts across it in the app's colour and fades in at once. Only runs in the
+ * overlay's own page (a script set through innerHTML, as in the studio preview, does not run).
+ */
+const DITHER_SCRIPT = `<script>(function(){var c=document.getElementById('dz');if(!c)return;var x=c.getContext('2d');
+var G='░▒▓█',S=18,rgb=(getComputedStyle(document.documentElement).getPropertyValue('--rgb')||'43,124,211').trim();
+var dark=matchMedia('(prefers-color-scheme:dark)').matches,w=0,h=0,t0=performance.now(),last=0;
+if(matchMedia('(prefers-reduced-motion:reduce)').matches)return;
+function fit(){var d=Math.min(2,devicePixelRatio||1);w=innerWidth;h=innerHeight;c.width=w*d;c.height=h*d;c.style.width=w+'px';c.style.height=h+'px';x.setTransform(d,0,0,d,0,0)}
+fit();addEventListener('resize',fit);
+function f(n){if(n-last>66){last=n;var t=n-t0,k=Math.min(1,t/250);x.clearRect(0,0,w,h);x.font=S+'px ui-monospace,Consolas,monospace';x.textBaseline='top';
+for(var j=0;j*S<h;j++)for(var i=0;i*S<w;i++){var v=.5+.5*Math.sin(i*.22+t*.0018+Math.sin(j*.17+t*.0012)*2)*Math.cos(j*.11-t*.0007);
+if(v<.5)continue;var q=Math.min(3,Math.floor((v-.5)*8));x.fillStyle='rgba('+rgb+','+((dark?.22:.2)*k*(.45+q*.18))+')';x.fillText(G.charAt(q),i*S,j*S)}}
+requestAnimationFrame(f)}requestAnimationFrame(f)})()</script>`
 
 /** `root` is `:root` in a page of its own and `:host` when the page is drawn inside a shadow root. */
 const backdropCss = (root: string): string => `${root}{--skbg:#f7f8fa;--skhaze:rgba(var(--rgb),.14)}
 @media (prefers-color-scheme:dark){${root}{--skbg:#1a1d22;--skhaze:rgba(var(--rgb),.2)}}
 .skel{position:absolute;inset:0;background:var(--skbg);overflow:hidden}
+.skel #dz{position:absolute;left:0;top:0}
 .skel::before{content:"";position:absolute;left:-10%;right:-10%;top:-60px;height:220px;background:radial-gradient(closest-side,var(--skhaze),transparent);animation:haze 4.6s ease-in-out infinite}
 @keyframes haze{50%{opacity:.55;transform:scale(1.08)}}
 @media (prefers-reduced-motion:reduce){.skel::before{animation:none}}`

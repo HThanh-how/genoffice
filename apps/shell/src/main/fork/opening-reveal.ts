@@ -13,18 +13,22 @@ import type { WebContents } from 'electron'
  * (https://github.com/quanhoangindex/ascii-reveal, MIT, © 2026 Quan Hoang).
  */
 
-const HIDDEN = '.ribbon-tab,.ribbon-body button,.ribbon-body select,.ribbon-body input'
+// Sheets names its parts differently (`.ribbon-tabs` + `.ribbon[data-ribbon-body]` inside
+// `.excel-header`), so both spellings are listed
+const HIDDEN =
+  '.ribbon-tab,.ribbon-tabs button,.ribbon-body button,.ribbon-body select,.ribbon-body input,' +
+  '.ribbon[data-ribbon-body] button,.ribbon[data-ribbon-body] select,.ribbon[data-ribbon-body] input'
 
 export const OPENING_REVEAL_CSS = `
 html.gx-pre :is(${HIDDEN}){opacity:0!important}
-html.gx-go :is(${HIDDEN}){animation:gx-in 640ms cubic-bezier(.16,.84,.3,1) both;animation-delay:calc(var(--gx-base,250ms) + var(--gx-i,0) * var(--gx-step,12ms));-webkit-text-fill-color:transparent}
+html.gx-go :is(${HIDDEN}){animation:gx-in 300ms cubic-bezier(.2,.8,.3,1) both;animation-delay:calc(var(--gx-base,0ms) + var(--gx-i,0) * var(--gx-step,3ms));-webkit-text-fill-color:transparent}
 #gx-text{position:fixed;pointer-events:none;z-index:2147483000}
-@keyframes gx-in{from{opacity:0;filter:blur(6px);transform:translateY(5px) scale(.96)}60%{filter:blur(1px)}to{filter:blur(0);transform:none}}
+@keyframes gx-in{from{opacity:0;transform:translateY(4px)}to{transform:none}}
 #gx-sheen{position:fixed;pointer-events:none;overflow:hidden;z-index:2147483000}
 #gx-sheen>i{position:absolute;top:-10%;bottom:-10%;left:0;width:38%;opacity:0;transform:translateX(-120%) skewX(-16deg);
-background:linear-gradient(90deg,transparent,color-mix(in srgb,var(--gx-c,#8aa4ff) 38%,transparent) 45%,rgba(255,255,255,.34) 50%,color-mix(in srgb,var(--gx-c,#8aa4ff) 38%,transparent) 55%,transparent);
-animation:gx-sheen 1250ms cubic-bezier(.4,.1,.3,1) var(--gx-base,250ms) both}
-@keyframes gx-sheen{0%{opacity:0;transform:translateX(-120%) skewX(-16deg)}15%{opacity:.5}85%{opacity:.5}100%{opacity:0;transform:translateX(330%) skewX(-16deg)}}
+background:linear-gradient(90deg,transparent,color-mix(in srgb,var(--gx-c,#8aa4ff) 55%,transparent) 42%,rgba(255,255,255,.7) 50%,color-mix(in srgb,var(--gx-c,#8aa4ff) 55%,transparent) 58%,transparent);
+animation:gx-sheen 720ms cubic-bezier(.35,.1,.25,1) var(--gx-base,0ms) both}
+@keyframes gx-sheen{0%{opacity:0;transform:translateX(-120%) skewX(-16deg)}12%{opacity:1}80%{opacity:1}100%{opacity:0;transform:translateX(330%) skewX(-16deg)}}
 `
 
 /**
@@ -70,8 +74,9 @@ export const OPENING_REVEAL_SCRIPT = `(function () {
     items.sort(function (a, b) { return a.box.left - b.box.left || a.box.top - b.box.top })
     var ribbonBox = ribbon.getBoundingClientRect()
     var bottom = Math.ceil(ribbonBox.bottom)
-    var step = Math.max(4, Math.min(14, 520 / Math.max(1, items.length)))
-    var base = 250
+    // the whole reveal lasts about half a second, so it reads as a flourish, not a wait
+    var step = Math.max(1, Math.min(5, 160 / Math.max(1, items.length)))
+    var base = 0
     var accent = getComputedStyle(de).getPropertyValue('--accent').trim()
     de.style.setProperty('--gx-step', step + 'ms')
     de.style.setProperty('--gx-base', base + 'ms')
@@ -99,7 +104,7 @@ export const OPENING_REVEAL_SCRIPT = `(function () {
         label.desc = m.fontBoundingBoxDescent || m.actualBoundingBoxDescent
         var text = node.nodeValue
         var n = text.length
-        var spread = Math.min(420, 80 + n * 10)
+        var spread = Math.min(130, 40 + n * 6)
         var seed = i * 31 + chars.length
         for (var c = 0; c < n; c++) {
           var ch = text.charAt(c)
@@ -108,8 +113,8 @@ export const OPENING_REVEAL_SCRIPT = `(function () {
           range.setEnd(node, c + 1)
           var r = range.getBoundingClientRect()
           if (!r.width) continue
-          var s0 = base + i * step + 40 + (c / n) * spread * 0.72 + hash(c, seed, 1) * spread * 0.28
-          var s1 = s0 + 170 + hash(c, seed, 2) * 130
+          var s0 = base + i * step + 20 + (c / n) * spread * 0.72 + hash(c, seed, 1) * spread * 0.28
+          var s1 = s0 + 110 + hash(c, seed, 2) * 70
           if (s1 > lastEnd) lastEnd = s1
           chars.push({ ch: ch, x: r.left - ribbonBox.left, y: r.top - ribbonBox.top, w: r.width, h: r.height, s0: s0, s1: s1, ph: hash(c, seed, 3) * 1000, k: chars.length, label: label })
         }
@@ -127,7 +132,7 @@ export const OPENING_REVEAL_SCRIPT = `(function () {
 
     var t0 = performance.now()
     var raf = 0
-    var FLASH_MS = 420
+    var FLASH_MS = 220
     function frame() {
       var t = performance.now() - t0
       ctx.setTransform(dpr, 0, 0, dpr, 0, 0)
@@ -176,14 +181,14 @@ export const OPENING_REVEAL_SCRIPT = `(function () {
       de.style.removeProperty('--gx-base')
       de.style.removeProperty('--gx-c')
       items.forEach(function (it) { it.el.style.removeProperty('--gx-i') })
-    }, Math.max(base + items.length * step + 900, lastEnd + FLASH_MS + 200))
+    }, Math.max(base + items.length * step + 800, lastEnd + FLASH_MS + 120))
   }
   var tries = 0
   function look() {
     // a tab still waiting behind Home starts when it comes to the front
     if (document.hidden) { document.addEventListener('visibilitychange', look, { once: true }); return }
-    var ribbon = document.querySelector('.ribbon')
-    if (ribbon && ribbon.querySelector('.ribbon-body button')) {
+    var ribbon = document.querySelector('.excel-header') || document.querySelector('.ribbon')
+    if (ribbon && ribbon.querySelector('.ribbon-body button, .ribbon[data-ribbon-body] button')) {
       requestAnimationFrame(function () { requestAnimationFrame(function () { go(ribbon) }) })
       return
     }
