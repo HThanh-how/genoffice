@@ -1,13 +1,15 @@
 import { mkdtempSync, rmSync, existsSync, readdirSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { afterEach, beforeEach, describe, expect, it } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import {
   ensureDocumentMemoryStorageReady,
   type StorageBootstrapProgress,
 } from '../src/main/document-memory/storage-bootstrap'
 import { runStorageBootstrapOffThread } from '../src/main/document-memory/runtime/storage-bootstrap-runner'
 import { buildLegacyV2Database } from './helpers/legacy-v2-fixture'
+import { IndexIssueReader } from '../src/main/document-memory/issue-reader'
+import { getDocumentIndexSnapshot, snapshotCache } from '../src/main/fork/document-index-snapshot-service'
 
 /**
  * The V2 -> V3 migration (and the health check of a big V3 database) is synchronous SQLite work. Run on the Electron
@@ -47,6 +49,42 @@ async function maxLoopGapDuring<T>(
 }
 
 describe('document-memory storage bootstrap does not block the calling thread', () => {
+  it('does not open the snapshot reader while migration is preparing cutover', async () => {
+    const dbPath = join(dir, 'document-memory.db')
+    buildLegacyV2Database(dbPath, 2, 2)
+    const issueReader = new IndexIssueReader(dbPath)
+    const getIssueReader = vi.fn(() => issueReader)
+    let snapshots = 0
+    let sawCutover = false
+    const ctx = {
+      getDocumentMemory: () => null,
+      getFolderScan: () => null,
+      getIssueReader,
+      getFolderCounts: () => ({ get: () => { throw new Error('unexpected folder counts') } }),
+      dbPath: () => dbPath,
+    }
+    try {
+      const result = await ensureDocumentMemoryStorageReady(dir, {
+        settingsDir: dir,
+        onProgress: (progress) => {
+          if (progress.phase === 'migrating') {
+            getDocumentIndexSnapshot(ctx, true)
+            snapshots++
+            if (progress.percent === 95) sawCutover = true
+          }
+        },
+      })
+      expect(snapshots).toBeGreaterThan(0)
+      expect(sawCutover).toBe(true)
+      expect(getIssueReader).not.toHaveBeenCalled()
+      expect(result.ready).toBe(true)
+      expect(result.migrated).toBe(true)
+    } finally {
+      issueReader.close()
+      snapshotCache.clear()
+    }
+  }, 120_000)
+
   it('control: the in-process bootstrap freezes the loop for most of the migration', async () => {
     buildLegacyV2Database(join(dir, 'document-memory.db'), 120, 60)
     const { value, maxGapMs, durationMs } = await maxLoopGapDuring(() =>
