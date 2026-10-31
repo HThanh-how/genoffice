@@ -18,7 +18,8 @@ import { ShowMediaLayer } from './ShowMediaLayer'
 import { useI18n } from '../i18n/locale'
 import { MorphStage } from './MorphStage'
 import { InkLayer, type InkStroke } from './ShowInk'
-import { mergeSlideUpdate } from '../../shared/slide-update'
+import { mergeBroadcastUpdate } from '../../shared/slide-update'
+import { setImageSource } from '../image-loader'
 
 const ANIMATED = ['fade', 'push', 'wipe', 'split', 'circle'] as const
 
@@ -65,7 +66,7 @@ function useSlideImages(slides: RenderSlide[] | null): Map<string, HTMLImageElem
         done()
       }
       img.onerror = done
-      img.src = u
+      setImageSource(img, u)
     })
     return () => {
       cancelled = true
@@ -117,7 +118,16 @@ export function AudienceView() {
         if ((order?.length ?? all.length) === 0) return
         cursorRef.current = ''
         setSlides((current) =>
-          order ? mergeSlideUpdate(current ?? [], { slides: all, order }) : all,
+          order
+            ? mergeBroadcastUpdate(current, { slides: all, order }, () => {
+                void window.slidesApi
+                  .getRenderSlides()
+                  .then((slides) => {
+                    if (slides) setSlides(slides)
+                  })
+                  .catch((error) => console.error('Failed to refresh audience deck:', error))
+              })
+            : all,
         )
       }),
     [],

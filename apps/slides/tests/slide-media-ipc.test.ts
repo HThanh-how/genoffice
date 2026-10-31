@@ -64,6 +64,8 @@ import {
   makeMediaResolver,
   rebuildSlide,
   readSlideMedia,
+  pruneMediaSources,
+  takeSnapshot,
   sessions,
   type Session,
 } from '../src/main/session-state'
@@ -196,6 +198,43 @@ describe('slide media IPC payload', () => {
           Buffer.from(bytes),
         ),
       ).toBe(0)
+    },
+  )
+
+  it.each(['slides:paste-slide', 'slides:duplicate-slides'] as const)(
+    'preserves untouched package parts after %s and reopening',
+    async (channel) => {
+      const bytes = addImage(1024)
+      const fixture = await savePptx(session.opened)
+      session.opened = await openPptx(fixture)
+      const JSZip = (await import('jszip')).default
+      const original = await JSZip.loadAsync(fixture)
+      call('slides:copy-slides', { slideIndexes: [0] })
+      const result = call(channel, {
+        afterIndex: 0,
+        slideIndexes: [0],
+        fitWidthPx: FIT,
+      }) as PasteSlideResult
+      const saved = await savePptx(session.opened)
+      const reopened = await openPptx(saved)
+      const output = await JSZip.loadAsync(saved)
+      // Insertion changes the presentation manifest and its relationships.
+      const changed = new Set([
+        '[Content_Types].xml',
+        'ppt/presentation.xml',
+        'ppt/_rels/presentation.xml.rels',
+      ])
+      for (const [path, entry] of Object.entries(original.files)) {
+        if (entry.dir || changed.has(path)) continue
+        expect(output.file(path), path).not.toBeNull()
+        expect(await output.file(path)!.async('uint8array'), path).toEqual(
+          await entry.async('uint8array'),
+        )
+      }
+      const picture = reopened.deck.slides[result.index]!.elements.find(
+        (element) => element.type === 'picture',
+      ) as PictureElement
+      expect(reopened.archive.readBytes(picture.mediaRef!)).toEqual(bytes)
     },
   )
 
@@ -424,6 +463,28 @@ describe('slide media IPC payload', () => {
     // Restoring the snapshot also removes the picture pasted on the anchor.
     expect(current[0]!.nodes.filter((n) => n.type === 'picture')).toHaveLength(1)
     expect(session.undoStack).toHaveLength(1)
+  })
+
+  it('prunes media absent from the archive and history while retaining rollback bytes', () => {
+    addImage(1024)
+    const slide = session.opened.deck.slides[0]!
+    const pic = slide.elements.find((el) => el.type === 'picture') as PictureElement
+    const original = makeMediaResolver(session.opened, slide.path)(pic.mediaRef!)!
+    pruneMediaSources(session)
+    expect(readSlideMedia(original)).not.toBeNull()
+    const oldPath = pic.mediaRef!
+    session.undoStack.push(takeSnapshot(session))
+    const replacement = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 1])
+    expect(replacePictureBytes(session.opened, slide, pic.id, replacement, 'png')).toBe(true)
+    const updated = makeMediaResolver(session.opened, slide.path)(pic.mediaRef!)!
+    session.opened.archive.entries.delete(oldPath)
+    pruneMediaSources(session)
+    expect(readSlideMedia(original)).not.toBeNull()
+    expect(readSlideMedia(updated)).not.toBeNull()
+    session.undoStack = []
+    pruneMediaSources(session)
+    expect(readSlideMedia(original)).toBeNull()
+    expect(readSlideMedia(updated)).not.toBeNull()
   })
 
   it('gives a replaced image a new URL and restores the original URL on undo', () => {

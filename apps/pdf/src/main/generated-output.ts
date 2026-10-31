@@ -11,7 +11,11 @@ export function uniqueGeneratedPdfPath(
   // eslint-disable-next-line no-control-regex
   const invalidFileNameCharacters = /[/\\:*?"<>|\u0000-\u001f]/g
   let fileName = posix
-    .basename(String(suggestedName || 'merged.pdf').replace(/\\/g, '/'))
+    .basename(
+      String(suggestedName || 'merged.pdf')
+        .replace(/\\/g, '/')
+        .replace(/:/g, '_'),
+    )
     .replace(invalidFileNameCharacters, '_')
     .trim()
   if (!fileName || fileName === '.' || fileName === '..') fileName = 'merged.pdf'

@@ -104,6 +104,11 @@ export const pl = {
     'Śledzenie zmian włączone: zmiany treści wprowadzane przez AI są oznaczane jako poprawki (wstawienia podkreślone, usunięcia przekreślone); zaakceptuj lub odrzuć je w sekcji Recenzja',
   aiTrackOffTitle:
     'Śledzenie zmian wyłączone: zmiany AI są stosowane od razu (nadal możesz przywrócić stan przez migawki wersji)',
+  aiRevisionBarTitle: 'Zmiany',
+  aiRevisionCount: 'Oczekujące zmiany: {count}',
+  aiRevisionRejectAll: 'Odrzuć wszystkie',
+  aiRevisionAcceptAll: 'Zaakceptuj wszystkie',
+  aiRevisionPara: 'Akapit {n}',
   aiTurnLimit:
     '(Osiągnięto limit rund wywołań narzędzi dla tego żądania; powyższa odpowiedź opiera się na dotychczas ukończonych krokach i może być niepełna.)',
   aiStopped: '(Zatrzymano)',
@@ -203,6 +208,8 @@ export const pl = {
   aiMindMapAskPrompt: 'Opowiedz o „{label}” w tym dokumencie',
   aiMindMapJump: 'Przejdź do cytowanego fragmentu',
   aiMindMapExport: 'Eksportuj PNG',
+  aiMindMapExportSvg: 'Eksportuj SVG',
+  aiMindMapInsert: 'Wstaw do dokumentu',
   aiMindMapReset: 'Resetuj widok',
   aiMindMapExpand: 'Rozwiń gałąź',
   aiMindMapCollapse: 'Zwiń gałąź',
