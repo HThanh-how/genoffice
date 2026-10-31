@@ -216,7 +216,10 @@ export function getDocumentIndexSnapshot(
 
   let issues: IndexIssueSummary = { total: 0, groups: [] }
   try {
-    issues = aggregates ? aggregates.issues('*') : ctx.getIssueReader().summary('*')
+    // Bootstrap may be migrating or recovering the database on another thread. Do not
+    // open the persistent fallback reader until the verified manager has been attached.
+    if (documentMemory)
+      issues = aggregates ? aggregates.issues('*') : ctx.getIssueReader().summary('*')
   } catch {
     // ignore
   }
