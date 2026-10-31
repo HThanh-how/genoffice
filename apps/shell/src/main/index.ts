@@ -113,6 +113,7 @@ import {
   type LegacyConvertOutcome,
 } from './legacy-converter'
 import { isIndexingPaused } from './fork/indexing-policy-bus'
+import { registerAiNamingIpc } from './ai-naming-service'
 import { tabStripOverlay } from './title-bar-overlay'
 import { shellWindowBackground } from './window-background'
 import {
@@ -8738,6 +8739,9 @@ const openHomeSettings = (section: 'aiModel' | 'skills'): void => {
 }
 ipcMain.handle('ai:open-model-settings', () => openHomeSettings('aiModel'))
 ipcMain.handle('ai:open-skills-settings', () => openHomeSettings('skills'))
+// Model file naming. Registered here beside the other AI wiring so every
+// window type can reach it.
+registerAiNamingIpc(() => currentLang())
 registerProjectIpc()
 registerDocsIpc()
 registerHomeIpc()

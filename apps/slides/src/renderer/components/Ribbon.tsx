@@ -1119,9 +1119,11 @@ export function Ribbon({
   onUndo,
   onRedo,
   onSaveAs,
+  onNameWithAi,
   onExportPdf,
   onPrint,
   onExportImages,
+  onExportImagesJpg,
   onFormat,
   zoom,
   onZoom,
@@ -1800,6 +1802,15 @@ export function Ribbon({
                   disabled={!hasDoc}
                   onClick={() => {
                     setFileOpen(false)
+                    onNameWithAi()
+                  }}
+                >
+                  {t('aiNameFile')}
+                </button>
+                <button
+                  disabled={!hasDoc}
+                  onClick={() => {
+                    setFileOpen(false)
                     onExportPdf()
                   }}
                 >
@@ -1822,6 +1833,15 @@ export function Ribbon({
                   }}
                 >
                   {t('ribbonFileExportImages')}
+                </button>
+                <button
+                  disabled={!hasDoc}
+                  onClick={() => {
+                    setFileOpen(false)
+                    onExportImagesJpg()
+                  }}
+                >
+                  {t('ribbonFileExportImagesJpg')}
                 </button>
               </div>
             )}

@@ -45,7 +45,10 @@ describe('localMediaRoots', () => {
 
 describe('documentMediaRoots', () => {
   it("is the open document's directory plus the attachment directory", () => {
-    expect(documentMediaRoots(join('/work', 'deck.pptx'), '/attach')).toEqual(['/work', '/attach'])
+    expect(documentMediaRoots(join('/work', 'deck.pptx'), '/attach')).toEqual([
+      join('/work'),
+      '/attach',
+    ])
   })
 
   it('keeps only the attachment directory for an untitled document', () => {

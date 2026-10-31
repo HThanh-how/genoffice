@@ -9,7 +9,7 @@ import { run, tempDir } from './helpers'
 //  - `agy mcp add` writes ~/.gemini/config/mcp_config.json as { mcpServers: { <name>: { args, command,
 //    disabled, env } } } and `agy mcp list` reads it back;
 //  - `agy -p /skills` lists the skills in ~/.gemini/config/skills;
-//  - the Gemini CLI keeps ~/.gemini/settings.json and ~/.gemini/skills, which this CLI still targets.
+//  - the Gemini CLI keeps ~/.gemini/settings.json for MCP and reads the shared ~/.agents/skills.
 
 const LAUNCHER = resolve(__dirname, '..', 'bin', 'genoffice')
 const LAUNCH = { command: LAUNCHER, args: ['mcp'] }
@@ -28,10 +28,10 @@ describe('agy detection and paths', () => {
   it('is detected by ~/.gemini/config, not by ~/.gemini alone (that is the Gemini CLI)', () => {
     const geminiOnly = tempDir()
     mkdirSync(join(geminiOnly, '.gemini'))
-    expect(detectAgents({}, geminiOnly).map((a) => a.id)).toEqual(['gemini'])
+    expect(detectAgents({}, geminiOnly).map((a) => a.id)).toEqual(['agents'])
     const both = tempDir()
     mkdirSync(join(both, '.gemini', 'config'), { recursive: true })
-    expect(detectAgents({}, both).map((a) => a.id)).toEqual(['gemini', 'agy'])
+    expect(detectAgents({}, both).map((a) => a.id)).toEqual(['agy', 'agents'])
   })
 
   it('keeps skills and MCP servers in ~/.gemini/config while the gemini target stays put', () => {
@@ -40,7 +40,8 @@ describe('agy detection and paths', () => {
       label: 'Antigravity CLI',
       skillsDir: join(h, '.gemini', 'config', 'skills'),
     })
-    expect(agentTarget('gemini', {}, h)!.skillsDir).toBe(join(h, '.gemini', 'skills'))
+    expect(agentTarget('gemini', {}, h)).toBeNull()
+    expect(agentTarget('agents', {}, h)!.skillsDir).toBe(join(h, '.agents', 'skills'))
     expect(mcpConfigFile('agy', { env: {}, home: h })).toBe(
       join(h, '.gemini', 'config', 'mcp_config.json'),
     )
@@ -173,8 +174,8 @@ describe('genoffice skill with agy', () => {
       status: 'missing',
       skills_dir: join(m.home, '.gemini', 'config', 'skills'),
     })
-    expect(agents.find((a) => a.agent === 'gemini')).toMatchObject({
-      skills_dir: join(m.home, '.gemini', 'skills'),
+    expect(agents.find((a) => a.agent === 'agents')).toMatchObject({
+      skills_dir: join(m.home, '.agents', 'skills'),
     })
     const r = await run(['skill', 'install', 'agy', '--json'], { env: m.env })
     expect(r.code).toBe(0)

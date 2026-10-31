@@ -5,7 +5,7 @@
  * the Serply key reuses SERPLY_API_KEY, the Tavily key reuses TAVILY_API_KEY, Parallel uses
  * PARALLEL_API_KEY, Exa uses EXA_API_KEY and Firecrawl uses FIRECRAWL_API_KEY.
  * Keenable uses KEENABLE_API_KEY and can run keyless when explicitly selected.
- * For gsk auth see ./gsk.ts (`gsk login` or GSK_API_KEY).
+ * For Genspark auth see ./gsk.ts (GenOffice sign-in or explicit GSK_API_KEY).
  */
 
 import {

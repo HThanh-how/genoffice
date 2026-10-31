@@ -4,6 +4,7 @@ import { withOutputCapFallback } from './output-cap'
 import { streamAnthropic } from './protocols/anthropic'
 import { streamGemini } from './protocols/gemini'
 import { streamOpenAiCompatible } from './protocols/openai-compatible'
+import { streamOpenAiResponses } from './protocols/openai-responses'
 import { streamCodexAppServer } from './codex-app-server'
 import { isCliProvider, streamAgy } from './agy-cli'
 import type { StreamCallbacks } from './protocols/shared'
@@ -14,6 +15,7 @@ import type { AiProviderConfig, AiProviderId } from './types'
 export { streamAnthropic } from './protocols/anthropic'
 export { streamGemini } from './protocols/gemini'
 export { streamOpenAiCompatible } from './protocols/openai-compatible'
+export { streamOpenAiResponses } from './protocols/openai-responses'
 export { AiCreditsError, sseLines } from './protocols/shared'
 export type { StreamCallbacks } from './protocols/shared'
 
@@ -67,6 +69,12 @@ async function streamForProviderInner(
           useMaxCompletionTokens: endpoint.useMaxCompletionTokens,
           bodyExtras: endpoint.bodyExtras,
           echoReasoning: endpoint.echoReasoning,
+          headers: endpoint.headers,
+          idleTimeoutMs: endpoint.idleTimeoutMs,
+        })
+      case 'openai-responses':
+        return streamOpenAiResponses(baseUrl, config, system, messages, tools, tokens, cb, {
+          bodyExtras: endpoint.bodyExtras,
           headers: endpoint.headers,
           idleTimeoutMs: endpoint.idleTimeoutMs,
         })

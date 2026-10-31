@@ -6,6 +6,12 @@
  */
 import { metafileToDataUrl } from '@genoffice/docx-engine/metafile'
 
+/** Slide media is cross-origin: without CORS a canvas that draws it is tainted (cutout, export). */
+export function setImageSource(img: HTMLImageElement, url: string): void {
+  if (url.startsWith('genoffice-slide-media:')) img.crossOrigin = 'anonymous'
+  img.src = url
+}
+
 export type ApplyImages = (entries: ReadonlyArray<readonly [string, HTMLImageElement]>) => void
 
 /** EMF/WMF data URLs: browsers cannot decode metafiles — rasterize to PNG first (keyed by the original url). */
@@ -117,7 +123,7 @@ export function createImageLoader(apply: ApplyImages, batchSize = 16, delayMs = 
             })
             .catch(() => done(false))
         } else {
-          img.src = u
+          setImageSource(img, u)
         }
       }
     },
