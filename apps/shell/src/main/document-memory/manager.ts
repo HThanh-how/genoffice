@@ -155,7 +155,7 @@ export class DocumentMemoryManager {
     const pages = Object.fromEntries(this.readProgress); const blocked = this.blockedReason()
     return {
       extracting: active ? [{ path: active, since: this.activeSince.get(active) ?? Date.now() }] : [],
-      embedding: this.embeddingCoord.getEmbeddingProgress(), positions, pages, queued: this.queue.length + this.pendingCount + this.embeddingCoord.getQueueLength() + this.gate.parked + this.heldRoots.size, paused: isIndexingPaused(),
+      embedding: this.embeddingCoord.getEmbeddingProgress(), positions, pages, queued: this.queue.length + this.pendingCount + this.embeddingCoord.getQueueLength() + this.gate.parked, paused: isIndexingPaused(),
       ...(blocked ? { blocked } : {}), foldersPaused: this.foldersHeld(),
     }
   }
@@ -223,11 +223,11 @@ export class DocumentMemoryManager {
   get aggregates(): StatusAggregates { return (this.statusAgg ??= new StatusAggregates(createThreadFetcher(this.dbPath), { activeSpace: () => this.embeddingCoord.currentProfile.embeddingId })) }
   status(activeSpaceId = this.embeddingCoord.currentProfile.embeddingId, stats: DocumentMemoryStats = this.store.stats(activeSpaceId)): DocumentMemoryStatus {
     const files = this.store.recentDocuments(20).map(({ id, path, name, status }) => ({ id, path, name, status }))
-    return { enabled: this.enabled, modelState: this.modelState, documents: stats.docs, chunks: stats.chunks, vectors: Math.min(stats.vectors, stats.chunks), pending: this.pendingCount + this.queue.length + this.embeddingCoord.getQueueLength() + this.gate.parked + this.heldRoots.size + this.pendingIntake.size, errors: stats.errors, dbPath: this.dbPath, ...(this.lastError ? { lastError: this.lastError } : {}), files }
+    return { enabled: this.enabled, modelState: this.modelState, documents: stats.docs, chunks: stats.chunks, vectors: Math.min(stats.vectors, stats.chunks), pending: this.pendingCount + this.queue.length + this.embeddingCoord.getQueueLength() + this.gate.parked + this.pendingIntake.size, waitingForFolder: this.heldRoots.size, errors: stats.errors, dbPath: this.dbPath, ...(this.lastError ? { lastError: this.lastError } : {}), files }
   }
   indexingActivityStatus(activeSpaceId = this.embeddingCoord.currentProfile.embeddingId, stats: DocumentMemoryStats = this.store.stats(activeSpaceId)) {
     const act = this.nowStatus(); const migration = this.embeddingMigration.progress()
-    return { enabled: this.enabled, modelState: this.modelState, ...(this.modelProgress === undefined ? {} : { modelProgress: this.modelProgress }), pending: this.pendingCount + this.queue.length + this.embeddingCoord.getQueueLength() + this.gate.parked + this.heldRoots.size, errors: stats.errors, mode: 'balanced', activity: act, activeEmbeddingSpace: activeSpaceId, semanticCoverage: stats.semanticCoverage, migrationState: migration.state }
+    return { enabled: this.enabled, modelState: this.modelState, ...(this.modelProgress === undefined ? {} : { modelProgress: this.modelProgress }), pending: this.pendingCount + this.queue.length + this.embeddingCoord.getQueueLength() + this.gate.parked, errors: stats.errors, mode: 'balanced', activity: act, activeEmbeddingSpace: activeSpaceId, semanticCoverage: stats.semanticCoverage, migrationState: migration.state }
   }
   embeddingSettings() { return this.embeddingCoord.getEmbeddingSettings() }; embeddingModelCached(): boolean { return modelFilesCached(this.cacheDir, this.embeddingCoord.currentProfile) }; recycleEmbeddingWorker(reason = 'Recycle worker requested'): void { this.recycleWorker(reason) }
   setEmbeddingProfile(id: EmbeddingProfileId) {
@@ -254,7 +254,7 @@ export class DocumentMemoryManager {
   }
   async search(query: string, limit = 8): Promise<{ hits: FreshDocumentMemoryHit[]; pending: number; errors: number; modelState: string }> {
     const hits = await this.searchService.searchProgressive(query, limit, undefined, this.embeddingCoord.currentProfile.embeddingId)
-    return { hits, pending: this.queue.length + this.pendingCount + this.embeddingCoord.getQueueLength() + this.gate.parked + this.heldRoots.size, errors: this.store.errorCount(), modelState: this.modelState }
+    return { hits, pending: this.queue.length + this.pendingCount + this.embeddingCoord.getQueueLength() + this.gate.parked, errors: this.store.errorCount(), modelState: this.modelState }
   }
   searchProgressive(query: string, limit = 8, callbacks?: any) { return this.searchService.searchProgressive(query, limit, callbacks, this.embeddingCoord.currentProfile.embeddingId) }
   async read(chunkId: number): Promise<{ path: string; name: string; location: string; text: string; verified: boolean; error?: string }> {
@@ -486,7 +486,7 @@ export class DocumentMemoryManager {
   }
   private probe(): QueueProbe {
     const since = this.activeSince.values().next().value as number | undefined; const embedQ = this.embeddingCoord.getQueueLength()
-    return { waiting: this.queue.length + embedQ + this.gate.parked + this.heldRoots.size, line: this.queue.length, textOnlyInLine: this.gate.textOnly.size, vectorLine: embedQ, vectorWait: this.gate.parked, extracting: this.extracting, extractingForSeconds: since === undefined ? 0 : Math.round((Date.now() - since) / 1000), inFlightAsks: this.host.inFlight, embedding: this.embeddingCoord.isEmbedding(), extractable: this.gate.extractable(this.queue.length, this.urgent), writeReady: this.budgetCoord.isWriteReady(), accountingOk: this.maintScheduler.canAcceptExpensiveWork(), admissionRetryArmed: this.admissionRetry.isArmed(), vectorRetryPending: this.embeddingCoord.isRetryPending(), model: this.modelState, workerUp: this.host.isUp, lastError: this.lastError, pausedBy: isIndexingPaused() ? (currentIndexingPolicy()?.pauseReason ?? 'unknown') : this.foldersHeld() ? 'folders' : undefined }
+    return { waiting: this.queue.length + embedQ + this.gate.parked, line: this.queue.length, textOnlyInLine: this.gate.textOnly.size, vectorLine: embedQ, vectorWait: this.gate.parked, extracting: this.extracting, extractingForSeconds: since === undefined ? 0 : Math.round((Date.now() - since) / 1000), inFlightAsks: this.host.inFlight, embedding: this.embeddingCoord.isEmbedding(), extractable: this.gate.extractable(this.queue.length, this.urgent), writeReady: this.budgetCoord.isWriteReady(), accountingOk: this.maintScheduler.canAcceptExpensiveWork(), admissionRetryArmed: this.admissionRetry.isArmed(), vectorRetryPending: this.embeddingCoord.isRetryPending(), model: this.modelState, workerUp: this.host.isUp, lastError: this.lastError, pausedBy: isIndexingPaused() ? (currentIndexingPolicy()?.pauseReason ?? 'unknown') : this.foldersHeld() ? 'folders' : undefined }
   }
   /** Why files wait while nothing runs (see queue-health.ts); the Index screen shows it. */
   private foldersHeld(): boolean { return folderPauses.hasAny && this.queue.length + this.embeddingCoord.getQueueLength() > 0 && !this.activeExtractions.size && !this.embeddingCoord.isEmbedding() && !this.gate.parked && !this.queue.some(p => !folderPauses.paused(p)) && !this.embeddingCoord.hasRunnableJobs() }; private blockedReason(): IndexingBlockReason | undefined { return this.stopped || !this.enabled ? undefined : blockedReasonOf(this.probe()) }

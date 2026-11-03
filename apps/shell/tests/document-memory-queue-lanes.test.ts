@@ -289,8 +289,6 @@ describe('files on a root that is not reachable yet', () => {
       manager = open(worker)
       // vectors of healthy files start promptly although held files exist (the old design starved them)
       await until(() => worker.seen.some((m) => m.type === 'embed'), 10_000, 'first vector batch')
-      // the files waiting for the root still count as pending work (status, watchdog, compaction)
-      expect(manager.status().pending).toBeGreaterThanOrEqual(heldPaths.length)
       // the healthy files are read AND embedded although held files exist
       await until(
         () => (statusCounts().ready ?? 0) === textOnlyPaths.length + pendingPaths.length,
@@ -301,18 +299,20 @@ describe('files on a root that is not reachable yet', () => {
       expect(
         worker.seen.some((m) => m.type === 'extract' && heldPaths.includes(m.path ?? '')),
       ).toBe(false)
+      // the files waiting for the folder are reported on their own: they cannot move, so they are not
+      // "pending" work (the idle chip, the ETA and search results must not stay busy for a dead drive)
+      expect(manager.status().waitingForFolder).toBe(heldPaths.length)
+      expect(manager.status().pending).toBe(0)
       const internals = manager as unknown as {
         queue: string[]
-        heldRoots: { size: number; wake: (paths: string[]) => void; held: Set<string> }
-        drain(): void
+        heldRoots: { size: number }
       }
       // held files are not in the line (a line with work keeps the extract lane "ready")
       expect(internals.queue.filter((p) => heldPaths.includes(p))).toEqual([])
       expect(internals.heldRoots.size).toBe(heldPaths.length)
 
       check.mockRestore() // the real probe is back; the root now answers
-      rootAvailability.observe(heldDir, true)
-      internals.heldRoots.wake([...internals.heldRoots.held]) // what the 15 s pause does
+      rootAvailability.observe(heldDir, true) // verified: the held files come back at once, no 15 s pause
       await until(
         () => (statusCounts().ready ?? 0) === textOnlyPaths.length + pendingPaths.length + 2,
         20_000,

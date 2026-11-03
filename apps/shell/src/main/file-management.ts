@@ -74,8 +74,10 @@ export class FileManagementService {
     const root = this.deps.roots().find((r) => isInsideRoot(r, path))
     if (!root) throw new Error('Path is outside allowed folders')
     // realpath / stat below would block on a dead or unverified share for ~24s
-    if (rootAvailability.shouldDeferSyncIo(root) || rootAvailability.shouldDeferSyncIo(path))
-      throw new Error('The folder is not reachable right now')
+    const verdicts = [rootAvailability.syncIoVerdict(root), rootAvailability.syncIoVerdict(path)]
+    if (verdicts.includes('offline')) throw new Error('The folder is not reachable right now')
+    if (verdicts.includes('unverified'))
+      throw new Error('The folder is still being checked; try again in a moment')
     const canonicalRoot = realpathSync.native(root)
     const rel = relative(resolve(root), path)
     if (rel.startsWith('..') || isAbsolute(rel)) throw new Error('Path is outside allowed folders')
