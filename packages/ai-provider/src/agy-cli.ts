@@ -798,6 +798,8 @@ export interface AgyRunDeps extends AgyFsDeps {
   machineSemaphore?: AgyMachineSemaphore
   /** Optional flags of the installed agy (`agy --help`, read once). Absent: none are assumed. */
   capabilities?(cliPath: string): Promise<AgyCapabilities>
+  /** Optional sink for one-line lifecycle diagnostics (resident worker retire). Defaults to console.info. */
+  log?(line: string): void
 }
 
 /** SIGKILL escalation delay after the polite SIGTERM on POSIX */

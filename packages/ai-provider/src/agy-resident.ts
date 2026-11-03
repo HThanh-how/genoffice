@@ -40,6 +40,26 @@ import {
 
 export const AGY_MAX_RESIDENT_WORKERS = 2
 export const AGY_RESIDENT_IDLE_TTL_MS = 120_000
+/**
+ * An unbound (prewarmed) worker has to outlive agy's cold start (~80 s on a slow profile) and
+ * still be waiting when the user sends the first message, so it lives much longer than a worker
+ * that already served a session. Override with GENOFFICE_AGY_PREWARM_TTL_MS (milliseconds).
+ */
+export const AGY_RESIDENT_PREWARM_TTL_MS = 10 * 60_000
+/** Same cadence as the one-shot runAgy heartbeat; keeps the renderer's silence timer alive. */
+export const AGY_RESIDENT_HEARTBEAT_MS = 5_000
+/** A cancel arriving after this much stdout silence is the renderer's silence timer (240 s budget). */
+const SILENCE_CANCEL_AFTER_MS = 200_000
+
+export function agyPrewarmTtlMs(env: NodeJS.ProcessEnv | undefined): number {
+  const raw = env?.GENOFFICE_AGY_PREWARM_TTL_MS?.trim()
+  if (!raw) return AGY_RESIDENT_PREWARM_TTL_MS
+  const value = Number(raw)
+  return Number.isFinite(value) && value >= 1_000 ? Math.floor(value) : AGY_RESIDENT_PREWARM_TTL_MS
+}
+
+export type AgyRetireReason =
+  'idle-ttl' | 'abort' | 'silence-cancel' | 'quit' | 'error' | 'evicted' | 'scope' | 'child-exit'
 export const AGY_RESIDENT_TURN_TIMEOUT_MS = 480_000
 const MAX_STDERR_CHARS = 8_000
 const MAX_LINE_BYTES = MAX_SSE_LINE_BYTES // 4 MB cap
@@ -162,6 +182,10 @@ export function isResidentEligible(input: ResidentEligibilityInput): boolean {
   return !hasAttachments
 }
 
+function defaultRetireLog(line: string): void {
+  console.info(line)
+}
+
 // ---------------------------------------------------------------------------
 // Worker & Session Models
 // ---------------------------------------------------------------------------
@@ -185,6 +209,8 @@ interface ResidentWorker {
   currentTurnSettled: boolean
   retireAfterCurrentTurn?: boolean | undefined
   retired?: boolean | undefined
+  /** last time the child wrote anything to stdout; drives abort vs silence-cancel in the log */
+  lastActivityAt: number
   stop: () => void
 }
 
@@ -228,7 +254,7 @@ class AgyResidentManager {
   shutdown(deps?: AgyRunDeps): void {
     const effectiveDeps = deps ?? realRunDeps
     for (const worker of [...this.workers.values()]) {
-      void this.retireWorker(worker, effectiveDeps)
+      void this.retireWorker(worker, effectiveDeps, false, 'quit')
     }
     this.workers.clear()
     this.sessions.clear()
@@ -248,7 +274,7 @@ class AgyResidentManager {
           if (worker.inUse) {
             worker.retireAfterCurrentTurn = true
           } else {
-            void this.retireWorker(worker, effectiveDeps)
+            void this.retireWorker(worker, effectiveDeps, false, 'scope')
           }
         }
       }
@@ -512,7 +538,7 @@ class AgyResidentManager {
         // Reseed: clear prior session and retire old worker if bound
         if (session) {
           const oldWorker = this.workers.get(session.workerId)
-          if (oldWorker) await this.retireWorker(oldWorker, deps)
+          if (oldWorker) await this.retireWorker(oldWorker, deps, false, 'error')
           this.sessions.delete(sessionKey)
         }
 
@@ -630,7 +656,7 @@ class AgyResidentManager {
     } catch (error) {
       // "After any stdin write, timeout/cancel/error retires worker and surfaces error."
       if (worker) {
-        await this.retireWorker(worker, deps)
+        await this.retireWorker(worker, deps, false, this.failureReason(worker, error))
         this.sessions.delete(sessionKey)
       }
       throw error
@@ -643,10 +669,10 @@ class AgyResidentManager {
 
       if (worker) {
         if (worker.retireAfterCurrentTurn || !this.workers.has(worker.id)) {
-          await this.retireWorker(worker, deps)
+          await this.retireWorker(worker, deps, false, 'error')
         } else if (!worker.idleTimer) {
           worker.idleTimer = setTimeout(() => {
-            void this.retireWorker(worker!, deps, true)
+            void this.retireWorker(worker!, deps, true, 'idle-ttl')
           }, AGY_RESIDENT_IDLE_TTL_MS)
           worker.idleTimer.unref?.()
         }
@@ -682,17 +708,41 @@ class AgyResidentManager {
       }
     }
     if (oldest) {
-      void this.retireWorker(oldest, deps, true)
+      void this.retireWorker(oldest, deps, true, 'evicted')
     }
+  }
+
+  /** abort and renderer silence-cancel both surface as AbortError; tell them apart by stdout silence */
+  private failureReason(worker: ResidentWorker, error: unknown): AgyRetireReason {
+    if (error instanceof Error && error.name === 'AbortError') {
+      return Date.now() - worker.lastActivityAt >= SILENCE_CANCEL_AFTER_MS
+        ? 'silence-cancel'
+        : 'abort'
+    }
+    return 'error'
   }
 
   private async retireWorker(
     worker: ResidentWorker,
     deps?: AgyRunDeps,
     preserveConversation = false,
+    reason: AgyRetireReason = 'error',
   ): Promise<void> {
     if (worker.retired) return
     worker.retired = true
+    const log = deps?.log ?? defaultRetireLog
+    try {
+      const session = worker.boundSessionKey
+        ? (this.sessions.get(worker.boundSessionKey)?.sessionId ?? worker.boundSessionKey)
+        : undefined
+      log(
+        `[agy-resident] retire pid=${worker.child.pid ?? '?'} ` +
+          `session=${session ? String(session).slice(0, 8) : 'unbound'} reason=${reason} ` +
+          `lived=${Math.round((Date.now() - worker.spawnedAt) / 1000)}s turns=${worker.turnCount}`,
+      )
+    } catch {
+      /* logging must never block cleanup */
+    }
     if (worker.idleTimer) {
       clearTimeout(worker.idleTimer)
       worker.idleTimer = undefined
@@ -761,6 +811,7 @@ class AgyResidentManager {
       inUse: false,
       stderrTail: '',
       spawnedAt: Date.now(),
+      lastActivityAt: Date.now(),
       turnCount: 0,
       stdinWrittenForCurrentTurn: false,
       currentTurnSettled: false,
@@ -774,16 +825,16 @@ class AgyResidentManager {
     child.stdin.on('error', () => undefined)
 
     child.on('error', () => {
-      void this.retireWorker(worker, deps)
+      void this.retireWorker(worker, deps, false, 'child-exit')
     })
     child.on('close', () => {
-      void this.retireWorker(worker, deps)
+      void this.retireWorker(worker, deps, false, 'child-exit')
     })
 
-    // Set idle TTL
+    // Unused TTL: long enough to outlive a cold start and still be there for the first message
     worker.idleTimer = setTimeout(() => {
-      void this.retireWorker(worker, deps)
-    }, AGY_RESIDENT_IDLE_TTL_MS)
+      void this.retireWorker(worker, deps, false, 'idle-ttl')
+    }, agyPrewarmTtlMs(deps.env))
     worker.idleTimer.unref?.()
 
     this.workers.set(id, worker)
@@ -832,6 +883,7 @@ class AgyResidentManager {
 
       const cleanup = () => {
         clearTimeout(timer)
+        clearInterval(heartbeat)
         signal.removeEventListener('abort', onAbort)
         worker.child.stdout.removeListener('data', onStdout)
         worker.child.removeListener('close', onClose)
@@ -865,6 +917,13 @@ class AgyResidentManager {
         error.message += ` (steps=[${trace.join(', ') || 'none'}])`
         fail(error)
       }, timeoutMs)
+
+      // Ping the renderer's silence timer while the child is alive, including the whole cold start
+      // (agy reads stdin only once it is up). A dead child is never pinged: that would hide the failure.
+      const heartbeat = setInterval(() => {
+        if (worker.child.exitCode == null && worker.child.signalCode == null) cb.onActivity?.()
+      }, AGY_RESIDENT_HEARTBEAT_MS)
+      heartbeat.unref?.()
 
       const handleLine = (line: string) => {
         const event = parseAgyStreamLine(line)
@@ -944,6 +1003,7 @@ class AgyResidentManager {
       }
 
       const onStdout = (chunk: Buffer) => {
+        worker.lastActivityAt = Date.now()
         cb.onActivity?.()
         pending += decoder.write(chunk)
         let nl = pending.indexOf('\n')

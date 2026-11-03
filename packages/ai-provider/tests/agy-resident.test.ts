@@ -1407,3 +1407,167 @@ describe('agy resident transport', () => {
     })
   })
 })
+
+describe('resident worker lifecycle: prewarm TTL, heartbeat, retire log', () => {
+  const config = { apiKey: '', model: 'gemini-3.8-flash-low', cliPath: '/usr/local/bin/agy' }
+  const withLog = () => {
+    const mock = createMockDeps()
+    const lines: string[] = []
+    mock.deps.log = (line) => lines.push(line)
+    shutdownAgyResidentServers(mock.deps)
+    lines.length = 0
+    return { mock, lines }
+  }
+  const startTurn = (
+    mock: ReturnType<typeof createMockDeps>,
+    cb: Partial<Parameters<typeof streamAgy>[5]> = {},
+    sessionId = 'life-1',
+  ) =>
+    streamAgy(
+      config,
+      'sys',
+      [{ role: 'user', text: 'hello' }],
+      sampleTools,
+      1024,
+      {
+        sessionId,
+        sessionScope: 'scope-life',
+        signal: new AbortController().signal,
+        onDelta: vi.fn(),
+        onToolCall: vi.fn(),
+        ...cb,
+      },
+      mock.deps,
+    )
+
+  afterEach(() => {
+    vi.useRealTimers()
+  })
+
+  it('keeps a prewarmed worker past the 120 s session idle TTL and retires it at 10 minutes', async () => {
+    vi.useFakeTimers()
+    const { mock, lines } = withLog()
+    await prewarmAgy(config, mock.deps)
+    const child = mock.children[0]!
+
+    await vi.advanceTimersByTimeAsync(AGY_RESIDENT_IDLE_TTL_MS + 1_000)
+    expect(child.killed).toBe(false)
+    await vi.advanceTimersByTimeAsync(7 * 60_000) // ~9 min in
+    expect(child.killed).toBe(false)
+    await vi.advanceTimersByTimeAsync(2 * 60_000) // past 10 min
+    expect(child.killed).toBe(true)
+    expect(lines.some((l) => /reason=idle-ttl/.test(l) && /session=unbound/.test(l))).toBe(true)
+    shutdownAgyResidentServers(mock.deps)
+  })
+
+  it('honors GENOFFICE_AGY_PREWARM_TTL_MS and ignores nonsense values', async () => {
+    vi.useFakeTimers()
+    const { mock } = withLog()
+    mock.deps.env = { GENOFFICE_AGY_PREWARM_TTL_MS: '30000' }
+    await prewarmAgy(config, mock.deps)
+    await vi.advanceTimersByTimeAsync(29_000)
+    expect(mock.children[0]!.killed).toBe(false)
+    await vi.advanceTimersByTimeAsync(2_000)
+    expect(mock.children[0]!.killed).toBe(true)
+
+    mock.deps.env = { GENOFFICE_AGY_PREWARM_TTL_MS: 'abc' }
+    await prewarmAgy(config, mock.deps)
+    await vi.advanceTimersByTimeAsync(5 * 60_000)
+    expect(mock.children[1]!.killed).toBe(false)
+    shutdownAgyResidentServers(mock.deps)
+  })
+
+  it('a prewarmed worker that gets a session is no longer subject to the unused TTL', async () => {
+    vi.useFakeTimers()
+    const { mock } = withLog()
+    mock.deps.env = { GENOFFICE_AGY_PREWARM_TTL_MS: '30000' }
+    await prewarmAgy(config, mock.deps)
+    const turn = startTurn(mock)
+    await vi.advanceTimersByTimeAsync(10)
+    expect(mock.children).toHaveLength(1)
+    await vi.advanceTimersByTimeAsync(5 * 60_000)
+    expect(mock.children[0]!.killed).toBe(false)
+    mock.children[0]!.emitLines([
+      JSON.stringify({
+        event: 'result',
+        result: { status: 'SUCCESS', structured_output: { text: 'ok', tool_calls: [] } },
+      }),
+    ])
+    await turn
+    shutdownAgyResidentServers(mock.deps)
+  })
+
+  it('pings onActivity every 5 s while the child is silent, including cold start', async () => {
+    vi.useFakeTimers()
+    const { mock } = withLog()
+    const onActivity = vi.fn()
+    const turn = startTurn(mock, { onActivity })
+    const settled = turn.catch(() => undefined)
+    await vi.advanceTimersByTimeAsync(10)
+    expect(onActivity).not.toHaveBeenCalled()
+    await vi.advanceTimersByTimeAsync(20_000)
+    expect(onActivity.mock.calls.length).toBeGreaterThanOrEqual(4)
+
+    mock.children[0]!.emitLines([
+      JSON.stringify({
+        event: 'result',
+        result: { status: 'SUCCESS', structured_output: { text: 'ok', tool_calls: [] } },
+      }),
+    ])
+    await settled
+    const after = onActivity.mock.calls.length
+    await vi.advanceTimersByTimeAsync(30_000)
+    expect(onActivity.mock.calls.length).toBe(after) // heartbeat stops with the turn
+    shutdownAgyResidentServers(mock.deps)
+  })
+
+  it('does not ping for a child that already exited', async () => {
+    vi.useFakeTimers()
+    const { mock } = withLog()
+    const onActivity = vi.fn()
+    const turn = startTurn(mock, { onActivity })
+    const settled = turn.catch(() => undefined)
+    await vi.advanceTimersByTimeAsync(10)
+    ;(mock.children[0] as unknown as { exitCode: number | null }).exitCode = 1
+    await vi.advanceTimersByTimeAsync(20_000)
+    expect(onActivity).not.toHaveBeenCalled()
+    shutdownAgyResidentServers(mock.deps)
+    await vi.advanceTimersByTimeAsync(AGY_RESIDENT_TURN_TIMEOUT_MS)
+    await settled
+  })
+
+  it('logs pid, short session, reason and lifetime when a turn is aborted', async () => {
+    const { mock, lines } = withLog()
+    const controller = new AbortController()
+    const turn = startTurn(mock, { signal: controller.signal }, 'abcdefghijkl')
+    await new Promise((r) => setTimeout(r, 10))
+    controller.abort()
+    await expect(turn).rejects.toThrow(/aborted/i)
+    const line = lines.find((l) => /reason=abort/.test(l))
+    expect(line).toBeDefined()
+    expect(line).toMatch(/pid=1000/)
+    expect(line).toMatch(/session=abcdefgh(?!i)/)
+    expect(line).toMatch(/lived=\d+s/)
+    shutdownAgyResidentServers(mock.deps)
+  })
+
+  it('logs silence-cancel when the renderer cancels after a long stdout silence', async () => {
+    vi.useFakeTimers()
+    const { mock, lines } = withLog()
+    const controller = new AbortController()
+    const turn = startTurn(mock, { signal: controller.signal })
+    const settled = turn.catch(() => undefined)
+    await vi.advanceTimersByTimeAsync(240_000)
+    controller.abort()
+    await settled
+    expect(lines.some((l) => /reason=silence-cancel/.test(l))).toBe(true)
+    shutdownAgyResidentServers(mock.deps)
+  })
+
+  it('logs reason=quit on shutdown', async () => {
+    const { mock, lines } = withLog()
+    await prewarmAgy(config, mock.deps)
+    shutdownAgyResidentServers(mock.deps)
+    expect(lines.some((l) => /reason=quit/.test(l))).toBe(true)
+  })
+})
