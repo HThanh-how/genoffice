@@ -28,6 +28,9 @@ let store: DocumentMemoryStore
 beforeEach(() => {
   dir = mkdtempSync(join(process.cwd(), '.ocr-source-test-'))
   rootAvailability.register(dir)
+  // scans and watchers only enroll files after their root has been probed; a freshly registered
+  // root that nobody has probed yet is "unverified" and its discoveries are deferred
+  rootAvailability.observe(dir, true)
   store = new DocumentMemoryStore(join(dir, 'test.db'))
 })
 afterEach(() => {

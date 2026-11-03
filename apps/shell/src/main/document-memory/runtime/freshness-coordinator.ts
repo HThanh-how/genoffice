@@ -54,8 +54,6 @@ function pathKey(p: string): string {
 }
 
 function safeStat(path: string): { mtimeMs: number; sizeBytes: number } | null {
-  // a sync stat on a dead share blocks the main thread for ~24s; the root's recovery re-enrolls the file
-  if (rootAvailability.isKnownOffline(path)) return null
   try {
     const s = statSync(path)
     return s.isFile() ? { mtimeMs: s.mtimeMs, sizeBytes: s.size } : null
@@ -149,6 +147,13 @@ export class FreshnessCoordinator {
   ): FileEnrollmentResult {
     if (this.options.isStopped?.()) return { outcome: 'skipped', reason: 'stopped' }
     const p = resolve(path)
+    // A root that is offline or not verified yet: its .genofficeignore rules may be unknown (empty),
+    // and a sync stat would block the main thread for ~24s. Defer and keep the discovery; never
+    // enroll or exclude a file on a root we cannot see.
+    if (this.roots.shouldDeferSyncIo(p)) {
+      this.options.intakeAdapter?.onDiscovered(p, metadata)
+      return { outcome: 'deferred', reason: 'root-unreachable' }
+    }
     const admission = discoveredPathAdmission(p)
     if (!admission.allowed) return { outcome: 'excluded', reason: admission.reason }
     const current = metadata ?? safeStat(p)

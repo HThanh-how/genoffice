@@ -2,6 +2,7 @@ import { statSync } from 'node:fs'
 import { stat as fsStat } from 'node:fs/promises'
 import { basename, extname } from 'node:path'
 import type { RecentEntry, RecentPage, RecentQuery } from '../shared/home-api'
+import { rootAvailability } from './document-memory/root-availability'
 
 const RECENT_PAGE_DEFAULT = 50
 const RECENT_PAGE_MAX = 200
@@ -43,9 +44,15 @@ export function statPathEntries(
 
 /** A dead network share can hold a single stat for ~24s; never let one row hold a list that long. */
 export const STAT_ENTRY_TIMEOUT_MS = 2000
-const STAT_CONCURRENCY = 16
+// libuv's default threadpool has 4 threads and a stat stuck on a dead share holds one until the OS
+// gives up, so keep well below it and stop statting a root as soon as it looks unreachable
+const STAT_CONCURRENCY = 3
 
-function missingEntry(path: string, starredPaths: ReadonlySet<string>): RecentEntry {
+function missingEntry(
+  path: string,
+  starredPaths: ReadonlySet<string>,
+  unavailable = false,
+): RecentEntry {
   return {
     path,
     name: basename(path),
@@ -54,6 +61,7 @@ function missingEntry(path: string, starredPaths: ReadonlySet<string>): RecentEn
     sizeBytes: 0,
     starred: starredPaths.has(path),
     missing: true,
+    ...(unavailable ? { unavailable: true } : {}),
   }
 }
 
@@ -67,13 +75,22 @@ async function toRecentEntryAsync(
   starredPaths: ReadonlySet<string>,
   timeoutMs: number,
   statImpl: (path: string) => Promise<{ mtimeMs: number; size: number }>,
+  suspectRoots: Set<string>,
 ): Promise<RecentEntry> {
+  // offline or not-yet-verified root: no stat at all, so no threadpool thread is spent on it
+  const root = rootAvailability.rootOf(path)
+  if (suspectRoots.has(root) || rootAvailability.shouldDeferSyncIo(path))
+    return missingEntry(path, starredPaths, true)
   let timer: NodeJS.Timeout | undefined
+  let timedOut = false
   try {
     const stat = await Promise.race([
       statImpl(path),
       new Promise<never>((_, reject) => {
-        timer = setTimeout(() => reject(new Error('stat timeout')), timeoutMs)
+        timer = setTimeout(() => {
+          timedOut = true
+          reject(new Error('stat timeout'))
+        }, timeoutMs)
         timer.unref?.()
       }),
     ])
@@ -86,6 +103,14 @@ async function toRecentEntryAsync(
       starred: starredPaths.has(path),
     }
   } catch {
+    if (timedOut) {
+      // the hung stat still holds a threadpool thread: stop statting this root for this batch
+      suspectRoots.add(root)
+      // a stat that does not answer is a reachability problem, not a missing file: probe the root
+      // once (shared verdict) so the next rows and the next load skip it
+      void rootAvailability.checkPath(path, true)
+      return missingEntry(path, starredPaths, true)
+    }
     return missingEntry(path, starredPaths)
   } finally {
     if (timer) clearTimeout(timer)
@@ -104,11 +129,18 @@ export async function statPathEntriesAsync(
   const statImpl = options.statImpl ?? ((p: string) => fsStat(p))
   const entries: RecentEntry[] = new Array(paths.length)
   let next = 0
+  const suspectRoots = new Set<string>()
   // bounded concurrency: the timeouts overlap instead of adding up row by row
   const worker = async (): Promise<void> => {
     while (next < paths.length) {
       const index = next++
-      entries[index] = await toRecentEntryAsync(paths[index]!, starredPaths, timeoutMs, statImpl)
+      entries[index] = await toRecentEntryAsync(
+        paths[index]!,
+        starredPaths,
+        timeoutMs,
+        statImpl,
+        suspectRoots,
+      )
     }
   }
   await Promise.all(Array.from({ length: Math.min(STAT_CONCURRENCY, paths.length) }, worker))

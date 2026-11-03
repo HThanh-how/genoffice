@@ -24,6 +24,7 @@ import type {
 } from '../shared/home-api'
 import { isValidRenameName } from './rename-validation'
 import { statPathEntries } from './recent-files'
+import { rootAvailability } from './document-memory/root-availability'
 import { mkdirDirs } from '@genoffice/electron-utils/default-save-dir'
 
 /** files the home tree shows; mirrors the shell's open-dialog filter */
@@ -107,6 +108,15 @@ const withTrailingSep = (dir: string): string => (dir.endsWith(sep) ? dir : dir 
  * target compares by its nearest existing ancestor.
  */
 export function isInsideRoot(root: string, path: string): boolean {
+  // realpath / existsSync below would block on a dead or unverified share (this runs before any IPC
+  // handler gets to await the root): compare the resolved strings only, as nothing there can be
+  // opened right now anyway
+  if (rootAvailability.shouldDeferSyncIo(root) || rootAvailability.shouldDeferSyncIo(path)) {
+    const fold = (p: string): string => (process.platform === 'win32' ? p.toLowerCase() : p)
+    const base = fold(resolve(root))
+    const target = fold(resolve(path))
+    return target === base || target.startsWith(withTrailingSep(base))
+  }
   const realRoot = realOrResolved(root)
   let probe = resolve(path)
   const missing: string[] = []
@@ -121,6 +131,15 @@ export function isInsideRoot(root: string, path: string): boolean {
 }
 
 export function describeRoot(root: string): FolderRoot {
+  // mkdirDirs / accessSync / statSync below would block on a dead or unverified share
+  if (rootAvailability.shouldDeferSyncIo(root))
+    return {
+      path: root,
+      name: basename(root) || root,
+      usable: false,
+      readable: false,
+      removable: false,
+    }
   let usable: boolean
   try {
     // per-level mkdir, not recursive: a filesystem that refuses the leaf while
@@ -148,6 +167,8 @@ function hasVisibleSubfolder(dir: string): boolean {
 export function listFolder(dir: string, starredPaths: ReadonlySet<string>): FolderListing {
   const folders: FolderEntry[] = []
   const filePaths: string[] = []
+  // a dead or unverified share would block readdirSync/statSync below for ~24s
+  if (rootAvailability.shouldDeferSyncIo(dir)) return { dir, folders: [], files: [], missing: true }
   let dirents: import('node:fs').Dirent[]
   try {
     dirents = readdirSync(dir, { withFileTypes: true })
@@ -383,6 +404,9 @@ export class FolderWatcher {
     private readonly root: string,
     private readonly onChange: (dirs: string[]) => void,
   ) {
+    // recursive watch opens synchronously; never against a root that is offline or unverified
+    // (ensureFolderWatchers retries once the root answers)
+    if (rootAvailability.shouldDeferSyncIo(root)) return
     try {
       this.watcher = watch(root, { recursive: true, persistent: false }, (_event, filename) => {
         this.note(filename)
@@ -399,11 +423,14 @@ export class FolderWatcher {
     // a created/removed folder changes its parent's listing; a file inside
     // changes its own folder's listing — report both candidates
     this.pending.add(dirname(changed))
-    let isDir: boolean
-    try {
-      isDir = statSync(changed).isDirectory()
-    } catch {
-      isDir = false
+    let isDir = false
+    // no stat of a changed path on a root that went offline since the watcher was opened
+    if (!rootAvailability.shouldDeferSyncIo(changed)) {
+      try {
+        isDir = statSync(changed).isDirectory()
+      } catch {
+        isDir = false
+      }
     }
     if (isDir) this.pending.add(changed)
     if (this.timer) clearTimeout(this.timer)

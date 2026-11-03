@@ -77,6 +77,8 @@ export function pathUnderRoot(root: string, path: string): boolean {
 }
 
 const OFFLINE_BACKOFF = [60_000, 300_000, 900_000, 3_600_000]
+/** Offline roots are re-probed at least this often while main-thread code keeps asking about them. */
+const GUARD_REPROBE_MS = 300_000
 const ONLINE_TTL = 5 * 60_000
 
 /** One state per indexed root (or drive/share/mount). Driven by existing idle ticks. */
@@ -85,6 +87,7 @@ export class RootAvailability {
   private readonly roots = new Set<string>()
   private readonly pending = new Map<string, Promise<boolean>>()
   private readonly recovered = new Set<(root: string) => void>()
+  private readonly verified = new Set<(root: string) => void>()
   private readonly errorProbes = new Map<string, number>()
   private lastImmediate = -Infinity
 
@@ -92,10 +95,15 @@ export class RootAvailability {
     private readonly probe = getOrCreateNativePathProbe,
     private readonly now = Date.now,
     private readonly timeoutMs = PROBE_PATH_DEADLINE_MS,
+    /** probe a root as soon as it is registered, so saved roots are verified at startup */
+    private readonly probeOnRegister = false,
   ) {}
 
   register(root: string): void {
-    this.roots.add(resolve(root))
+    const resolved = resolve(root)
+    this.roots.add(resolved)
+    if (this.probeOnRegister && !this.states.has(resolved) && !this.pending.has(resolved))
+      void this.check(resolved)
   }
   unregister(root: string): void {
     this.roots.delete(resolve(root))
@@ -120,6 +128,27 @@ export class RootAvailability {
       this.recovered.delete(listener)
     }
   }
+  /**
+   * Fires whenever a root becomes known to be reachable: the first successful probe of a root
+   * that was never verified, and every recovery after an outage. Work parked because the root was
+   * "not verified yet" resumes from this.
+   */
+  onVerified(listener: (root: string) => void): () => void {
+    this.verified.add(listener)
+    return () => {
+      this.verified.delete(listener)
+    }
+  }
+  /** one failing listener must not stop the others or make the probe that triggered it reject */
+  private emit(listeners: Set<(root: string) => void>, root: string): void {
+    for (const listener of [...listeners]) {
+      try {
+        listener(root)
+      } catch (error) {
+        console.warn('[root-availability] listener failed for', root, error)
+      }
+    }
+  }
   observe(root: string, online: boolean): void {
     root = resolve(root)
     const previous = this.states.get(root)
@@ -133,8 +162,8 @@ export class RootAvailability {
       failures,
       nextProbeAt: now + (online ? ONLINE_TTL : OFFLINE_BACKOFF[Math.min(failures - 1, 3)]!),
     })
-    if (online && previous && !previous.online)
-      for (const listener of this.recovered) listener(root)
+    if (online && previous && !previous.online) this.emit(this.recovered, root)
+    if (online && (!previous || !previous.online)) this.emit(this.verified, root)
   }
   checkPath(path: string, force = false): Promise<boolean> {
     return this.check(this.rootOf(path), force)
@@ -156,15 +185,49 @@ export class RootAvailability {
     return this.check(root, true)
   }
   /**
-   * Pure in-memory verdict, never touches the filesystem: true only when a probe has already
-   * found this path's root (or the path itself) offline. Unknown roots are treated as reachable
-   * so first-use behaviour is unchanged; callers on the main thread use this to skip synchronous
-   * fs calls that would block for tens of seconds on a dead network share.
+   * Pure in-memory verdict, never touches the filesystem, about whether synchronous fs calls
+   * under `path` are safe on the main thread. A dead network share blocks a sync call for ~24 s,
+   * so only a root that a probe has found reachable is "ok":
+   * - "offline": a probe failed; stays so until a later probe succeeds
+   * - "unverified": a registered root (a saved folder) that no probe has answered for yet,
+   *   typically right after launch; a probe is started
+   * A path under no registered root and with no recorded state is "ok" (nothing to go on).
+   * Offline roots past their backoff are re-probed in the background.
    */
-  isKnownOffline(path: string): boolean {
+  syncIoVerdict(path: string): 'ok' | 'offline' | 'unverified' {
     const resolved = resolve(path)
-    if (this.states.get(resolved)?.online === false) return true
-    return this.states.get(resolve(this.rootOf(resolved)))?.online === false
+    const root = resolve(this.rootOf(resolved))
+    const own = this.states.get(resolved)
+    const state = this.states.get(root)
+    if (own?.online === false || state?.online === false) {
+      // The scheduled backoff can reach an hour, but code that keeps asking (and is therefore being
+      // held back) re-probes at least every few minutes, so a drive that came back is noticed.
+      const due = [own, state].some(
+        (s) =>
+          s?.online === false &&
+          (this.now() >= s.nextProbeAt || this.now() - s.lastProbeAt >= GUARD_REPROBE_MS),
+      )
+      if (due) void this.check(root, true)
+      return 'offline'
+    }
+    if (!state && this.roots.has(root)) {
+      void this.check(root)
+      return 'unverified'
+    }
+    return 'ok'
+  }
+  /**
+   * Resolves once the root of `path` has a verdict: immediately unless it is a registered root no
+   * probe has answered for, in which case it waits for that one probe (bounded by the probe
+   * deadline). IPC handlers await this so they answer from a verified root instead of reporting a
+   * healthy folder as unusable just because the launch-time probe is still in flight.
+   */
+  async settled(path: string): Promise<void> {
+    if (this.syncIoVerdict(path) === 'unverified') await this.check(this.rootOf(path))
+  }
+  /** True when a synchronous fs call under `path` must not run now (offline or not yet verified). */
+  shouldDeferSyncIo(path: string): boolean {
+    return this.syncIoVerdict(path) !== 'ok'
   }
   /** Synchronous selection guard: unknown/expired roots wait for a single bounded probe. */
   selectable(path: string): boolean {
@@ -221,7 +284,12 @@ export class RootAvailability {
   }
 }
 
-export const rootAvailability = new RootAvailability()
+export const rootAvailability = new RootAvailability(
+  getOrCreateNativePathProbe,
+  Date.now,
+  PROBE_PATH_DEADLINE_MS,
+  true,
+)
 
 /**
  * Asynchronously probes whether targetPath exists and is a directory.

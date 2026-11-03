@@ -10,9 +10,9 @@ import {
   writeFileSync,
 } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { basename, join, resolve } from 'node:path'
 import type { Worker } from 'node:worker_threads'
-import { afterEach, beforeEach, describe, expect, it } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { chunkDocumentText } from '../src/main/document-memory/chunks'
 import { DocumentMemoryManager } from '../src/main/document-memory/manager'
 import {
@@ -256,6 +256,72 @@ describe('reading does not wait for vectors', () => {
     // vectors started before the last file was read: the lanes alternate, one does not wait for the other to finish
     expect(firstEmbedAt).toBeGreaterThan(-1)
     expect(firstEmbedAt).toBeLessThan(extractAt[extractAt.length - 1]!)
+  }, 60_000)
+})
+
+describe('files on a root that is not reachable yet', () => {
+  it('wait outside the line, never starve healthy files (reading or vectors), and come back when the root answers', async () => {
+    const { rootAvailability } = await import('../src/main/document-memory/root-availability')
+    const heldDir = join(dir, 'files', 'held')
+    mkdirSync(heldDir)
+    const heldPaths = [0, 1].map((i) => join(heldDir, `held-${i}.txt`))
+    for (const [i, path] of heldPaths.entries()) writeFileSync(path, BODY(900 + i))
+    const { textOnlyPaths, pendingPaths } = seedLine(3, 3)
+    const seed = new DocumentMemoryStore(join(dir, 'document-memory.db'), { role: 'worker' })
+    try {
+      const ins = seed.rawDb.prepare(
+        "INSERT INTO documents(path, name, status, mtime_ms, size_bytes, priority_at) VALUES (?, ?, 'pending', 1, NULL, ?)",
+      )
+      for (const path of heldPaths) ins.run(path, basename(path), 1_000_000)
+    } finally {
+      seed.close()
+    }
+    // the held root's launch-time probe has not answered; every other root probes normally
+    const real = rootAvailability.check.bind(rootAvailability)
+    const check = vi
+      .spyOn(rootAvailability, 'check')
+      .mockImplementation((root: string, force?: boolean) =>
+        resolve(root) === resolve(heldDir) ? new Promise<boolean>(() => {}) : real(root, force),
+      )
+    rootAvailability.register(heldDir)
+    const worker = new FakeIndexWorker()
+    try {
+      manager = open(worker)
+      // vectors of healthy files start promptly although held files exist (the old design starved them)
+      await until(() => worker.seen.some((m) => m.type === 'embed'), 10_000, 'first vector batch')
+      // the files waiting for the root still count as pending work (status, watchdog, compaction)
+      expect(manager.status().pending).toBeGreaterThanOrEqual(heldPaths.length)
+      // the healthy files are read AND embedded although held files exist
+      await until(
+        () => (statusCounts().ready ?? 0) === textOnlyPaths.length + pendingPaths.length,
+        30_000,
+        'healthy files ready',
+      )
+      expect(worker.seen.some((m) => m.type === 'embed')).toBe(true)
+      expect(
+        worker.seen.some((m) => m.type === 'extract' && heldPaths.includes(m.path ?? '')),
+      ).toBe(false)
+      const internals = manager as unknown as {
+        queue: string[]
+        heldRoots: { size: number; wake: (paths: string[]) => void; held: Set<string> }
+        drain(): void
+      }
+      // held files are not in the line (a line with work keeps the extract lane "ready")
+      expect(internals.queue.filter((p) => heldPaths.includes(p))).toEqual([])
+      expect(internals.heldRoots.size).toBe(heldPaths.length)
+
+      check.mockRestore() // the real probe is back; the root now answers
+      rootAvailability.observe(heldDir, true)
+      internals.heldRoots.wake([...internals.heldRoots.held]) // what the 15 s pause does
+      await until(
+        () => (statusCounts().ready ?? 0) === textOnlyPaths.length + pendingPaths.length + 2,
+        20_000,
+        'held files read after the root answered',
+      )
+    } finally {
+      check.mockRestore()
+      rootAvailability.unregister(heldDir)
+    }
   }, 60_000)
 })
 

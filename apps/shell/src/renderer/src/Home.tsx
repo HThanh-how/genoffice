@@ -1512,9 +1512,14 @@ export function Home() {
 
   useEffect(() => {
     return window.aiOffice.onFolderChanged((dirs) => {
+      // a root that was unusable (offline at launch, or still being probed) just came back: pull the
+      // root list again, otherwise it would stay greyed out until the next manual refresh
+      const back = (p: string) =>
+        roots.some((r) => !r.usable && r.path.toLowerCase() === p.toLowerCase())
+      if (dirs.some(back)) loadRoot()
       invalidateFolders(dirs.filter(trackedFolder))
     })
-  }, [invalidateFolders, trackedFolder])
+  }, [invalidateFolders, trackedFolder, roots, loadRoot])
 
   // ── Paged loading ──
   // stale responses are dropped via a request sequence number (when views/filters switch quickly)

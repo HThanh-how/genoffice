@@ -988,7 +988,11 @@ export class FolderScanManager {
                   job.state = 'stopped'
                   if (res.outcome === 'deferred') {
                     job.deferred = true
-                    job.lastError = res.error ?? 'Storage write gate not ready; scan deferred'
+                    job.lastError =
+                      res.error ??
+                      (res.reason === 'root-unreachable'
+                        ? 'Folder not reachable; scan deferred'
+                        : 'Storage write gate not ready; scan deferred')
                   } else {
                     job.refused = true
                     job.lastError = res.error ?? 'Storage write gate refused file enrollment'

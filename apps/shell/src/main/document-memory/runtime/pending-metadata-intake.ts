@@ -36,7 +36,8 @@ export interface DiscoveredReplayResult {
 }
 
 export interface PendingMetadataIntakeAdapter {
-  onDiscovered(path: string, metadata: { mtimeMs: number; sizeBytes: number }): void
+  /** metadata is omitted when the root is not reachable yet and the file could not be stat'ed */
+  onDiscovered(path: string, metadata?: { mtimeMs: number; sizeBytes: number }): void
   onCanceled?(path: string): void
   onMoved?(oldPath: string, newPath: string): void
 }
@@ -61,8 +62,8 @@ export interface PendingMetadataIntakeOptions {
 }
 
 export function safeStat(filePath: string): { mtimeMs: number; sizeBytes: number } | null {
-  // no sync stat on a root already found offline (it can block the main thread for ~24s)
-  if (rootAvailability.isKnownOffline(filePath)) return null
+  // no sync stat on a root that is offline or not verified yet (it can block the main thread for ~24s)
+  if (rootAvailability.shouldDeferSyncIo(filePath)) return null
   try {
     const s = statSync(filePath)
     return s.isFile() ? { mtimeMs: s.mtimeMs, sizeBytes: s.size } : null
@@ -83,6 +84,8 @@ export class PendingMetadataIntake {
   private replaying = false
   private disposed = false
   private diskRetryAttempts = 0
+  /** a discovery on a root that never answers is dropped after a day so it cannot hold a slot forever */
+  private static readonly UNREACHABLE_EXPIRY_MS = 24 * 60 * 60 * 1000
   private static readonly MAX_DISK_RETRIES = 3
   private diskRetryTimer: NodeJS.Timeout | null = null
   private replayRetryAttempts = 0
@@ -92,10 +95,17 @@ export class PendingMetadataIntake {
     100, 250, 500, 1_000, 2_000, 3_000, 4_000,
   ]
 
+  private readonly stopRecoveryWatch: () => void
+
   constructor(private readonly options: PendingMetadataIntakeOptions) {
     this.maxCapacity = options.maxCapacity ?? 500
     this.maxRetries = options.maxRetries ?? 3
     this.batchSize = options.batchSize ?? 50
+    // discoveries held back because their root was unreachable or not verified yet are replayed
+    // as soon as it answers (first successful probe included, not only a recovery)
+    this.stopRecoveryWatch = rootAvailability.onVerified(() => {
+      if (!this.disposed && this.intents.size > 0) void this.triggerReplay()
+    })
   }
 
   get size(): number {
@@ -134,11 +144,15 @@ export class PendingMetadataIntake {
       if (!admission.allowed) {
         return { status: 'ignored', reason: 'policy-denied' }
       }
-      const stat = metadata ?? safeStat(path)
-      if (!stat) {
-        return { status: 'ignored', reason: 'missing-source' }
+      if (!metadata && !rootAvailability.shouldDeferSyncIo(path)) {
+        const stat = safeStat(path)
+        if (!stat) {
+          return { status: 'ignored', reason: 'missing-source' }
+        }
+        metadata = stat
       }
-      metadata = stat
+      // An unreachable root cannot be stat'ed now: keep the intent (without metadata) so it is
+      // replayed once the root answers, instead of dropping the discovery as "missing".
     }
 
     const existing = this.intents.get(path)
@@ -212,6 +226,7 @@ export class PendingMetadataIntake {
   close(): void {
     if (this.disposed) return
     this.disposed = true
+    this.stopRecoveryWatch()
     this.clear()
   }
 
@@ -355,7 +370,14 @@ export class PendingMetadataIntake {
         } else {
           const currentStat = safeStat(item.path)
           if (!currentStat) {
-            this.intents.delete(item.path)
+            // Unreachable root: keep the intent for a later replay (a root that never comes back
+            // cannot hold a slot forever: it expires); a truly missing file is dropped.
+            const unreachable = rootAvailability.shouldDeferSyncIo(item.path)
+            if (
+              !unreachable ||
+              Date.now() - item.enqueuedAt > PendingMetadataIntake.UNREACHABLE_EXPIRY_MS
+            )
+              this.intents.delete(item.path)
             continue
           }
           const admission = discoveredPathAdmission(item.path)

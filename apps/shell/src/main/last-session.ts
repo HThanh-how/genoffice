@@ -1,5 +1,6 @@
 import { statSync } from 'node:fs'
 import { isAbsolute } from 'node:path'
+import { rootAvailability } from './document-memory/root-availability'
 
 /**
  * Reopen the documents of the previous session at launch (genoffice#2162).
@@ -25,6 +26,8 @@ export function readLastSessionDocuments(settings: Record<string, unknown>): str
 }
 
 function isFile(path: string): boolean {
+  // a document on a dead or unverified share is not reopened at launch (stat would block startup)
+  if (rootAvailability.shouldDeferSyncIo(path)) return false
   try {
     return statSync(path).isFile()
   } catch {
