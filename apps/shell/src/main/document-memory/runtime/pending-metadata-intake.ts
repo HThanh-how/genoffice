@@ -112,6 +112,18 @@ export class PendingMetadataIntake {
     return this.intents.size
   }
 
+  /** intents whose file sits on a root that is offline or not verified: they cannot move yet */
+  get unreachableSize(): number {
+    let count = 0
+    for (const path of this.intents.keys()) if (rootAvailability.shouldDeferSyncIo(path)) count++
+    return count
+  }
+
+  /** intents that are really waiting for work (the rest wait for their folder, see unreachableSize) */
+  get reachableSize(): number {
+    return this.intents.size - this.unreachableSize
+  }
+
   has(rawPath: string): boolean {
     return this.intents.has(resolve(rawPath))
   }

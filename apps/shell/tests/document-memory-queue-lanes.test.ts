@@ -301,8 +301,15 @@ describe('files on a root that is not reachable yet', () => {
       ).toBe(false)
       // the files waiting for the folder are reported on their own: they cannot move, so they are not
       // "pending" work (the idle chip, the ETA and search results must not stay busy for a dead drive)
+      // (wait for the vector queue to drain first: a batch still in flight is real pending work)
+      await until(() => manager!.status().pending === 0, 20_000, 'healthy work drained')
       expect(manager.status().waitingForFolder).toBe(heldPaths.length)
+      // a new file discovered on the unreachable folder waits there too, it is not pending work
+      ;(
+        manager as unknown as { pendingIntake: { enqueue: (p: string, k: string) => unknown } }
+      ).pendingIntake.enqueue(join(heldDir, 'found-later.txt'), 'discovered')
       expect(manager.status().pending).toBe(0)
+      expect(manager.status().waitingForFolder).toBe(heldPaths.length + 1)
       const internals = manager as unknown as {
         queue: string[]
         heldRoots: { size: number }

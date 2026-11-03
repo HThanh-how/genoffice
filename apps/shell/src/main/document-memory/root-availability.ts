@@ -88,8 +88,12 @@ export class RootAvailability {
   private readonly pending = new Map<string, Promise<boolean>>()
   private readonly recovered = new Set<(root: string) => void>()
   private readonly verified = new Set<(root: string) => void>()
-  /** roots removed on purpose: a probe that was already in flight must not bring their state back */
-  private readonly dropped = new Set<string>()
+  /**
+   * Bumped when a root is removed on purpose: a probe that started before that must not bring the
+   * root's state back, while a probe started afterwards (a root added again, or a volume root
+   * checked on its own) is unaffected.
+   */
+  private readonly epochs = new Map<string, number>()
   private readonly errorProbes = new Map<string, number>()
   private lastImmediate = -Infinity
 
@@ -104,14 +108,13 @@ export class RootAvailability {
   register(root: string): void {
     const resolved = resolve(root)
     this.roots.add(resolved)
-    this.dropped.delete(resolved)
     if (this.probeOnRegister && !this.states.has(resolved) && !this.pending.has(resolved))
       void this.check(resolved)
   }
   unregister(root: string): void {
     this.roots.delete(resolve(root))
     this.states.delete(resolve(root))
-    this.dropped.add(resolve(root))
+    this.epochs.set(resolve(root), (this.epochs.get(resolve(root)) ?? 0) + 1)
   }
   configuredRoots(): string[] {
     return [...this.roots]
@@ -249,6 +252,8 @@ export class RootAvailability {
     if (pending) return pending
     const state = this.states.get(root)
     if (!force && state && this.now() < state.nextProbeAt) return Promise.resolve(state.online)
+    const epoch = this.epochs.get(root) ?? 0
+    const current = (): boolean => (this.epochs.get(root) ?? 0) === epoch
     let timer: NodeJS.Timeout | undefined
     let timedOut = false
     const native = Promise.resolve()
@@ -266,14 +271,14 @@ export class RootAvailability {
         timer.unref?.()
       }),
     ]).then((online) => {
-      if (!this.dropped.has(root)) this.observe(root, online)
+      if (current()) this.observe(root, online)
       return online
     })
     this.pending.set(root, bounded)
     void native.then((online) => {
       if (timer) clearTimeout(timer)
       this.pending.delete(root)
-      if (timedOut && !this.dropped.has(root)) this.observe(root, online)
+      if (timedOut && current()) this.observe(root, online)
     })
     return bounded
   }
