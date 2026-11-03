@@ -61,6 +61,8 @@ interface RootState {
   needsCatchUp: boolean
   pendingSubtrees: Set<string>
   subtreeTimer: NodeJS.Timeout | null
+  /** a reachability probe is in flight before the first fs.watch */
+  probing: boolean
 }
 
 function isSubpathOrEqual(parent: string, child: string): boolean {
@@ -159,6 +161,7 @@ export class FolderWatchManager {
         needsCatchUp: false,
         pendingSubtrees: new Set<string>(),
         subtreeTimer: null,
+        probing: false,
       })
       this.open(root)
     }
@@ -235,9 +238,22 @@ export class FolderWatchManager {
   private open(root: string): void {
     const state = this.roots.get(root)
     if (!state || this.closed || state.watcher) return
-    if (rootAvailability.isKnownOffline(root)) {
-      // recursive fs.watch opens synchronously on Windows and hangs on a dead share; retry with backoff
+    // recursive fs.watch opens synchronously on Windows and hangs on a dead share, so it only runs
+    // once a probe has found the root reachable. Saved roots start unverified at launch.
+    const verdict = rootAvailability.syncIoVerdict(root)
+    if (verdict === 'offline') {
       this.retry(root)
+      return
+    }
+    if (verdict === 'unverified') {
+      if (state.probing) return
+      state.probing = true
+      void rootAvailability.check(root).then((online) => {
+        state.probing = false
+        if (this.closed || this.roots.get(root) !== state) return
+        if (online) this.open(root)
+        else this.retry(root)
+      })
       return
     }
     try {

@@ -1521,6 +1521,55 @@ describe('resident worker lifecycle: prewarm TTL, heartbeat, retire log', () => 
     shutdownAgyResidentServers(mock.deps)
   })
 
+  it('stops pinging after the cold-start window: a hung but live child cannot hold the silence timer', async () => {
+    vi.useFakeTimers()
+    const { mock } = withLog()
+    const onActivity = vi.fn()
+    const turn = startTurn(mock, { onActivity })
+    const settled = turn.catch(() => undefined)
+    await vi.advanceTimersByTimeAsync(160_000) // past the 150 s window
+    const atWindowEnd = onActivity.mock.calls.length
+    expect(atWindowEnd).toBeGreaterThanOrEqual(25)
+    await vi.advanceTimersByTimeAsync(200_000)
+    expect(onActivity.mock.calls.length).toBe(atWindowEnd)
+    shutdownAgyResidentServers(mock.deps)
+    await vi.advanceTimersByTimeAsync(AGY_RESIDENT_TURN_TIMEOUT_MS)
+    await settled
+  })
+
+  it('stops pinging once the child has produced output', async () => {
+    vi.useFakeTimers()
+    const { mock } = withLog()
+    const onActivity = vi.fn()
+    const turn = startTurn(mock, { onActivity })
+    const settled = turn.catch(() => undefined)
+    await vi.advanceTimersByTimeAsync(12_000)
+    mock.children[0]!.emitLines([JSON.stringify({ event: 'init', conversation_id: 'c-1' })])
+    await vi.advanceTimersByTimeAsync(10)
+    const afterOutput = onActivity.mock.calls.length
+    await vi.advanceTimersByTimeAsync(60_000)
+    expect(onActivity.mock.calls.length).toBe(afterOutput)
+    shutdownAgyResidentServers(mock.deps)
+    await vi.advanceTimersByTimeAsync(AGY_RESIDENT_TURN_TIMEOUT_MS)
+    await settled
+  })
+
+  it('does not ping a worker that was already warm when the turn starts', async () => {
+    vi.useFakeTimers()
+    const { mock } = withLog()
+    mock.deps.env = { GENOFFICE_AGY_PREWARM_TTL_MS: '3600000' }
+    await prewarmAgy(config, mock.deps)
+    await vi.advanceTimersByTimeAsync(5 * 60_000) // booted long ago
+    const onActivity = vi.fn()
+    const turn = startTurn(mock, { onActivity })
+    const settled = turn.catch(() => undefined)
+    await vi.advanceTimersByTimeAsync(60_000)
+    expect(onActivity).not.toHaveBeenCalled()
+    shutdownAgyResidentServers(mock.deps)
+    await vi.advanceTimersByTimeAsync(AGY_RESIDENT_TURN_TIMEOUT_MS)
+    await settled
+  })
+
   it('does not ping for a child that already exited', async () => {
     vi.useFakeTimers()
     const { mock } = withLog()

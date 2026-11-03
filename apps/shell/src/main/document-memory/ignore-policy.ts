@@ -799,9 +799,9 @@ export function readGenOfficeIgnoreDetailed(dir: string): {
 } {
   const filePath = resolve(dir, '.genofficeignore')
   const cached = genOfficeIgnoreCache.get(dir)
-  if (rootAvailability.isKnownOffline(dir)) {
-    // Dead share: existsSync/statSync/readFileSync here can block the main thread for ~24s.
-    // Serve the last good rules from memory; they refresh once the root is back online.
+  if (rootAvailability.shouldDeferSyncIo(dir)) {
+    // Dead or not-yet-verified share: existsSync/statSync/readFileSync here can block the main
+    // thread for ~24s. Serve the last good rules from memory; they refresh once the root is verified.
     return {
       rules: cached?.rules ?? [],
       mode: cached?.mode,
@@ -920,7 +920,7 @@ export function readGenOfficeIgnoreDetailed(dir: string): {
 export function refreshGenOfficeIgnoreForRoot(dir: string): boolean {
   evaluationRootCache.delete(dir)
   // No synchronous fs on a root already found offline; the next online refresh picks up changes.
-  if (rootAvailability.isKnownOffline(dir)) return false
+  if (rootAvailability.shouldDeferSyncIo(dir)) return false
   const filePath = resolve(dir, '.genofficeignore')
   try {
     const cached = genOfficeIgnoreCache.get(dir)
@@ -993,6 +993,8 @@ export function refreshGenOfficeIgnoreForRoot(dir: string): boolean {
 
 export function getGenOfficeIgnoreFileData(root: string): GenOfficeIgnoreFileResult {
   const normalizedRoot = resolve(root)
+  if (rootAvailability.shouldDeferSyncIo(normalizedRoot))
+    return { exists: false, content: '', rules: [], error: 'root-unavailable' }
   const filePath = resolve(normalizedRoot, '.genofficeignore')
   try {
     if (!existsSync(filePath)) {
@@ -1061,6 +1063,9 @@ export function writeGenOfficeIgnoreFile(
     const normalizedRoot = resolve(root)
     if (isRestrictedRoot(normalizedRoot)) {
       return { ok: false, error: 'Restricted path' }
+    }
+    if (rootAvailability.shouldDeferSyncIo(normalizedRoot)) {
+      return { ok: false, error: 'root-unavailable' }
     }
 
     if (!existsSync(normalizedRoot)) {

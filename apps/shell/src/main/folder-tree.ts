@@ -24,6 +24,7 @@ import type {
 } from '../shared/home-api'
 import { isValidRenameName } from './rename-validation'
 import { statPathEntries } from './recent-files'
+import { rootAvailability } from './document-memory/root-availability'
 import { mkdirDirs } from '@genoffice/electron-utils/default-save-dir'
 
 /** files the home tree shows; mirrors the shell's open-dialog filter */
@@ -146,6 +147,8 @@ function hasVisibleSubfolder(dir: string): boolean {
 export function listFolder(dir: string, starredPaths: ReadonlySet<string>): FolderListing {
   const folders: FolderEntry[] = []
   const filePaths: string[] = []
+  // a dead or unverified share would block readdirSync/statSync below for ~24s
+  if (rootAvailability.shouldDeferSyncIo(dir)) return { dir, folders: [], files: [], missing: true }
   let dirents: import('node:fs').Dirent[]
   try {
     dirents = readdirSync(dir, { withFileTypes: true })
@@ -381,6 +384,9 @@ export class FolderWatcher {
     private readonly root: string,
     private readonly onChange: (dirs: string[]) => void,
   ) {
+    // recursive watch opens synchronously; never against a root that is offline or unverified
+    // (ensureFolderWatchers retries once the root answers)
+    if (rootAvailability.shouldDeferSyncIo(root)) return
     try {
       this.watcher = watch(root, { recursive: true, persistent: false }, (_event, filename) => {
         this.note(filename)

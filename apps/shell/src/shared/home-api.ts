@@ -202,6 +202,9 @@ export interface RecentEntry {
   /** the path failed to stat (disconnected drive, moved, deleted) — kept
       listed like Word's recents instead of silently dropped (r158) */
   missing?: boolean
+  /** with `missing`: the stat did not answer (offline or slow share), so the file may well exist;
+      distinct from a stat that failed because the file is gone */
+  unavailable?: boolean
 }
 
 /** paged query for the home file lists */

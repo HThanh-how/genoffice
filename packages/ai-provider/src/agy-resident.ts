@@ -46,8 +46,14 @@ export const AGY_RESIDENT_IDLE_TTL_MS = 120_000
  * that already served a session. Override with GENOFFICE_AGY_PREWARM_TTL_MS (milliseconds).
  */
 export const AGY_RESIDENT_PREWARM_TTL_MS = 10 * 60_000
-/** Same cadence as the one-shot runAgy heartbeat; keeps the renderer's silence timer alive. */
+/** Cadence of the cold-start heartbeat; keeps the renderer's silence timer alive while agy boots. */
 export const AGY_RESIDENT_HEARTBEAT_MS = 5_000
+/**
+ * agy reads stdin only once it is up (~80 s cold). The heartbeat covers a worker younger than this
+ * until its first output; after that only real output counts, so an agy that is alive but hung
+ * cannot keep the renderer's 240 s silence timer from firing until the 480 s turn timeout.
+ */
+export const AGY_RESIDENT_COLD_START_WINDOW_MS = 150_000
 /** A cancel arriving after this much stdout silence is the renderer's silence timer (240 s budget). */
 const SILENCE_CANCEL_AFTER_MS = 200_000
 
@@ -918,9 +924,15 @@ class AgyResidentManager {
         fail(error)
       }, timeoutMs)
 
-      // Ping the renderer's silence timer while the child is alive, including the whole cold start
-      // (agy reads stdin only once it is up). A dead child is never pinged: that would hide the failure.
+      // silence is measured per turn, not since the last turn of an idle worker
+      worker.lastActivityAt = Date.now()
+      let stdoutSeen = false
+      // Ping the renderer's silence timer only while a fresh worker is still booting (agy reads
+      // stdin only once it is up). Never for a dead child (that would hide the failure), and not
+      // for a worker that is up but quiet: its silence is real.
       const heartbeat = setInterval(() => {
+        if (stdoutSeen) return
+        if (Date.now() - worker.spawnedAt >= AGY_RESIDENT_COLD_START_WINDOW_MS) return
         if (worker.child.exitCode == null && worker.child.signalCode == null) cb.onActivity?.()
       }, AGY_RESIDENT_HEARTBEAT_MS)
       heartbeat.unref?.()
@@ -1003,6 +1015,7 @@ class AgyResidentManager {
       }
 
       const onStdout = (chunk: Buffer) => {
+        stdoutSeen = true
         worker.lastActivityAt = Date.now()
         cb.onActivity?.()
         pending += decoder.write(chunk)

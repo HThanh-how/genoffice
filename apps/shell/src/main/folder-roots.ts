@@ -1,6 +1,7 @@
 import { accessSync, constants, statSync } from 'node:fs'
 import { basename, isAbsolute, resolve } from 'node:path'
 import type { FolderRoot } from '../shared/home-api'
+import { rootAvailability } from './document-memory/root-availability'
 
 /** app-settings.json key: folders the user added to the home tree beside the default save folder */
 export const FOLDER_ROOTS_KEY = 'folderRoots'
@@ -51,6 +52,9 @@ export function withoutExtraRoot(extras: readonly string[], path: string): strin
 export function describeExtraRoot(path: string): FolderRoot {
   let readable = false
   let usable = false
+  // an offline or not-yet-verified share is shown as unavailable instead of blocking on statSync
+  if (rootAvailability.shouldDeferSyncIo(path))
+    return { path, name: basename(path) || path, usable, readable, removable: true }
   try {
     readable = statSync(path).isDirectory()
     if (readable) {

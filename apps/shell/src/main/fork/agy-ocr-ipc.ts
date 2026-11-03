@@ -46,7 +46,8 @@ export function cachedUsageReader<T>(
     if (value && now() - value.at < ttlMs) return Promise.resolve(value.result)
     inflight ??= read()
       .then((result) => {
-        value = { at: now(), result }
+        // a failed read (null) is retried on the next call instead of being remembered for a minute
+        if (result !== null && result !== undefined) value = { at: now(), result }
         return result
       })
       .finally(() => {

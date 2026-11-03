@@ -3,6 +3,7 @@ import { powerMonitor as rootPowerMonitor } from 'electron'
 import { installIpcTracing, traceOp } from './trace-op'
 import { registerAppActionIpc } from './app-action-ipc'
 import { showAppMessageBox, setFeedbackThemeGetter } from './app-message-box'
+import { rootAvailability } from './document-memory/root-availability'
 import { DocumentMemoryManager } from './document-memory/manager'
 import type { BootstrapResult } from './document-memory/storage-bootstrap'
 import { runStorageBootstrapOffThread } from './document-memory/runtime/storage-bootstrap-runner'
@@ -4127,9 +4128,30 @@ const SEARCH_EXT_FAMILY: Record<string, readonly string[]> = {
   html: ['html', 'htm'],
 }
 
+let folderRootRecoveryHooked = false
+
 /** one recursive watcher per tree root; follows the save-folder setting and the added folders */
 function ensureFolderWatchers(): void {
-  const wanted = new Set(folderRootPaths().filter((root) => existsSync(root)))
+  const wanted = new Set<string>()
+  for (const root of folderRootPaths()) {
+    // register so the root gets probed; existsSync / fs.watch only run on a verified-reachable root
+    rootAvailability.register(root)
+    const verdict = rootAvailability.syncIoVerdict(root)
+    if (verdict === 'ok') {
+      if (existsSync(root)) wanted.add(root)
+    } else if (verdict === 'unverified') {
+      void rootAvailability.check(root).then((online) => {
+        if (!online) return
+        ensureFolderWatchers()
+        for (const wc of webContents.getAllWebContents())
+          if (!wc.isDestroyed()) wc.send(HOME_CHANNELS.folderChanged, [root])
+      })
+    }
+  }
+  if (!folderRootRecoveryHooked) {
+    folderRootRecoveryHooked = true
+    rootAvailability.onRecovered(() => ensureFolderWatchers())
+  }
   for (const [root, watcher] of folderWatchers) {
     if (wanted.has(root) && watcher.active) continue
     watcher.close()
@@ -4346,7 +4368,9 @@ function splashAppForPath(
 }
 
 function beginColdOpening(paths: readonly string[]): void {
-  const first = paths.find((p) => COLD_OPEN_FILE.test(p) && existsSync(p))
+  const first = paths.find(
+    (p) => COLD_OPEN_FILE.test(p) && !rootAvailability.shouldDeferSyncIo(p) && existsSync(p),
+  )
   if (!first || !openingEnabled()) return
   coldOpening = {
     splash: startOpeningNotice({
@@ -6304,7 +6328,8 @@ function registerHomeIpc(): void {
     removeRecentFiles(list)
     // an unavailable entry's star must go with it, or the Starred view keeps
     // a dead dimmed row the recents list no longer shows
-    removeStarredFiles(list.filter((p) => !existsSync(p)))
+    // a path on an unreachable share is unknown, not missing: keep its star
+    removeStarredFiles(list.filter((p) => !rootAvailability.shouldDeferSyncIo(p) && !existsSync(p)))
   })
 
   // Bulk unstar from the Starred view: every row there is a favorite, so the
@@ -7110,7 +7135,10 @@ function registerHomeIpc(): void {
     const show = showDefaultFolderFrom(readAppSettings(APP_SETTINGS_PATH()))
     const roots = [
       show ? own : { ...own, hidden: true },
-      ...extraFolderRoots().map(describeExtraRoot),
+      ...extraFolderRoots().map((root) => {
+        rootAvailability.register(root)
+        return describeExtraRoot(root)
+      }),
     ]
     ensureFolderWatchers()
     return roots
@@ -7689,7 +7717,9 @@ function registerTabsIpc(): void {
       tab,
       tabs: tabManager.list(),
       canDetach: tabManager.canDetachTab(id),
-      fileExists: !!tab.filePath && existsSync(tab.filePath),
+      fileExists:
+        !!tab.filePath &&
+        (rootAvailability.shouldDeferSyncIo(tab.filePath) || existsSync(tab.filePath)),
       canReopen: recentlyClosed.getEntries().length > 0,
       tm,
       actions: tabMenuActions(),

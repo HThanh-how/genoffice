@@ -280,7 +280,8 @@ async function archiveLegacyDocInternal(
     archivedAt: now,
     expiresAt: now + RETENTION_MS,
   }
-  await mkdir(originals, { recursive: true })
+  // mkdir returns the first directory it created: a recreated vault is no longer hidden
+  if (await mkdir(originals, { recursive: true })) hiddenVaults.delete(vault)
   await hideOnWindows(vault)
   const backup = backupPath(vault, entry)
   let copied = false

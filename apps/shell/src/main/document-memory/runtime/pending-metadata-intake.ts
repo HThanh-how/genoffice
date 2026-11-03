@@ -36,7 +36,8 @@ export interface DiscoveredReplayResult {
 }
 
 export interface PendingMetadataIntakeAdapter {
-  onDiscovered(path: string, metadata: { mtimeMs: number; sizeBytes: number }): void
+  /** metadata is omitted when the root is not reachable yet and the file could not be stat'ed */
+  onDiscovered(path: string, metadata?: { mtimeMs: number; sizeBytes: number }): void
   onCanceled?(path: string): void
   onMoved?(oldPath: string, newPath: string): void
 }
@@ -61,8 +62,8 @@ export interface PendingMetadataIntakeOptions {
 }
 
 export function safeStat(filePath: string): { mtimeMs: number; sizeBytes: number } | null {
-  // no sync stat on a root already found offline (it can block the main thread for ~24s)
-  if (rootAvailability.isKnownOffline(filePath)) return null
+  // no sync stat on a root that is offline or not verified yet (it can block the main thread for ~24s)
+  if (rootAvailability.shouldDeferSyncIo(filePath)) return null
   try {
     const s = statSync(filePath)
     return s.isFile() ? { mtimeMs: s.mtimeMs, sizeBytes: s.size } : null
@@ -134,11 +135,15 @@ export class PendingMetadataIntake {
       if (!admission.allowed) {
         return { status: 'ignored', reason: 'policy-denied' }
       }
-      const stat = metadata ?? safeStat(path)
-      if (!stat) {
-        return { status: 'ignored', reason: 'missing-source' }
+      if (!metadata && !rootAvailability.shouldDeferSyncIo(path)) {
+        const stat = safeStat(path)
+        if (!stat) {
+          return { status: 'ignored', reason: 'missing-source' }
+        }
+        metadata = stat
       }
-      metadata = stat
+      // An unreachable root cannot be stat'ed now: keep the intent (without metadata) so it is
+      // replayed once the root answers, instead of dropping the discovery as "missing".
     }
 
     const existing = this.intents.get(path)
@@ -355,7 +360,8 @@ export class PendingMetadataIntake {
         } else {
           const currentStat = safeStat(item.path)
           if (!currentStat) {
-            this.intents.delete(item.path)
+            // unreachable root: keep the intent for a later replay; a truly missing file is dropped
+            if (!rootAvailability.shouldDeferSyncIo(item.path)) this.intents.delete(item.path)
             continue
           }
           const admission = discoveredPathAdmission(item.path)
