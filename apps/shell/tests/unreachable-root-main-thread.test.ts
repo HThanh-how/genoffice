@@ -33,7 +33,7 @@ import {
   safeStat,
 } from '../src/main/document-memory/runtime/pending-metadata-intake'
 import { describeExtraRoot } from '../src/main/folder-roots'
-import { FolderWatcher, listFolder } from '../src/main/folder-tree'
+import { FolderWatcher, isInsideRoot, listFolder } from '../src/main/folder-tree'
 import { statPathEntriesAsync } from '../src/main/recent-files'
 import { FreshnessCoordinator } from '../src/main/document-memory/runtime/freshness-coordinator'
 import { DocumentMemoryStore } from '../src/main/document-memory/store'
@@ -159,6 +159,43 @@ describe('RootAvailability.syncIoVerdict', () => {
     expect(roots.syncIoVerdict(root)).toBe('offline')
   })
 
+  it('a failing listener does not stop the others, and does not make the probe reject', async () => {
+    vi.spyOn(console, 'warn').mockImplementation(() => {})
+    const roots = new RootAvailability(async () => true)
+    const seen = vi.fn()
+    roots.onVerified(() => {
+      throw new Error('boom')
+    })
+    roots.onVerified(seen)
+    roots.onRecovered(() => {
+      throw new Error('boom')
+    })
+    roots.onRecovered(seen)
+    roots.register(root)
+    await expect(roots.settled(root)).resolves.toBeUndefined() // first verification fires onVerified
+    expect(seen).toHaveBeenCalledTimes(1)
+    roots.observe(root, false)
+    expect(() => roots.observe(root, true)).not.toThrow() // recovery fires onRecovered and onVerified
+    expect(seen).toHaveBeenCalledTimes(3)
+  })
+
+  it('onVerified fires on the first successful probe of a never-verified root, and on recoveries', () => {
+    const roots = new RootAvailability(never)
+    const verified = vi.fn()
+    roots.onVerified(verified)
+    roots.observe(root, false) // not reachable: nothing yet
+    expect(verified).not.toHaveBeenCalled()
+    roots.observe(root, true)
+    expect(verified).toHaveBeenCalledTimes(1)
+    roots.observe(root, true) // still reachable: no repeat
+    expect(verified).toHaveBeenCalledTimes(1)
+    const fresh = new RootAvailability(never)
+    const first = vi.fn()
+    fresh.onVerified(first)
+    fresh.observe(root, true) // no earlier state at all
+    expect(first).toHaveBeenCalledTimes(1)
+  })
+
   it('never touches the filesystem', () => {
     const roots = new RootAvailability(never)
     roots.register(root)
@@ -249,6 +286,48 @@ describe('other main-thread readers on an unreachable root', () => {
     await intake.triggerReplay()
     expect(onDiscovered).toHaveBeenCalledTimes(1)
     expect(intake.has(file)).toBe(false)
+  })
+
+  it('replays a held discovery on the FIRST successful probe of a never-verified root', async () => {
+    const file = join(root, 'first.docx')
+    writeFileSync(file, 'x')
+    neverProbed() // launch: the probe is still in flight, no earlier state exists
+    const onDiscovered = vi.fn(() => ({ outcome: 'enrolled' as const }))
+    const intake = new PendingMetadataIntake({
+      isStopped: () => false,
+      isEnabled: () => true,
+      isWriteReady: () => true,
+      isAccountingReady: () => true,
+      isFreeDiskReady: () => true,
+      onRemember: () => true,
+      onDiscovered,
+    } as never)
+    try {
+      expect(intake.enqueue(file, 'discovered').status).toBe('deferred')
+      vi.restoreAllMocks()
+      rootAvailability.observe(root, true) // the probe answers: never "recovered", only verified
+      await tick(20)
+      expect(onDiscovered).toHaveBeenCalledTimes(1)
+      expect(intake.has(file)).toBe(false)
+    } finally {
+      intake.close()
+    }
+  })
+
+  it('isInsideRoot does no filesystem work for an unverified or offline root', async () => {
+    neverProbed()
+    resetCalls()
+    expect(isInsideRoot(root, join(root, 'sub', 'x.docx'))).toBe(true)
+    expect(isInsideRoot(root, root)).toBe(true)
+    expect(isInsideRoot(root, join(root, '..', 'elsewhere'))).toBe(false)
+    expect(isInsideRoot(root, root + '-sibling')).toBe(false) // prefix is not containment
+    expect(isInsideRoot(join(root, 'a'), join(root, 'a', 'b'))).toBe(true)
+    expect(syncCalls()).toBe(0)
+    vi.restoreAllMocks()
+    await registerThen(false)
+    resetCalls()
+    expect(isInsideRoot(root, join(root, 'sub', 'x.docx'))).toBe(true)
+    expect(syncCalls()).toBe(0)
   })
 
   it('replays held discoveries as soon as the root recovers', async () => {

@@ -106,6 +106,15 @@ const withTrailingSep = (dir: string): string => (dir.endsWith(sep) ? dir : dir 
  * target compares by its nearest existing ancestor.
  */
 export function isInsideRoot(root: string, path: string): boolean {
+  // realpath / existsSync below would block on a dead or unverified share (this runs before any IPC
+  // handler gets to await the root): compare the resolved strings only, as nothing there can be
+  // opened right now anyway
+  if (rootAvailability.shouldDeferSyncIo(root) || rootAvailability.shouldDeferSyncIo(path)) {
+    const fold = (p: string): string => (process.platform === 'win32' ? p.toLowerCase() : p)
+    const base = fold(resolve(root))
+    const target = fold(resolve(path))
+    return target === base || target.startsWith(withTrailingSep(base))
+  }
   const realRoot = realOrResolved(root)
   let probe = resolve(path)
   const missing: string[] = []

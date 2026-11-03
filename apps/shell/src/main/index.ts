@@ -4131,6 +4131,9 @@ const SEARCH_EXT_FAMILY: Record<string, readonly string[]> = {
 
 let folderRootRecoveryHooked = false
 
+/** how long the root list waits for slow roots to be probed before it answers anyway */
+const ROOTS_SETTLE_WAIT_MS = 400
+
 /** tell every window a root's state changed; Home reloads its root list when that root was unusable */
 function notifyFolderRootChanged(root: string): void {
   for (const wc of webContents.getAllWebContents())
@@ -7150,7 +7153,17 @@ function registerHomeIpc(): void {
     const saveDir = defaultSaveDir()
     const extras = extraFolderRoots()
     for (const root of [saveDir, ...extras]) rootAvailability.register(root)
-    await Promise.all([saveDir, ...extras].map((root) => rootAvailability.settled(root)))
+    // Healthy roots answer in milliseconds; a dead one needs its full probe deadline. Wait for the
+    // others, but never keep the whole tree empty for a root that is slow: it is described as
+    // unusable now and Home reloads it when it is verified (folderChanged).
+    let giveUp: NodeJS.Timeout | undefined
+    await Promise.race([
+      Promise.all([saveDir, ...extras].map((root) => rootAvailability.settled(root))),
+      new Promise<void>((resolve) => {
+        giveUp = setTimeout(resolve, ROOTS_SETTLE_WAIT_MS)
+      }),
+    ])
+    if (giveUp) clearTimeout(giveUp)
     // describeRoot creates a missing save folder, so its watcher has something to attach to. The
     // folder stays the first root (it is where new files land); the tree only draws it when asked
     const own = describeRoot(saveDir)
@@ -7241,6 +7254,9 @@ function registerHomeIpc(): void {
     if (typeof path !== 'string') return
     const extras = withoutExtraRoot(extraFolderRoots(), path)
     writeAppSetting(APP_SETTINGS_PATH(), FOLDER_ROOTS_KEY, extras)
+    // forget its verdict: adding the same folder again must be probed afresh, not judged by a stale outage
+    if (!folderScan?.folders().some((entry) => resolve(entry.root) === resolve(path)))
+      rootAvailability.unregister(path)
     ensureFolderWatchers()
     fileIndexer?.refresh()
   })

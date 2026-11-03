@@ -87,6 +87,7 @@ export class RootAvailability {
   private readonly roots = new Set<string>()
   private readonly pending = new Map<string, Promise<boolean>>()
   private readonly recovered = new Set<(root: string) => void>()
+  private readonly verified = new Set<(root: string) => void>()
   private readonly errorProbes = new Map<string, number>()
   private lastImmediate = -Infinity
 
@@ -127,6 +128,27 @@ export class RootAvailability {
       this.recovered.delete(listener)
     }
   }
+  /**
+   * Fires whenever a root becomes known to be reachable: the first successful probe of a root
+   * that was never verified, and every recovery after an outage. Work parked because the root was
+   * "not verified yet" resumes from this.
+   */
+  onVerified(listener: (root: string) => void): () => void {
+    this.verified.add(listener)
+    return () => {
+      this.verified.delete(listener)
+    }
+  }
+  /** one failing listener must not stop the others or make the probe that triggered it reject */
+  private emit(listeners: Set<(root: string) => void>, root: string): void {
+    for (const listener of [...listeners]) {
+      try {
+        listener(root)
+      } catch (error) {
+        console.warn('[root-availability] listener failed for', root, error)
+      }
+    }
+  }
   observe(root: string, online: boolean): void {
     root = resolve(root)
     const previous = this.states.get(root)
@@ -140,8 +162,8 @@ export class RootAvailability {
       failures,
       nextProbeAt: now + (online ? ONLINE_TTL : OFFLINE_BACKOFF[Math.min(failures - 1, 3)]!),
     })
-    if (online && previous && !previous.online)
-      for (const listener of this.recovered) listener(root)
+    if (online && previous && !previous.online) this.emit(this.recovered, root)
+    if (online && (!previous || !previous.online)) this.emit(this.verified, root)
   }
   checkPath(path: string, force = false): Promise<boolean> {
     return this.check(this.rootOf(path), force)

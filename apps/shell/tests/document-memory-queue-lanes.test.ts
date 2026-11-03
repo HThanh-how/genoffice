@@ -10,7 +10,7 @@ import {
   writeFileSync,
 } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { basename, join, resolve } from 'node:path'
 import type { Worker } from 'node:worker_threads'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { chunkDocumentText } from '../src/main/document-memory/chunks'
@@ -260,36 +260,65 @@ describe('reading does not wait for vectors', () => {
 })
 
 describe('files on a root that is not reachable yet', () => {
-  it('stay queued, are never read or judged by empty ignore rules, and are read once the root answers', async () => {
+  it('wait outside the line, never starve healthy files (reading or vectors), and come back when the root answers', async () => {
     const { rootAvailability } = await import('../src/main/document-memory/root-availability')
-    const filesDir = join(dir, 'files')
-    seedLine(0, 4)
-    // a saved root whose launch-time probe has not answered yet
+    const heldDir = join(dir, 'files', 'held')
+    mkdirSync(heldDir)
+    const heldPaths = [0, 1].map((i) => join(heldDir, `held-${i}.txt`))
+    for (const [i, path] of heldPaths.entries()) writeFileSync(path, BODY(900 + i))
+    const { textOnlyPaths, pendingPaths } = seedLine(3, 3)
+    const seed = new DocumentMemoryStore(join(dir, 'document-memory.db'), { role: 'worker' })
+    try {
+      const ins = seed.rawDb.prepare(
+        "INSERT INTO documents(path, name, status, mtime_ms, size_bytes, priority_at) VALUES (?, ?, 'pending', 1, NULL, ?)",
+      )
+      for (const path of heldPaths) ins.run(path, basename(path), 1_000_000)
+    } finally {
+      seed.close()
+    }
+    // the held root's launch-time probe has not answered; every other root probes normally
+    const real = rootAvailability.check.bind(rootAvailability)
     const check = vi
       .spyOn(rootAvailability, 'check')
-      .mockReturnValue(new Promise<boolean>(() => {}))
-    rootAvailability.register(filesDir)
+      .mockImplementation((root: string, force?: boolean) =>
+        resolve(root) === resolve(heldDir) ? new Promise<boolean>(() => {}) : real(root, force),
+      )
+    rootAvailability.register(heldDir)
     const worker = new FakeIndexWorker()
     try {
       manager = open(worker)
-      await new Promise((r) => setTimeout(r, 400))
-      expect(worker.seen.some((m) => m.type === 'extract')).toBe(false)
-      const queued = (manager as unknown as { queue: string[] }).queue
-      expect(queued.length).toBe(4) // held in the line, not dropped
+      // the healthy files are read AND embedded although held files exist
+      await until(
+        () => (statusCounts().ready ?? 0) === textOnlyPaths.length + pendingPaths.length,
+        30_000,
+        'healthy files ready',
+      )
+      expect(worker.seen.some((m) => m.type === 'embed')).toBe(true)
+      expect(
+        worker.seen.some((m) => m.type === 'extract' && heldPaths.includes(m.path ?? '')),
+      ).toBe(false)
+      const internals = manager as unknown as {
+        queue: string[]
+        heldRoots: { size: number; wake: (paths: string[]) => void; held: Set<string> }
+        drain(): void
+      }
+      // held files are not in the line (a line with work keeps the extract lane "ready")
+      expect(internals.queue.filter((p) => heldPaths.includes(p))).toEqual([])
+      expect(internals.heldRoots.size).toBe(heldPaths.length)
 
       check.mockRestore() // the real probe is back; the root now answers
-      rootAvailability.observe(filesDir, true)
-      ;(manager as unknown as { drain(): void }).drain()
+      rootAvailability.observe(heldDir, true)
+      internals.heldRoots.wake([...internals.heldRoots.held]) // what the 15 s pause does
       await until(
-        () => (statusCounts().ready ?? 0) === 4,
+        () => (statusCounts().ready ?? 0) === textOnlyPaths.length + pendingPaths.length + 2,
         20_000,
-        'files read after the root answered',
+        'held files read after the root answered',
       )
     } finally {
       check.mockRestore()
-      rootAvailability.unregister(filesDir)
+      rootAvailability.unregister(heldDir)
     }
-  }, 40_000)
+  }, 60_000)
 })
 
 describe('a backlog above the poll threshold is still polled', () => {

@@ -101,8 +101,9 @@ export class PendingMetadataIntake {
     this.maxCapacity = options.maxCapacity ?? 500
     this.maxRetries = options.maxRetries ?? 3
     this.batchSize = options.batchSize ?? 50
-    // discoveries held back because their root was unreachable are replayed as soon as it answers
-    this.stopRecoveryWatch = rootAvailability.onRecovered(() => {
+    // discoveries held back because their root was unreachable or not verified yet are replayed
+    // as soon as it answers (first successful probe included, not only a recovery)
+    this.stopRecoveryWatch = rootAvailability.onVerified(() => {
       if (!this.disposed && this.intents.size > 0) void this.triggerReplay()
     })
   }

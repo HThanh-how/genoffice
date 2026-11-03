@@ -6,38 +6,47 @@ export const HELD_ROOT_RETRY_MS = 15_000
 /**
  * Paths whose root is offline or not verified yet. The extraction lane neither reads them nor
  * judges them by .genofficeignore rules (unknown for such a root: they come back empty), and it must
- * not drop them: they go back into the line and are looked at again after a pause, instead of
- * spinning on them.
+ * not drop them. They also must not sit in the line: a line that still has work keeps the extract
+ * lane "ready", and it would win lane picks over vectors of healthy files while doing nothing. So they
+ * wait here, outside the line, and `wake` puts them back after a pause.
  */
 export class HeldRootPaths {
-  private held: Array<[path: string, textOnly: boolean]> = []
+  private readonly held = new Set<string>()
   private timer?: NodeJS.Timeout
 
-  /** @param retry called after the pause to run the lane again (it checks stopped/enabled itself) */
+  /**
+   * @param wake called with the held paths after the pause; it re-enqueues them (and checks
+   *   stopped/enabled and the database itself, so a file deleted meanwhile is not revived)
+   */
   constructor(
-    private readonly retry: () => void,
+    private readonly wake: (paths: string[]) => void,
     private readonly delayMs = HELD_ROOT_RETRY_MS,
   ) {}
 
-  /** True when `path` must wait; it is remembered until release(). */
-  take(path: string, textOnly: boolean): boolean {
-    if (!rootAvailability.shouldDeferSyncIo(path)) return false
-    this.held.push([path, textOnly])
-    return true
+  get size(): number {
+    return this.held.size
   }
 
-  /** Hand the held paths back to the line (`requeue`) and schedule the next look. True when any. */
-  release(requeue: (path: string, textOnly: boolean) => void): boolean {
-    const batch = this.held
-    this.held = []
-    for (const [path, textOnly] of batch) requeue(path, textOnly)
-    if (batch.length > 0 && !this.timer) {
+  /** True when `path` must wait (it is held, outside the line, until the next wake). */
+  take(path: string): boolean {
+    if (!rootAvailability.shouldDeferSyncIo(path)) return false
+    this.held.add(path)
+    if (!this.timer) {
       this.timer = setTimeout(() => {
         this.timer = undefined
-        this.retry()
+        const batch = [...this.held]
+        this.held.clear()
+        if (batch.length > 0) this.wake(batch)
       }, this.delayMs)
       this.timer.unref?.()
     }
-    return batch.length > 0
+    return true
+  }
+
+  /** Forget everything held (the manager was stopped or its queue was cleared). */
+  clear(): void {
+    this.held.clear()
+    if (this.timer) clearTimeout(this.timer)
+    this.timer = undefined
   }
 }

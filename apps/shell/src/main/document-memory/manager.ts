@@ -339,7 +339,7 @@ export class DocumentMemoryManager {
   closeAsync(): Promise<void> {
     if (this.shutdownPromise) return this.shutdownPromise
     if (!this.stopped) {
-      this.stopped = true; this.stopFolderPauseWatch(); this.sourceRecovery.dispose(); this.stopJunkPurge?.(); this.statusAgg?.close(); this.stopPolicyWatch(); this.epoch++
+      this.stopped = true; this.heldRoots.clear(); this.stopFolderPauseWatch(); this.sourceRecovery.dispose(); this.stopJunkPurge?.(); this.statusAgg?.close(); this.stopPolicyWatch(); this.epoch++
       if (this.pollTimer) { clearInterval(this.pollTimer); this.pollTimer = null }; this.admissionRetry.dispose(); if (this.migrationTimer) { clearTimeout(this.migrationTimer); this.migrationTimer = null }
       this.syncAdmissionCoord.close(); this.budgetCoord.close(); this.maintScheduler.dispose(); this.freshnessCoord.clearMissing(); this.embeddingCoord.clearQueue(); this.skippedMigrationDocs.clear(); this.admission.clear(); this.pendingIntake.close()
       this.queue.length = 0; this.queued.clear(); this.gate.clear(); this.urgent.clear(); this.deferred.clear()
@@ -348,7 +348,7 @@ export class DocumentMemoryManager {
       try { await this.localOcrWiring?.dispose().catch(() => undefined); await this.host.terminate() } finally { this.store.close() }
     })())
   }
-  private readonly heldRoots = new HeldRootPaths(() => { if (!this.stopped && this.enabled) this.drain() }); private readonly stopFolderPauseWatch = folderPauses.subscribe(() => this.drain()); private enqueue(path: string, prioritize = false, bytes?: number): void {
+  private readonly heldRoots = new HeldRootPaths((paths) => { if (!this.stopped && this.enabled) for (const p of paths) this.enqueue(p) }); private readonly stopFolderPauseWatch = folderPauses.subscribe(() => this.drain()); private enqueue(path: string, prioritize = false, bytes?: number): void {
     if (this.stopped || !this.enabled) return; const p = resolve(path); if (isPathIgnored(p) || this.activeGeneration.get(p) === this.currentGeneration(p)) return
     if (this.queued.has(p)) { if (prioritize) { const idx = this.queue.indexOf(p); if (idx > 0) { this.queue.splice(idx, 1); this.queue.unshift(p) } }; return }
     const doc = this.store.documentByPath(p); if (!doc || doc.status === 'excluded') return
@@ -394,7 +394,7 @@ export class DocumentMemoryManager {
       while (!this.stopped && this.enabled && !isIndexingPaused() && this.budgetCoord.isWriteReady() && this.gate.extractable(this.queue.length, this.urgent)) {
         // vectors are waiting and this lane has had its share of the process for now: the other lane goes next
         if (Date.now() - sliceStart >= EXTRACT_SLICE_MS && this.embeddingCoord.getQueueLength() > 0 && !this.embeddingCoord.isRetryPending()) break
-        const path = this.takeNext(); if (!path) break; const wasTextOnly = this.gate.taken(path); this.queued.delete(path); if (this.heldRoots.take(path, wasTextOnly)) continue; if (isPathIgnored(path) || !(await rootAvailability.checkPath(path)) || this.stopped || !this.enabled) continue; if (this.activeExtractions.size) { this.queue.unshift(path); this.queued.add(path); break }; this.activeExtractions.add(path)
+        const path = this.takeNext(); if (!path) break; const wasTextOnly = this.gate.taken(path); this.queued.delete(path); if (this.heldRoots.take(path)) continue; if (isPathIgnored(path) || !(await rootAvailability.checkPath(path)) || this.stopped || !this.enabled) continue; if (this.activeExtractions.size) { this.queue.unshift(path); this.queued.add(path); break }; this.activeExtractions.add(path)
         this.activeSince.set(path, Date.now()); const generation = this.currentGeneration(path)
         const epoch = this.epoch; this.activeGeneration.set(path, generation); this.pendingCount++
         if (!this.activeBytes.has(path)) { const doc = this.store.documentByPath(path); if (doc?.sizeBytes) this.activeBytes.set(path, doc.sizeBytes) }
@@ -433,7 +433,7 @@ export class DocumentMemoryManager {
         }
       }
     } finally {
-      this.lanes.add('extract', Date.now() - sliceStart); this.extracting = false; const held = this.heldRoots.release((p, textOnly) => { if (!this.queued.has(p)) { this.queue.push(p); this.queued.add(p); if (textOnly) this.gate.textOnly.add(p) } }); if (!this.stopped && this.enabled && !refused && !held) this.drain()
+      this.lanes.add('extract', Date.now() - sliceStart); this.extracting = false; if (!this.stopped && this.enabled && !refused) this.drain()
     }
   }
   private async applyExtractReply(path: string, reply: WorkerReply | null, generation: number, epoch: number): Promise<void> {
