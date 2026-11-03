@@ -1889,6 +1889,7 @@ export function SettingsModal({
   const [tabSleepOn, setTabSleepOn] = useState(true)
   const [restoreSessionOn, setRestoreSessionOn] = useState(false)
   const [autoUpdateCheckOn, setAutoUpdateCheckOn] = useState(true)
+  const [silentInstallOn, setSilentInstallOn] = useState(false)
   const [defaultApp, setDefaultApp] = useState<DefaultAppStatus | null>(null)
   const [defaultAppBusy, setDefaultAppBusy] = useState(false)
   const [defaultAppFailed, setDefaultAppFailed] = useState(false)
@@ -1902,6 +1903,7 @@ export function SettingsModal({
   const [updateSaving, setUpdateSaving] = useState(false)
   const [updateNotice, setUpdateNotice] = useState('')
   const [authorName, setAuthorName] = useState<AuthorNameSetting>({ value: '', fallback: '' })
+  const [legacyImportPrompt, setLegacyImportPrompt] = useState(true)
   const [channel, setChannel] = useState<'stable' | 'beta'>('stable')
   const [legacyDoc, setLegacyDoc] = useState<LegacyDocSettings>({
     mode: 'online',
@@ -1956,6 +1958,9 @@ export function SettingsModal({
       .catch(() => {
         if (alive) setUpdateNotice('—')
       })
+    void window.aiOffice.getLegacyImportPrompt?.().then((v) => {
+      if (alive) setLegacyImportPrompt(v)
+    })
     void window.aiOffice.getAuthorName?.().then((v) => {
       if (alive) setAuthorName(v)
     })
@@ -1973,6 +1978,9 @@ export function SettingsModal({
       .catch(() => {})
     void window.aiOffice.getAutoUpdateCheck?.().then((on) => {
       if (alive) setAutoUpdateCheckOn(on)
+    })
+    void window.aiOffice.getSilentInstallUpdate?.().then((on) => {
+      if (alive) setSilentInstallOn(on)
     })
     void window.aiOffice.getAppVersion?.().then((v) => {
       if (alive && v) setAppVersion(v)
@@ -2192,6 +2200,27 @@ export function SettingsModal({
                       onBlur={commitAuthorName}
                       onKeyDown={(e) => {
                         if (e.key === 'Enter') e.currentTarget.blur()
+                      }}
+                    />
+                  </SettingsRow>
+                  <SettingsRow className="set-field">
+                    <div className="set-field-text">
+                      <div className="set-field-stack">
+                        <div className="set-field-label">{t('setLegacyImportPrompt')}</div>
+                        <div className="set-field-desc">{t('setLegacyImportPromptDesc')}</div>
+                      </div>
+                    </div>
+                    <button
+                      className="set-switch"
+                      role="switch"
+                      aria-checked={legacyImportPrompt}
+                      aria-label={t('setLegacyImportPrompt')}
+                      onClick={() => {
+                        const next = !legacyImportPrompt
+                        setLegacyImportPrompt(next)
+                        void window.aiOffice
+                          .setLegacyImportPrompt?.(next)
+                          .then(setLegacyImportPrompt)
                       }}
                     />
                   </SettingsRow>
@@ -2829,6 +2858,25 @@ export function SettingsModal({
                         const next = !autoUpdateCheckOn
                         setAutoUpdateCheckOn(next)
                         void window.aiOffice.setAutoUpdateCheck?.(next).catch(() => {})
+                      }}
+                    />
+                  </SettingsRow>
+                  <SettingsRow className="set-field">
+                    <div className="set-field-text">
+                      <div className="set-field-stack">
+                        <div className="set-field-label">{t('setSilentInstall')}</div>
+                        <div className="set-field-desc">{t('setSilentInstallDesc')}</div>
+                      </div>
+                    </div>
+                    <button
+                      className="set-switch"
+                      role="switch"
+                      aria-checked={silentInstallOn}
+                      aria-label={t('setSilentInstall')}
+                      onClick={() => {
+                        const next = !silentInstallOn
+                        setSilentInstallOn(next)
+                        void window.aiOffice.setSilentInstallUpdate?.(next).catch(() => {})
                       }}
                     />
                   </SettingsRow>

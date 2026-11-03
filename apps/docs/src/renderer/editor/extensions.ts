@@ -57,6 +57,7 @@ import {
   isCjkFontName,
   lineHeightFactor,
   symbolBulletLinePt,
+  markerFaceLifts,
   oversizedMarkerExtraPt,
   SIMSUN_GAP_CHAR_RE,
   simsunGapLineFactor,
@@ -157,6 +158,8 @@ import { fillInk } from './shading-ink'
 import { FloatTableSpacingExtension } from './float-table-spacing'
 import {
   FloatVShiftsExtension,
+  GAP_BAND,
+  insideFloatTable,
   PaginationGapsExtension,
   RowFillsExtension,
 } from './pagination-gaps'
@@ -260,9 +263,11 @@ import { moveBlocks } from './move-block'
 import { tablePositionCss, tableWidthCss, type TableWidthInput } from './table-geometry'
 import {
   foldQuarterTurnMargins,
+  pictureLayerDecls,
   pictureTransformFns,
   quarterTurnInsetPx,
   quarterTurnMarginCss,
+  type PictureLayer,
 } from './image-rotation'
 import {
   blockPictureAnchor,
@@ -562,6 +567,8 @@ export const DocInlineImage = Node.create({
       rotDeg: { default: null as number | null },
       flipH: { default: false },
       flipV: { default: false },
+      /** pictures of a picture-only group, bottom first, in fractions of the box (display only) */
+      layers: { default: null as PictureLayer[] | null },
       /** the run's raw <w:rPr> slice, re-emitted before the fragment on save (not rendered) */
       rawRPr: { default: null as string | null, rendered: false },
       /** VML horizontal rule (alone or sharing the paragraph): {colorHex?, thicknessPx?, sizeHalfPoints?, widthPx?, align?}; drawn as a rule on its own line */
@@ -608,6 +615,7 @@ export const DocInlineImage = Node.create({
         `border:${((ib.widthPt * 96) / 72).toFixed(1)}px solid #${String(ib.color).replace(/[^0-9A-Fa-f]/g, '')}`,
       )
     }
+    styles.push(...pictureLayerDecls(node.attrs.layers as PictureLayer[] | null))
     const xf = pictureTransformFns(node.attrs.rotDeg, node.attrs.flipH, node.attrs.flipV)
     const px = (v: number) => `${v.toFixed(1)}px`
     const wrap = node.attrs.wrap as string | null
@@ -703,14 +711,21 @@ export const DocInlineImage = Node.create({
     // containing block (the host's indented box) hands its inset back (WT L400)
     const pageX = geom.xOrigin === 'page' ? ' - var(--doc-margin-left,0px)' : ''
     const colX = pageX ? '' : ANCHOR_IND_SUB
+    // paper right edge in column coordinates: the host box (100%) plus what its
+    // indent (and, for a float, its list padding) took off the column
+    const colW = (pageX: string, pad = true): string =>
+      `100%${pageX ? '' : ` + var(--anchor-ind,0px)${pad ? ' + var(--anchor-pad,0px)' : ''}`} + var(--doc-margin-right,0px)`
     if (tx != null && wrap) {
+      // the picture stays on the paper: Word pulls an X past the paper edge
+      // back to it (probe 2026-11-02, C3)
       if (wrap.endsWith('-right') && w > 0) {
-        margin.right = pageX
-          ? `calc(100% - ${px(tx + w)} + var(--doc-margin-left,0px))`
-          : `calc(100% - calc(${px(tx + w)}${ANCHOR_IND_SUB}))`
+        const inset = pageX
+          ? `100% - ${px(tx + w)} + var(--doc-margin-left,0px)`
+          : `100% - calc(${px(tx + w)}${ANCHOR_IND_SUB})`
+        margin.right = `max(${inset}, -1 * var(--doc-margin-right,0px))`
         styles.push('max-width:none')
       } else if (wrap.endsWith('-left')) {
-        margin.left = `calc(${px(tx)}${pageX}${colX})`
+        margin.left = `calc(clamp(-1 * var(--doc-margin-left,0px), ${px(tx)}${pageX}, ${colW(pageX)} - ${px(w)})${colX})`
         styles.push('max-width:none')
       } else if (wrap === 'topBottom') {
         // an explicit X leaves the centred slot, like the block-picture path
@@ -746,7 +761,7 @@ export const DocInlineImage = Node.create({
         if (tx != null) {
           // the overlay positions from the host's padding edge: list padding stays
           styles.push(
-            `--obs-left:calc(${px(tx)}${pageX}${pageX ? '' : ' - var(--anchor-ind,0px)'})`,
+            `--obs-left:calc(clamp(-1 * var(--doc-margin-left,0px), ${px(tx)}${pageX}, ${colW(pageX, false)} - ${px(w)})${pageX ? '' : ' - var(--anchor-ind,0px)'})`,
           )
           attrs['data-obs-x'] = tx.toFixed(1)
           if (pageX) attrs['data-obs-x-from'] = 'page'
@@ -2536,18 +2551,20 @@ export const ListNumberingExtension = Extension.create<object, ListNumberingStor
           const liftFace =
             marker.symbolFont ??
             fallbackFace ??
-            (markerFace && SEGOE_UI_SYMBOL_RE.test(markerFace.trim().toLowerCase())
+            (markerFace &&
+            (SEGOE_UI_SYMBOL_RE.test(markerFace.trim().toLowerCase()) ||
+              (marker.font && markerFaceLifts(marker.font)))
               ? markerFace
               : null)
+          const exact = effectiveLineRule(nodeAttrs, storage) === 'exact'
           if (fallbackFace) {
             styles.push(`--li-marker-font:'Segoe UI Symbol GO',${cssFontFamily(markerFace!)}`)
           } else if (marker.font) {
             // its own face without letting that face's leading stretch the line
-            // (an oversized w:sz below overrides the 0)
+            // (an oversized w:sz below overrides the 0); an exact rule never lifts
             styles.push(`--li-marker-font:${cssString(marker.font)}`)
-            if (!liftFace) styles.push('--li-marker-lh:0')
+            if (!liftFace || exact) styles.push('--li-marker-lh:0')
           }
-          const exact = effectiveLineRule(nodeAttrs, storage) === 'exact'
           const lifted = liftFace && !exact
           const textHalf = runSizeHalf ?? para.sizeHalf
           const extraPt =
@@ -4599,8 +4616,11 @@ function protectedDomSpec(node: PmNode): DomSpec {
     }
     // caption text sharing the picture's paragraph (SEQ figure numbers) sits under it
     const captionSpec = fieldDisplay ? renderFieldSpec(fieldDisplay as FieldDisplay) : null
+    const pageBreakChip = (fieldDisplay as FieldDisplay | null)?.kind === 'pageBreak'
     const imageCaption: DomSpec[] = captionSpec
-      ? [['div', { class: 'doc-img-caption' }, captionSpec]]
+      ? pageBreakChip
+        ? [captionSpec]
+        : [['div', { class: 'doc-img-caption' }, captionSpec]]
       : []
     // a side-wrapped picture no text fits beside floats at its offset with the
     // wrapper reserving its band (a CSS float would drop below the neighbour)
@@ -4818,6 +4838,12 @@ function protectedDomSpec(node: PmNode): DomSpec {
           wrapperCss.push(`margin-top:${ty.toFixed(1)}px`)
           if (imageWrap !== 'topBottom') {
             wrapperCss.push(`shape-outside:inset(${ty.toFixed(1)}px 0 0 0)`)
+            // pagination measures the anchor slot, not the painted top: a
+            // picture placed low on its anchor's page must not read as a
+            // block starting there (the page turned at its top, carrying it
+            // and its anchor to the next page). Word keeps it with its anchor
+            // when it fits below the anchor's top (floated blocks' rule)
+            attrs['data-anchor-dy'] = ty.toFixed(1)
           }
           hasOffsetTopMargin = true
         }
@@ -4836,7 +4862,7 @@ function protectedDomSpec(node: PmNode): DomSpec {
           // 60% float clamp would shift the math, and Word never shrinks a
           // freely positioned picture
           wrapperCss.push(
-            `margin-right:calc(100% - ${(tx + w - qt).toFixed(1)}px${pageRelH ? ' + var(--doc-margin-left,0px)' : ''})`,
+            `margin-right:max(100% - ${(tx + w - qt).toFixed(1)}px${pageRelH ? ' + var(--doc-margin-left,0px)' : ''}, -1 * var(--doc-margin-right,0px))`,
             'max-width:none',
           )
         } else {
@@ -6580,7 +6606,7 @@ export function findFloatImageAt(x: number, y: number): HTMLElement | null {
   return null
 }
 
-interface ImageParagraphAnchor {
+export interface ImageParagraphAnchor {
   pos: number
   node: PmNode
   dom: HTMLElement
@@ -6617,6 +6643,129 @@ function imageParagraphAnchors(
   }
   return anchors
 }
+
+/** a page as a drop sees it (client px): its paper and its text area */
+export interface ImageDropPage {
+  paperTop: number
+  bodyTop: number
+  bodyBottom: number
+  paperBottom: number
+}
+
+/**
+ * The pages, read off the page gaps: a gap's bottom is the next page's body
+ * top, --gap-mt above which that paper starts, GAP_BAND below the previous
+ * paper's edge; bodyHeight places a page's text-area bottom from its body top
+ * (else the gap's top, where the content ended, plus the unused bodyPad).
+ * Measured in the real layout (a page's place on the canvas does not depend on
+ * what it holds); the last page has no gap below it and ends at the paper's
+ * bottom edge.
+ */
+export function imageDropPages(pm: HTMLElement, zoom: number): ImageDropPage[] {
+  const pages: ImageDropPage[] = []
+  // the paper is the editor root: its padding is the page margin
+  const paper = pm.closest<HTMLElement>('.doc-page')
+  const paperRect = paper?.getBoundingClientRect()
+  const pad = paper ? getComputedStyle(paper) : null
+  const padPx = (v: string | undefined) => (parseFloat(v ?? '') || 0) * zoom
+  let paperTop = paperRect?.top ?? -Infinity
+  let bodyTop = paperRect ? paperRect.top + padPx(pad?.paddingTop) : -Infinity
+  for (const gap of Array.from(pm.querySelectorAll<HTMLElement>('.page-gap'))) {
+    // a split floating table's gap rows grow only the table's own box
+    if (insideFloatTable(gap)) continue
+    const r = gap.getBoundingClientRect()
+    if (!(r.height > 0)) continue
+    const px = (v: string | undefined) => (parseFloat(v ?? '') || 0) * zoom
+    // from the page's body top when known: content run past the text area
+    // (a float band) moves the gap down, not where pagination ends the page
+    const bodyH = px(gap.dataset.bodyHeight)
+    const bodyBottom =
+      Number.isFinite(bodyTop) && bodyH > 0 ? bodyTop + bodyH : r.top + px(gap.dataset.bodyPad)
+    const nextPaperTop = r.bottom - px(gap.style.getPropertyValue('--gap-mt'))
+    pages.push({
+      paperTop,
+      bodyTop,
+      bodyBottom,
+      // the gray band sits between this paper and the next one
+      paperBottom: Math.max(bodyBottom, nextPaperTop - GAP_BAND * zoom),
+    })
+    bodyTop = r.bottom
+    paperTop = nextPaperTop
+  }
+  // the paper's own bottom edge with its padding above it; off the DOM, the
+  // extents of the page before
+  const prev = pages.at(-1)
+  if (paperRect) {
+    pages.push({
+      paperTop,
+      bodyTop,
+      bodyBottom: paperRect.bottom - padPx(pad?.paddingBottom),
+      paperBottom: paperRect.bottom,
+    })
+  } else {
+    const known = prev && Number.isFinite(prev.bodyTop)
+    pages.push({
+      paperTop,
+      bodyTop,
+      bodyBottom: known ? bodyTop + (prev.bodyBottom - prev.bodyTop) : Infinity,
+      paperBottom: known ? bodyTop + (prev.paperBottom - prev.bodyTop) : Infinity,
+    })
+  }
+  return pages
+}
+
+/**
+ * Where a picture let go with its top-left at (left, top) rests, and the
+ * paragraph it anchors to (client px). Word keeps a floating picture on one
+ * page: one dropped across a page boundary stays on the page its top landed
+ * on, pulled up inside that paper. Its anchor is a paragraph of that page — the
+ * one its top lands in, else the nearest above it, else the page's first —
+ * and low enough on the page that the picture still fits below the anchor's
+ * top: pagination turns the page before an anchor whose picture is taller
+ * than the room left (Word), which carried the picture to the next page.
+ */
+export function placeImageDrop(
+  anchors: ImageParagraphAnchor[],
+  left: number,
+  top: number,
+  heightPx: number,
+  pages: ImageDropPage[],
+  zoom: number,
+): { anchor: ImageParagraphAnchor | null; top: number } {
+  // the page its top lands on (Word anchors by the top-left corner); a top in
+  // the gray band between two sheets belongs to the next one
+  let page: ImageDropPage | undefined
+  for (const p of pages) if (!page || top >= p.paperTop) page = p
+  if (page && top > page.paperBottom) page = pages[pages.indexOf(page) + 1] ?? page
+  if (!page || !(heightPx > 0)) return { anchor: pickImageParagraphAnchor(anchors, left, top), top }
+  const room = page.paperBottom - page.paperTop
+  if (Number.isFinite(room) && heightPx <= room) {
+    top = Math.min(Math.max(top, page.paperTop), page.paperBottom - heightPx)
+  }
+  const onPage = anchors.filter(
+    (a) => a.rect.top >= page.bodyTop - 1 && a.rect.top <= page.bodyBottom,
+  )
+  if (onPage.length === 0) return { anchor: pickImageParagraphAnchor(anchors, left, top), top }
+  let anchor = pickImageParagraphAnchor(onPage, left, top)
+  // a line of slack: the anchors are predicted positions, and a heading
+  // (keep with next) needs its next paragraph's first line on the page too
+  const line = 24 * zoom
+  const fits = (a: ImageParagraphAnchor) =>
+    a.rect.top + heightPx <= page.bodyBottom - line * (keepsWithNext(a) ? 2 : 1)
+  if (anchor && !fits(anchor)) {
+    let best: ImageParagraphAnchor | null = null
+    for (const a of onPage) {
+      if (!fits(a)) continue
+      if (!best || a.rect.top > best.rect.top) best = a
+    }
+    if (best) anchor = best
+  }
+  return { anchor, top }
+}
+
+/** a heading or keep-with-next paragraph turns the page with the one after it */
+const keepsWithNext = (a: ImageParagraphAnchor): boolean =>
+  a.node.type.name === 'docHeading' || a.node.attrs.keepNext === true
 
 /**
  * The paragraph the picture's top lands in, else the nearest one above it
@@ -6762,9 +6911,17 @@ function floatingObjectDragPlugin(): Plugin {
           const anchorLocked = !!node.attrs.imageAnchorLocked
           // measured once a real drag starts, so a plain click forces no layout
           let paragraphAnchors: ImageParagraphAnchor[] | null = null
-          const dropAnchors = (): ImageParagraphAnchor[] =>
-            (paragraphAnchors ??=
+          let dropPages: ImageDropPage[] = []
+          const dropAnchors = (): ImageParagraphAnchor[] => {
+            if (paragraphAnchors) return paragraphAnchors
+            // the real layout first: the anchor pass takes the picture out of it
+            if (isImage && !anchorLocked) dropPages = imageDropPages(view.dom, zoom)
+            return (paragraphAnchors =
               isImage && !anchorLocked ? imageParagraphAnchors(view, pos, wrapper) : [])
+          }
+          /** where the picture let go at (left, top) rests and its anchor, client px */
+          const placeAt = (left: number, top: number) =>
+            placeImageDrop(dropAnchors(), left, top, startVisualRect.height, dropPages, zoom)
           let paragraphAnchor: ImageParagraphAnchor | null = null
           const wrapMode = (node.attrs.imageWrap as string | null) ?? null
           const isSideFloat = !!wrapMode && /^(?:square|tight|through)-/.test(wrapMode)
@@ -6844,11 +7001,10 @@ function floatingObjectDragPlugin(): Plugin {
             if (isImage) {
               const clientDx = e.clientX - startX
               const clientDy = e.clientY - startY
-              paragraphAnchor = pickImageParagraphAnchor(
-                dropAnchors(),
+              paragraphAnchor = placeAt(
                 startVisualRect.left + clientDx,
                 startVisualRect.top + clientDy,
-              )
+              ).anchor
               if (anchorMarker && paragraphAnchor) {
                 const markerY = (paragraphAnchor.rect.top - wrapperStartRect.top) / zoom
                 const markerX = (paragraphAnchor.rect.left - wrapperStartRect.left) / zoom - 32
@@ -6879,11 +7035,16 @@ function floatingObjectDragPlugin(): Plugin {
             const newX = Math.round((startPxX + dx) * EMU_PER_PX)
             // where the picture was let go (client px)
             const dropLeft = startVisualRect.left + (e.clientX - startX)
-            const dropTop = startVisualRect.top + (e.clientY - startY)
-            if (isImage)
-              paragraphAnchor = pickImageParagraphAnchor(dropAnchors(), dropLeft, dropTop)
+            let dropTop = startVisualRect.top + (e.clientY - startY)
+            let restDy = dy
+            if (isImage) {
+              const placed = placeAt(dropLeft, dropTop)
+              paragraphAnchor = placed.anchor
+              restDy += (placed.top - dropTop) / zoom
+              dropTop = placed.top
+            }
             const newY = Math.round(
-              (paragraphAnchor ? (dropTop - paragraphAnchor.rect.top) / zoom : startPxY + dy) *
+              (paragraphAnchor ? (dropTop - paragraphAnchor.rect.top) / zoom : startPxY + restDy) *
                 EMU_PER_PX,
             )
 

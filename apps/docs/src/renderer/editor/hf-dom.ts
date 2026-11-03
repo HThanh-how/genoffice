@@ -1,5 +1,6 @@
 import {
   PAGE_MARK,
+  SECTION_PAGES_MARK,
   TOTAL_PAGES_MARK,
   type HeaderFooter,
   type HfCellParaProps,
@@ -11,7 +12,12 @@ import {
   type Run,
   type SectionSettings,
 } from '@genoffice/docx-engine'
-import { cssRunFontFamily, estimateHfHeight, runLetterSpacingCss } from '../line-metrics'
+import {
+  cssAutoLineMult,
+  cssRunFontFamily,
+  estimateHfHeight,
+  runLetterSpacingCss,
+} from '../line-metrics'
 import {
   anchorXBand,
   anchorYBand,
@@ -291,6 +297,29 @@ function hfRowExtentPx(row: HfTableRow, geom?: HfRowGeom): { left: number; width
 /** how far layout-table rows hang into the start margin (negative tblInd, w:tblpPr past the margin), px */
 export function hfIndentOverhangPx(paras: readonly HfParagraph[], geom?: HfRowGeom): number {
   return Math.max(0, ...paras.map((p) => (p.row ? -hfRowExtentPx(p.row, geom).left : 0)))
+}
+
+/** glyph overhang of strip paragraphs whose auto line multiple is below 1: the
+ *  line box shrinks around the centred glyphs (Word paints them whole, probe
+ *  2026-11-02: line 14 = 0.058 keeps the full 8 pt glyph at the strip top), so
+ *  the strip's clip edge has to give that much room, px */
+export function hfInkOverhangPx(paras: readonly HfParagraph[]): number {
+  let over = 0
+  for (const p of paras) {
+    if (p.cells || p.boxAnchored) continue
+    const m = cssAutoLineMult(p.lineRule, p.lineRawTwips, p.lineSpacing)
+    if (m == null || m >= 1) continue
+    const sized = p.runs.filter((r) => r.text.trim() !== '')
+    const half = Math.max(
+      0,
+      ...sized.map((r) => hfRunFace(r).sizeHalfPoints ?? 0),
+      sized.length === 0 ? (p.emptyRunSizeHalfPoints ?? 0) : 0,
+    )
+    const naturalPx =
+      (((half || p.markSizeHalfPoints || 21) / 2) * 96 * (hfLineFactorNumber(p.runs) ?? 1.3)) / 72
+    over = Math.max(over, (naturalPx * (1 - m)) / 2)
+  }
+  return over > 0 ? Math.ceil(over) + 1 : 0
 }
 
 /** how far layout-table rows run past the strip column's right edge (an
@@ -1456,7 +1485,9 @@ export function makeHfFloatImgEl(img: HfImage, box: HfFloatBox, host: 'gap' | 'l
     el = hfImgNode(img)
   }
   el.className = 'page-hf-float-img'
-  if (!img.behind) el.style.zIndex = '1'
+  // behind text: below the body, and picked only in header editing (hf-float-edit)
+  if (img.behind) el.dataset.hfBehind = 'true'
+  else el.style.zIndex = '1'
   // a crop wrapper carries an inline position:relative for the strip hosts;
   // the float path must stay absolute (inline style beats the class)
   el.style.position = 'absolute'
@@ -1476,6 +1507,15 @@ export function makeHfFloatImgEl(img: HfImage, box: HfFloatBox, host: 'gap' | 'l
   if (img.widthPx) el.style.width = `${img.widthPx}px`
   // hairline shapes (a 0.25pt rule) still get one device pixel, as in Word
   if (img.heightPx) el.style.height = `${Math.max(1, img.heightPx)}px`
+  if (img.drawing != null && img.widthPx && img.heightPx) {
+    // header editing moves and resizes it (hf-float-edit): its page box,
+    // the anchor translate resolved
+    el.dataset.hfDrawing = String(img.drawing)
+    el.dataset.pageX = (p.x + (img.widthPx * p.translateX) / 100).toFixed(2)
+    el.dataset.pageY = (p.y + (img.heightPx * p.translateY) / 100).toFixed(2)
+    el.dataset.boxW = String(img.widthPx)
+    el.dataset.boxH = String(img.heightPx)
+  }
   if (img.washout) el.style.filter = hfWashoutFilter(img.washout)
   return el
 }
@@ -1649,6 +1689,8 @@ export function makeGapHfEl(opts: {
   pageNo: number | string
   /** total page count shown for the NUMPAGES marker */
   pageTotal: number
+  /** page count of the page's section shown for the SECTIONPAGES marker (absent: pageTotal) */
+  sectionPages?: number
   /** page geometry: floating textboxes render at their anchor position (absent: stacked) */
   geom?: HfStripGeom
   /** text-column width tab tails wrap at when no geom is given (the height probe) */
@@ -1656,7 +1698,7 @@ export function makeGapHfEl(opts: {
   /** positioned-row geometry when only part of the page geometry is known (the height probe) */
   rowGeom?: HfRowGeom
 }): HTMLElement {
-  const { kind, images, pageNo, pageTotal, geom } = opts
+  const { kind, images, pageNo, pageTotal, sectionPages, geom } = opts
   const value = hfValueInView(opts.value)!
   const columnPx = opts.columnPx ?? hfStripColumnPx(geom)
   const rowGeom = opts.rowGeom ?? hfRowGeomOf(kind, geom, columnPx)
@@ -1664,6 +1706,7 @@ export function makeGapHfEl(opts: {
   const display = (text: string) => {
     const substituted = text
       .replaceAll(TOTAL_PAGES_MARK, String(pageTotal))
+      .replaceAll(SECTION_PAGES_MARK, String(sectionPages ?? pageTotal))
       .replaceAll(PAGE_MARK, String(pageNo))
     return legacyHash ? substituted.replace('#', String(pageNo)) : substituted
   }
@@ -1864,6 +1907,8 @@ export function makeGapHfEl(opts: {
   if (rightOver > 0) wrap.style.setProperty('--hf-tab-over', `${rightOver.toFixed(1)}px`)
   const indOver = hfIndentOverhangPx(paras, rowGeom)
   if (indOver > 0) wrap.style.setProperty('--hf-ind-over', `${indOver.toFixed(1)}px`)
+  const inkOver = hfInkOverhangPx(paras)
+  if (inkOver > 0) wrap.style.setProperty('--hf-ink-over', `${inkOver}px`)
   for (const img of (images ?? []).filter(hfImageHangsOnPara)) {
     const anchor = paraEls[img.anchorPara!]
     if (!anchor) continue

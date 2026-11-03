@@ -209,4 +209,7 @@ export const tr = {
   aiHandoffShow: 'Aktarılan bağlamı göster',
   aiHandoffHide: 'Aktarılan bağlamı gizle',
   aiHandoffDismiss: 'Bu bağlamı aktarmayı bırak',
+  aiMindMapToggleLayout: 'Yerleşimi değiştir',
+  aiMindMapLayoutTopDown: 'Yukarıdan aşağı yerleşime geç',
+  aiMindMapLayoutLeftRight: 'Soldan sağa yerleşime geç',
 } satisfies Record<keyof typeof zh, string>

@@ -213,4 +213,7 @@ export const pl = {
   aiMindMapReset: 'Resetuj widok',
   aiMindMapExpand: 'Rozwiń gałąź',
   aiMindMapCollapse: 'Zwiń gałąź',
+  aiMindMapToggleLayout: 'Zmień układ',
+  aiMindMapLayoutTopDown: 'Przełącz na układ od góry do dołu',
+  aiMindMapLayoutLeftRight: 'Przełącz na układ od lewej do prawej',
 } satisfies Record<keyof typeof zh, string>

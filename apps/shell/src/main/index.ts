@@ -167,6 +167,8 @@ import {
   readAuthorNameSetting,
   sanitizeAuthorName,
   systemAuthorName,
+  readLegacyImportPrompt,
+  writeLegacyImportPrompt,
 } from '@genoffice/electron-utils'
 import { installThemedDialogs } from '@genoffice/electron-utils/message-box'
 import { createMainProcessProxyDispatcher } from '@genoffice/electron-utils/main-proxy'
@@ -819,6 +821,13 @@ let cachedAutoUpdateCheck: boolean | null = null
 function autoUpdateCheckEnabled(): boolean {
   cachedAutoUpdateCheck ??= readAppSettings(APP_SETTINGS_PATH()).autoUpdateCheck !== false
   return cachedAutoUpdateCheck
+}
+
+let cachedSilentInstallUpdate: boolean | null = null
+
+function silentInstallUpdateEnabled(): boolean {
+  cachedSilentInstallUpdate ??= readAppSettings(APP_SETTINGS_PATH()).silentInstallUpdate === true
+  return cachedSilentInstallUpdate
 }
 
 let cachedTheme: UiTheme | null = null
@@ -4120,7 +4129,7 @@ function ensureFileIndexer(): FileIndexer | null {
 }
 
 const SEARCH_EXT_FAMILY: Record<string, readonly string[]> = {
-  docx: ['docx', 'doc', 'odt', 'ott'],
+  docx: ['docx', 'doc', 'dot', 'odt', 'ott', 'hwpx', 'hwp'],
   xlsx: ['xlsx', 'xlsm', 'xls', 'csv', 'tsv', 'ods', 'ots'],
   pptx: ['pptx', 'ppt', 'odp', 'otp'],
   md: ['md', 'markdown', 'txt', 'json'],
@@ -4721,12 +4730,14 @@ const PPT_RE = /\.ppt$/i
 const XLS_RE = /\.xls$/i
 
 /**
- * Single source of truth for the open-dialog filter. Includes the
- * Legacy .doc and .ppt open as converted OOXML copies.
+ * Single source of truth for the open-dialog filter. Includes the legacy .doc
+ * and .ppt (opened as converted OOXML copies) and the .dot/.hwp/.hwpx formats
+ * that route into the docs import filter.
  */
 const OPEN_DIALOG_EXTENSIONS = [
   'docx',
   'doc',
+  'dot',
   'xlsx',
   'xlsm',
   'xls',
@@ -4737,6 +4748,8 @@ const OPEN_DIALOG_EXTENSIONS = [
   'pptx',
   'ppt',
   'odt',
+  'hwpx',
+  'hwp',
   'odp',
   'otp',
   'pdf',
@@ -6254,7 +6267,7 @@ function registerHomeIpc(): void {
       title: tm('dlgOpenTitle'),
       filters: [
         { name: tm('filterSupported'), extensions: OPEN_DIALOG_EXTENSIONS },
-        { name: tm('filterWord'), extensions: ['docx', 'doc', 'odt', 'ott'] },
+        { name: tm('filterWord'), extensions: ['docx', 'doc', 'dot', 'odt', 'ott', 'hwpx', 'hwp'] },
         {
           name: tm('filterExcel'),
           extensions: ['xlsx', 'xlsm', 'xls', 'csv', 'tsv', 'ods', 'ots'],
@@ -6436,6 +6449,14 @@ function registerHomeIpc(): void {
     if (typeof on !== 'boolean') return
     writeAppSetting(APP_SETTINGS_PATH(), 'autoUpdateCheck', on)
     cachedAutoUpdateCheck = on
+  })
+
+  ipcMain.handle(HOME_CHANNELS.getSilentInstallUpdate, () => silentInstallUpdateEnabled())
+
+  ipcMain.handle(HOME_CHANNELS.setSilentInstallUpdate, (_event, on: unknown) => {
+    if (typeof on !== 'boolean') return
+    writeAppSetting(APP_SETTINGS_PATH(), 'silentInstallUpdate', on)
+    cachedSilentInstallUpdate = on
   })
 
   ipcMain.handle(
@@ -6966,6 +6987,14 @@ function registerHomeIpc(): void {
         wc.send('app:author-name-changed', effective)
     }
     return authorNameSetting()
+  })
+
+  ipcMain.handle(HOME_CHANNELS.getLegacyImportPrompt, (): boolean =>
+    readLegacyImportPrompt(APP_SETTINGS_PATH()),
+  )
+  ipcMain.handle(HOME_CHANNELS.setLegacyImportPrompt, (_event, prompt: unknown): boolean => {
+    writeLegacyImportPrompt(APP_SETTINGS_PATH(), prompt !== false)
+    return readLegacyImportPrompt(APP_SETTINGS_PATH())
   })
 
   ipcMain.handle(HOME_CHANNELS.getAutoSaveDefault, (): AutoSaveDefault => currentAutoSaveDefault())
@@ -9120,6 +9149,7 @@ async function startShell(): Promise<void> {
       currentUpdateChannel(),
       nativeSourceSelected,
       autoUpdateCheckEnabled,
+      silentInstallUpdateEnabled,
     )
     setManualUpdateCheck(() =>
       nativeSourceSelected()

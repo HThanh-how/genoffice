@@ -1,4 +1,14 @@
 import JSZip from 'jszip'
+import {
+  APP_PROPERTIES_CONTENT_TYPE,
+  APP_PROPERTIES_PATH,
+  APP_PROPERTIES_REL_TYPE,
+  CORE_PROPERTIES_CONTENT_TYPE,
+  CORE_PROPERTIES_PATH,
+  CORE_PROPERTIES_REL_TYPE,
+  newDocumentAppPropertiesXml,
+  newDocumentCorePropertiesXml,
+} from './doc-properties'
 import { PPR_CHILD_ORDER } from './generate'
 import type { NumberingLevel } from './types'
 
@@ -701,6 +711,14 @@ export interface BlankDocxOptions {
   lang?: string
   /** document title, written to docProps/core.xml */
   title?: string
+  /** Creation stamp of docProps/core.xml; defaults to now (tests pin a fixed date). */
+  createdAt?: Date
+  /** docProps/app.xml Application; defaults to "GenOffice". */
+  application?: string
+  /** docProps/app.xml AppVersion; defaults to the docx-engine package version. */
+  appVersion?: string
+  /** docProps/app.xml Template; defaults to Word's "Normal.dotm". */
+  template?: string
 }
 
 /** Build a minimal valid .docx: one empty paragraph, portrait page, standard styles. */
@@ -721,9 +739,8 @@ export async function buildBlankDocx(options?: BlankDocxOptions): Promise<Uint8A
       '<Override PartName="/word/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.styles+xml"/>' +
       '<Override PartName="/word/numbering.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.numbering+xml"/>' +
       footerOverride +
-      (options?.title
-        ? '<Override PartName="/docProps/core.xml" ContentType="application/vnd.openxmlformats-package.core-properties+xml"/>'
-        : '') +
+      `<Override PartName="/${CORE_PROPERTIES_PATH}" ContentType="${CORE_PROPERTIES_CONTENT_TYPE}"/>` +
+      `<Override PartName="/${APP_PROPERTIES_PATH}" ContentType="${APP_PROPERTIES_CONTENT_TYPE}"/>` +
       '</Types>',
   )
 
@@ -731,25 +748,10 @@ export async function buildBlankDocx(options?: BlankDocxOptions): Promise<Uint8A
     '_rels/.rels',
     `${XML_DECL}<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">` +
       '<Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="word/document.xml"/>' +
-      (options?.title
-        ? '<Relationship Id="rId2" Type="http://schemas.openxmlformats.org/package/2006/relationships/metadata/core-properties" Target="docProps/core.xml"/>'
-        : '') +
+      `<Relationship Id="rId2" Type="${CORE_PROPERTIES_REL_TYPE}" Target="${CORE_PROPERTIES_PATH}"/>` +
+      `<Relationship Id="rId3" Type="${APP_PROPERTIES_REL_TYPE}" Target="${APP_PROPERTIES_PATH}"/>` +
       '</Relationships>',
   )
-  if (options?.title) {
-    const now = new Date().toISOString().replace(/.d{3}Z$/, 'Z')
-    zip.file(
-      'docProps/core.xml',
-      `${XML_DECL}<cp:coreProperties xmlns:cp="http://schemas.openxmlformats.org/package/2006/metadata/core-properties" ` +
-        'xmlns:dc="http://purl.org/dc/elements/1.1/" xmlns:dcterms="http://purl.org/dc/terms/" ' +
-        'xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">' +
-        `<dc:title>${escXml(options.title)}</dc:title>` +
-        `<dcterms:created xsi:type="dcterms:W3CDTF">${now}</dcterms:created>` +
-        `<dcterms:modified xsi:type="dcterms:W3CDTF">${now}</dcterms:modified>` +
-        '</cp:coreProperties>',
-    )
-  }
-
   const footerRel = includePageNumbers
     ? '<Relationship Id="rId3" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/footer" Target="footer1.xml"/>'
     : ''
@@ -778,6 +780,26 @@ export async function buildBlankDocx(options?: BlankDocxOptions): Promise<Uint8A
       '</w:p></w:ftr>'
     zip.file('word/footer1.xml', footerXml)
   }
+
+  // Word always writes both parts; a document created here carries minimal
+  // Word-like ones so later property sets have a home (and DMS tools see the
+  // expected metadata instead of nothing)
+  let coreXml = newDocumentCorePropertiesXml(options?.createdAt)
+  if (options?.title) {
+    coreXml = coreXml.replace(
+      '<dcterms:created',
+      `<dc:title>${escXml(options.title)}</dc:title><dcterms:created`,
+    )
+  }
+  zip.file(CORE_PROPERTIES_PATH, coreXml)
+  zip.file(
+    APP_PROPERTIES_PATH,
+    newDocumentAppPropertiesXml({
+      application: options?.application,
+      appVersion: options?.appVersion,
+      template: options?.template,
+    }),
+  )
 
   const paper = PAPER_TWIPS[options?.paperSize ?? 'A4']
   const margins = options?.pageMarginsTwips ?? { top: 1440, right: 1440, bottom: 1440, left: 1440 }

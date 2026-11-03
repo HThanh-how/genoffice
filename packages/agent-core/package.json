@@ -10,7 +10,8 @@
     "./redact-range": "./src/redact-range.ts",
     "./redact-core": "./src/redact-core.ts",
     "./app-control": "./src/app-control.ts",
-    "./app-action-preload": "./src/app-action-preload.ts"
+    "./app-action-preload": "./src/app-action-preload.ts",
+    "./mind-map": "./src/mind-map.ts"
   },
   "scripts": {
     "typecheck": "tsc --noEmit",
