@@ -208,6 +208,21 @@ describe('RootAvailability.syncIoVerdict', () => {
     expect(first).toHaveBeenCalledTimes(1)
   })
 
+  it('a probe still in flight when its root is removed does not bring the root back', async () => {
+    let answer!: (online: boolean) => void
+    const roots = new RootAvailability(() => new Promise<boolean>((r) => (answer = r)))
+    roots.register(root)
+    const probing = roots.check(root)
+    await tick(0)
+    roots.unregister(root)
+    answer(true)
+    await probing
+    expect(roots.snapshot()).toEqual([]) // no orphan state
+    expect(roots.syncIoVerdict(root)).toBe('ok')
+    roots.register(root) // adding it again starts afresh
+    expect(roots.syncIoVerdict(root)).toBe('unverified')
+  })
+
   it('never touches the filesystem', () => {
     const roots = new RootAvailability(never)
     roots.register(root)
@@ -538,21 +553,57 @@ describe('HeldRootPaths (files waiting for an unreachable root)', () => {
     }
   })
 
-  it('clear() forgets everything and cancels the wake; dispose() stops watching roots', async () => {
+  it('clear() forgets everything and cancels the wake', async () => {
+    const wake = vi.fn()
+    const held = new HeldRootPaths(wake, 20)
+    try {
+      neverProbed()
+      held.take(join(root, 'a.docx'))
+      held.clear()
+      expect(held.size).toBe(0)
+      await tick(60)
+      expect(wake).not.toHaveBeenCalled()
+    } finally {
+      held.dispose()
+    }
+  })
+
+  it('dispose() unsubscribes from root changes, holds nothing afterwards, and never wakes', async () => {
+    const unsubscribe = vi.fn()
+    vi.spyOn(rootAvailability, 'onVerified').mockReturnValue(unsubscribe)
     const wake = vi.fn()
     const held = new HeldRootPaths(wake, 20)
     neverProbed()
-    held.take(join(root, 'a.docx'))
-    held.clear()
+    held.dispose()
+    expect(unsubscribe).toHaveBeenCalledTimes(1) // fails if dispose() forgets to stop watching
+    expect(held.take(join(root, 'a.docx'))).toBe(false) // nothing is held once disposed
     expect(held.size).toBe(0)
     await tick(60)
     expect(wake).not.toHaveBeenCalled()
-    held.take(join(root, 'b.docx'))
-    held.dispose()
-    vi.restoreAllMocks()
-    rootAvailability.observe(root, true)
-    await tick(30)
-    expect(wake).not.toHaveBeenCalled()
+  })
+
+  it('verifying one root wakes only its own paths; another offline root stays held', async () => {
+    const other = mkdtempSync(join(tmpdir(), 'genoffice-unreachable-other-'))
+    const wake = vi.fn()
+    const held = new HeldRootPaths(wake, 60_000)
+    try {
+      neverProbed()
+      rootAvailability.register(other)
+      held.take(join(root, 'a.docx'))
+      held.take(join(other, 'b.docx'))
+      vi.restoreAllMocks()
+      rootAvailability.observe(other, true)
+      expect(wake).toHaveBeenCalledTimes(1)
+      expect(wake).toHaveBeenLastCalledWith([join(other, 'b.docx')])
+      expect(held.size).toBe(1) // the dead root's path stays, no churn
+      rootAvailability.observe(root, true)
+      expect(wake).toHaveBeenCalledTimes(2)
+      expect(wake).toHaveBeenLastCalledWith([join(root, 'a.docx')])
+    } finally {
+      held.dispose()
+      rootAvailability.unregister(other)
+      rmSync(other, { recursive: true, force: true })
+    }
   })
 
   it('a failing wake does not escape the timer callback', async () => {

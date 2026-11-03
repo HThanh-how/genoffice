@@ -1,4 +1,4 @@
-import { rootAvailability } from '../root-availability'
+import { pathUnderRoot, rootAvailability } from '../root-availability'
 
 /** How long files on an unreachable root wait before the extraction lane looks at them again. */
 export const HELD_ROOT_RETRY_MS = 15_000
@@ -15,6 +15,7 @@ export class HeldRootPaths {
   private readonly held = new Set<string>()
   private timer?: NodeJS.Timeout
   private readonly stopWatching: () => void
+  private disposed = false
 
   /**
    * @param wake called with the held paths; it re-enqueues them (and checks stopped/enabled and the
@@ -24,7 +25,8 @@ export class HeldRootPaths {
     private readonly wake: (paths: string[]) => void,
     private readonly delayMs = HELD_ROOT_RETRY_MS,
   ) {
-    this.stopWatching = rootAvailability.onVerified(() => this.flush())
+    // only the paths of the root that was just verified come back; other roots' paths stay held
+    this.stopWatching = rootAvailability.onVerified((root) => this.flush(root))
   }
 
   get size(): number {
@@ -33,7 +35,7 @@ export class HeldRootPaths {
 
   /** True when `path` must wait (it is held, outside the line, until the next wake). */
   take(path: string): boolean {
-    if (!rootAvailability.shouldDeferSyncIo(path)) return false
+    if (this.disposed || !rootAvailability.shouldDeferSyncIo(path)) return false
     this.held.add(path)
     if (!this.timer) {
       this.timer = setTimeout(() => {
@@ -45,12 +47,17 @@ export class HeldRootPaths {
     return true
   }
 
-  /** Hand every held path back now; one that is still unreachable is simply held again. */
-  private flush(): void {
-    if (this.timer) clearTimeout(this.timer)
-    this.timer = undefined
-    const batch = [...this.held]
-    this.held.clear()
+  /**
+   * Hand held paths back now (those under `root`, or all of them when no root is given); one that
+   * is still unreachable is simply held again.
+   */
+  private flush(root?: string): void {
+    const batch = [...this.held].filter((p) => root === undefined || pathUnderRoot(root, p))
+    for (const path of batch) this.held.delete(path)
+    if (this.held.size === 0 && this.timer) {
+      clearTimeout(this.timer)
+      this.timer = undefined
+    }
     if (batch.length === 0) return
     try {
       this.wake(batch)
@@ -71,6 +78,7 @@ export class HeldRootPaths {
 
   /** Stop watching root changes too (the manager was closed). */
   dispose(): void {
+    this.disposed = true
     this.clear()
     this.stopWatching()
   }

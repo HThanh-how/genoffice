@@ -88,6 +88,8 @@ export class RootAvailability {
   private readonly pending = new Map<string, Promise<boolean>>()
   private readonly recovered = new Set<(root: string) => void>()
   private readonly verified = new Set<(root: string) => void>()
+  /** roots removed on purpose: a probe that was already in flight must not bring their state back */
+  private readonly dropped = new Set<string>()
   private readonly errorProbes = new Map<string, number>()
   private lastImmediate = -Infinity
 
@@ -102,12 +104,14 @@ export class RootAvailability {
   register(root: string): void {
     const resolved = resolve(root)
     this.roots.add(resolved)
+    this.dropped.delete(resolved)
     if (this.probeOnRegister && !this.states.has(resolved) && !this.pending.has(resolved))
       void this.check(resolved)
   }
   unregister(root: string): void {
     this.roots.delete(resolve(root))
     this.states.delete(resolve(root))
+    this.dropped.add(resolve(root))
   }
   configuredRoots(): string[] {
     return [...this.roots]
@@ -262,14 +266,14 @@ export class RootAvailability {
         timer.unref?.()
       }),
     ]).then((online) => {
-      this.observe(root, online)
+      if (!this.dropped.has(root)) this.observe(root, online)
       return online
     })
     this.pending.set(root, bounded)
     void native.then((online) => {
       if (timer) clearTimeout(timer)
       this.pending.delete(root)
-      if (timedOut) this.observe(root, online)
+      if (timedOut && !this.dropped.has(root)) this.observe(root, online)
     })
     return bounded
   }

@@ -334,6 +334,8 @@ export interface DocumentMemoryStatus {
   chunks: number
   vectors: number
   pending: number
+  /** files held back because their folder or drive is offline (not part of `pending`: they cannot move) */
+  waitingForFolder?: number
   errors: number
   dbPath: string
   lastError?: string
