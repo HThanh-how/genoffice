@@ -3810,12 +3810,29 @@ export function App({
     retryIndex?: number,
   ): Promise<void> {
     const instruction = (overrideInstruction ?? prompt).trim()
-    if (!instruction || aiBusy || runStartingRef.current) return
-    // A message sent for the user (queue, selection ask, ribbon) must not vanish when it is not
-    // taken: it goes back to the composer unless the user has typed something there since.
-    const keepForUser = (): void => {
-      if (overrideInstruction) setPrompt((current) => (current.trim() ? current : instruction))
+    // A message sent on the user's behalf (queued, selection ask, ribbon) leaves its source as soon
+    // as it is handed over, so when it is not taken it must not vanish: it becomes an undelivered
+    // bubble with its attachments, and the existing Retry button sends it again. A typed message
+    // stays in the composer; a Retry keeps the bubble it came from.
+    const reportUndelivered = (): void => {
+      if (!overrideInstruction || retryIndex !== undefined) return
+      const atts = overrideAttachments ?? []
+      appendChat({
+        role: 'user',
+        text: instruction,
+        tools: [],
+        undelivered: true,
+        ...(atts.length > 0 ? { attachments: atts } : {}),
+      })
     }
+    if (!instruction) return
+    if (aiBusy || runStartingRef.current) {
+      setMessage(t('appAiThinking'))
+      reportUndelivered()
+      return
+    }
+    // set once the message became a bubble: from then on an error must not also return it to the user
+    let consumed = false
     try {
       const outcome = await runSendFlow({
         instruction,
@@ -3839,6 +3856,7 @@ export function App({
           return !!loop && !loop.busy && !runStartingRef.current
         },
         consume: () => {
+          consumed = true
           runToolsRef.current = []
           runUsageRef.current = undefined
           // The message consumes the composer attachments: they ride along (echoed on the
@@ -3875,7 +3893,9 @@ export function App({
             ...(sentSkills.length > 0 ? { skills: sentSkills } : {}),
             ...(scope ? { scope } : {}),
           })
-          if (!overrideInstruction) setPrompt('')
+          // only clear what was sent: text typed while settings were being read stays
+          if (!overrideInstruction)
+            setPrompt((current) => (current.trim() === instruction ? '' : current))
           // the deterministic path consumes the composer too — the bubble already echoes the set
           if (!overrideAttachments && sentAtts.length > 0) {
             const seen = new Set(sentAttachmentsRef.current.map((a) => a.path))
@@ -3895,26 +3915,38 @@ export function App({
           persistChatMessage('assistant', result.text)
         },
         onBlocked: (reason) => {
-          // nothing was consumed: the text stays in the composer, so fixing the settings and
-          // pressing send again works. The reply says what is actually wrong.
+          // nothing was consumed: a typed message stays in the composer, so fixing the settings and
+          // pressing send again works. The reply says what is actually wrong, and the same reply
+          // is not stacked again and again.
           const text =
             reason === 'settings-unreadable'
               ? t('aiSettingsUnreadable')
               : t('aiProviderNotConfigured')
           setMessage(text)
-          appendChat({ role: 'assistant', text, tools: [], isError: true })
-          keepForUser()
+          reportUndelivered()
+          setChat((previous) => {
+            const last = previous[previous.length - 1]
+            if (last && last.role === 'assistant' && last.isError === true && last.text === text)
+              return previous
+            return [...previous, { role: 'assistant', text, tools: [], isError: true }]
+          })
         },
         log: (message, error) => console.warn(`[sheets-ai] ${message}`, error),
       })
-      if (outcome.kind === 'ignored' || outcome.kind === 'busy') keepForUser()
+      if (outcome.kind === 'ignored' || outcome.kind === 'busy') {
+        setMessage(t('appAiThinking'))
+        reportUndelivered()
+      }
     } catch (err) {
       // never an unhandled rejection from a send: say what failed
       const errorText = err instanceof Error ? err.message : String(err)
       console.warn('[sheets-ai] send failed', err)
+      // a run that threw while starting must not leave the starter flag set
+      runStartingRef.current = false
       setMessage(errorText)
+      // a message that already became a bubble is not shown a second time
+      if (!consumed) reportUndelivered()
       appendChat({ role: 'assistant', text: errorText, tools: [], isError: true })
-      keepForUser()
     }
   }
 

@@ -158,6 +158,32 @@ describe('runSendFlow: a provider that can chat gets the message', () => {
     expect(h.state.adopted).toEqual([cached])
   })
 
+  it('uses the settings held AFTER the wait when the read returns nothing (a newer change wins)', async () => {
+    const newer = settings('openai')
+    let held: AiSettings | null = null
+    const h = harness('hello', {})
+    h.deps.currentSettings = () => held
+    h.deps.getFreshSettings = async () => {
+      held = newer // a settings-changed event lands while the read is in flight
+      return null
+    }
+    expect((await runSendFlow(h.deps)).kind).toBe('agent')
+    expect(h.state.adopted).toEqual([newer])
+  })
+
+  it('a failing settings read falls back to the settings held after the wait', async () => {
+    const newer = settings('openai')
+    let held: AiSettings | null = null
+    const h = harness('hello', {})
+    h.deps.currentSettings = () => held
+    h.deps.getFreshSettings = async () => {
+      held = newer
+      throw new Error('ipc down')
+    }
+    expect((await runSendFlow(h.deps)).kind).toBe('agent')
+    expect(h.state.adopted).toEqual([newer])
+  })
+
   it('a failing settings read falls back to the cached settings and says so in the log', async () => {
     const h = harness('hello', { current: settings('openai'), fresh: new Error('ipc down') })
     expect((await runSendFlow(h.deps)).kind).toBe('agent')

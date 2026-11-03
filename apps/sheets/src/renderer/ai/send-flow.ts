@@ -58,14 +58,16 @@ export async function runSendFlow<TSent>(deps: SendFlowDeps<TSent>): Promise<Sen
   if (!instruction || deps.lock.held) return { kind: 'ignored' }
   deps.lock.held = true
   try {
-    let settings = deps.currentSettings()
+    let settings: AiSettings | null
     let unreadable = false
     try {
       const fresh = await deps.getFreshSettings()
-      if (fresh) settings = fresh
+      // read the held settings AFTER the wait: a settings-changed event may have updated them meanwhile
+      settings = fresh ?? deps.currentSettings()
     } catch (error) {
       unreadable = true
       deps.log('could not read the AI settings', error)
+      settings = deps.currentSettings()
     }
 
     if (settings && canAttemptChat(settings)) {

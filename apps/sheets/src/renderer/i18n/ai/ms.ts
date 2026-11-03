@@ -110,7 +110,7 @@ export const ms = {
     'AI membaca "lajur ini / baris ini / bahagian yang dipilih" sebagai julat ini, dan ia dikunci sepanjang larian selepas anda hantar',
   aiScopeClearTitle: 'Buang skop julat dan gunakan seluruh helaian',
   aiProviderNotConfigured:
-    'Pembekal AI belum dikonfigurasikan. Pilih pembekal hoặc log masuk, kemudian cuba lagi.',
+    'Pembekal AI belum dikonfigurasikan. Pilih pembekal atau log masuk, kemudian cuba lagi.',
   aiSettingsUnreadable:
     'Tetapan AI tidak dapat dibaca. Cuba lagi sebentar lagi, atau buka semula aplikasi jika masalah berterusan.',
 } satisfies Record<keyof typeof zh, string>
