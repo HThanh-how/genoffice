@@ -1,4 +1,5 @@
 import { statSync } from 'node:fs'
+import { stat as fsStat } from 'node:fs/promises'
 import { basename, extname } from 'node:path'
 import type { RecentEntry, RecentPage, RecentQuery } from '../shared/home-api'
 
@@ -38,6 +39,80 @@ export function statPathEntries(
   starredPaths: ReadonlySet<string>,
 ): RecentEntry[] {
   return paths.map((path) => toRecentEntry(path, starredPaths))
+}
+
+/** A dead network share can hold a single stat for ~24s; never let one row hold a list that long. */
+export const STAT_ENTRY_TIMEOUT_MS = 2000
+const STAT_CONCURRENCY = 16
+
+function missingEntry(path: string, starredPaths: ReadonlySet<string>): RecentEntry {
+  return {
+    path,
+    name: basename(path),
+    ext: extname(path).slice(1).toLowerCase(),
+    mtimeMs: 0,
+    sizeBytes: 0,
+    starred: starredPaths.has(path),
+    missing: true,
+  }
+}
+
+/**
+ * Async twin of toRecentEntry for IPC handlers on the main process: a stat that fails or does
+ * not answer within `timeoutMs` yields the same `missing` row as a failed stat, so the list
+ * returns promptly and the row is retried on the next load.
+ */
+async function toRecentEntryAsync(
+  path: string,
+  starredPaths: ReadonlySet<string>,
+  timeoutMs: number,
+  statImpl: (path: string) => Promise<{ mtimeMs: number; size: number }>,
+): Promise<RecentEntry> {
+  let timer: NodeJS.Timeout | undefined
+  try {
+    const stat = await Promise.race([
+      statImpl(path),
+      new Promise<never>((_, reject) => {
+        timer = setTimeout(() => reject(new Error('stat timeout')), timeoutMs)
+        timer.unref?.()
+      }),
+    ])
+    return {
+      path,
+      name: basename(path),
+      ext: extname(path).slice(1).toLowerCase(),
+      mtimeMs: stat.mtimeMs,
+      sizeBytes: stat.size,
+      starred: starredPaths.has(path),
+    }
+  } catch {
+    return missingEntry(path, starredPaths)
+  } finally {
+    if (timer) clearTimeout(timer)
+  }
+}
+
+export async function statPathEntriesAsync(
+  paths: readonly string[],
+  starredPaths: ReadonlySet<string>,
+  options: {
+    timeoutMs?: number
+    statImpl?: (path: string) => Promise<{ mtimeMs: number; size: number }>
+  } = {},
+): Promise<RecentEntry[]> {
+  const timeoutMs = options.timeoutMs ?? STAT_ENTRY_TIMEOUT_MS
+  const statImpl = options.statImpl ?? ((p: string) => fsStat(p))
+  const entries: RecentEntry[] = new Array(paths.length)
+  let next = 0
+  // bounded concurrency: the timeouts overlap instead of adding up row by row
+  const worker = async (): Promise<void> => {
+    while (next < paths.length) {
+      const index = next++
+      entries[index] = await toRecentEntryAsync(paths[index]!, starredPaths, timeoutMs, statImpl)
+    }
+  }
+  await Promise.all(Array.from({ length: Math.min(STAT_CONCURRENCY, paths.length) }, worker))
+  return entries
 }
 
 export const STAT_PATHS_MAX = RECENT_PAGE_MAX
@@ -88,6 +163,25 @@ export const EXT_FAMILY: Record<string, readonly string[]> = {
 export function matchesExtFamily(entryExt: string, filterExt: string): boolean {
   const family = EXT_FAMILY[filterExt]
   return family ? family.includes(entryExt) : entryExt === filterExt
+}
+
+/** Async, time-bounded version of pageRecentPaths for the IPC handler. */
+export async function pageRecentPathsAsync(
+  paths: readonly string[],
+  raw: unknown,
+  starredPaths: ReadonlySet<string>,
+  options?: Parameters<typeof statPathEntriesAsync>[2],
+): Promise<RecentPage> {
+  const { offset, limit, ext } = normalizeRecentQuery(raw)
+  const filtered = ext
+    ? paths.filter((p) => matchesExtFamily(extname(p).slice(1).toLowerCase(), ext))
+    : paths
+  const page = limit === 0 ? [] : filtered.slice(offset, offset + limit)
+  return {
+    entries: await statPathEntriesAsync(page, starredPaths, options),
+    total: filtered.length,
+    totalAll: paths.length,
+  }
 }
 
 /** Page over the recents paths, preserving the source's newest-first order (unavailable paths stay, flagged missing). */

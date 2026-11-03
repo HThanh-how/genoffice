@@ -2,6 +2,7 @@ import { statSync } from 'node:fs'
 import { basename, extname, resolve } from 'node:path'
 import { discoveredPathAdmission } from '../artifact-policy'
 import { isIndexableExtension, isJunkFileName } from '../scan-policy'
+import { rootAvailability } from '../root-availability'
 
 export type PendingMetadataKind = 'remember' | 'discovered'
 
@@ -27,12 +28,7 @@ export interface RememberReplayResult {
 }
 
 export type DiscoveredReplayOutcome =
-  | 'enrolled'
-  | 'unchanged'
-  | 'denied'
-  | 'excluded'
-  | 'unsupported'
-  | 'missing'
+  'enrolled' | 'unchanged' | 'denied' | 'excluded' | 'unsupported' | 'missing'
 
 export interface DiscoveredReplayResult {
   outcome: DiscoveredReplayOutcome
@@ -56,12 +52,17 @@ export interface PendingMetadataIntakeOptions {
   isStopped: () => boolean
   isEnabled: () => boolean
   onRemember: (path: string) => RememberReplayResult | boolean
-  onDiscovered: (path: string, meta?: { mtimeMs: number; sizeBytes: number }) => DiscoveredReplayResult | boolean
+  onDiscovered: (
+    path: string,
+    meta?: { mtimeMs: number; sizeBytes: number },
+  ) => DiscoveredReplayResult | boolean
   onLastError?: (error: string | undefined) => void
   onSuccess?: (path: string) => void
 }
 
 export function safeStat(filePath: string): { mtimeMs: number; sizeBytes: number } | null {
+  // no sync stat on a root already found offline (it can block the main thread for ~24s)
+  if (rootAvailability.isKnownOffline(filePath)) return null
   try {
     const s = statSync(filePath)
     return s.isFile() ? { mtimeMs: s.mtimeMs, sizeBytes: s.size } : null
@@ -87,7 +88,9 @@ export class PendingMetadataIntake {
   private replayRetryAttempts = 0
   private replayRetryTimer: NodeJS.Timeout | null = null
   /** Bounded backoff (ms) of replay retries after a state change (e.g. leaving 'full'): ~11s in total. */
-  static readonly REPLAY_RETRY_DELAYS_MS: readonly number[] = [100, 250, 500, 1_000, 2_000, 3_000, 4_000]
+  static readonly REPLAY_RETRY_DELAYS_MS: readonly number[] = [
+    100, 250, 500, 1_000, 2_000, 3_000, 4_000,
+  ]
 
   constructor(private readonly options: PendingMetadataIntakeOptions) {
     this.maxCapacity = options.maxCapacity ?? 500
@@ -288,7 +291,13 @@ export class PendingMetadataIntake {
    * the request (which stranded queued files until the next unrelated trigger).
    */
   private scheduleReplayRetry(): void {
-    if (this.disposed || this.options.isStopped() || this.replayRetryTimer || this.intents.size === 0) return
+    if (
+      this.disposed ||
+      this.options.isStopped() ||
+      this.replayRetryTimer ||
+      this.intents.size === 0
+    )
+      return
     const delays = PendingMetadataIntake.REPLAY_RETRY_DELAYS_MS
     if (this.replayRetryAttempts >= delays.length) return
     const delayMs = delays[this.replayRetryAttempts]!
@@ -338,7 +347,9 @@ export class PendingMetadataIntake {
             item.retries++
             if (item.retries >= this.maxRetries) {
               this.intents.delete(item.path)
-              this.options.onLastError?.(`Metadata admission retry limit exhausted: ${reason ?? 'denied'}`)
+              this.options.onLastError?.(
+                `Metadata admission retry limit exhausted: ${reason ?? 'denied'}`,
+              )
             }
           }
         } else {

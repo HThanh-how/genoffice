@@ -4,6 +4,7 @@ import { stat } from 'node:fs/promises'
 import { basename, isAbsolute, relative, resolve, sep } from 'node:path'
 import { isIgnoredFileName, isIndexablePath, shouldSkipDirectory } from './folder-scan'
 import { readGenOfficeIgnore, refreshGenOfficeIgnoreForRoot } from './ignore-policy'
+import { rootAvailability } from './root-availability'
 
 export interface FolderReconcileOutcome {
   ok: boolean
@@ -234,6 +235,11 @@ export class FolderWatchManager {
   private open(root: string): void {
     const state = this.roots.get(root)
     if (!state || this.closed || state.watcher) return
+    if (rootAvailability.isKnownOffline(root)) {
+      // recursive fs.watch opens synchronously on Windows and hangs on a dead share; retry with backoff
+      this.retry(root)
+      return
+    }
     try {
       const watcher = this.watchImpl(root, { recursive: true, persistent: false }, (_type, name) =>
         this.onEvent(root, name === null || name === undefined ? null : String(name)),

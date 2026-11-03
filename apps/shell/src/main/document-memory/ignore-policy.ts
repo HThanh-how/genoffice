@@ -10,6 +10,7 @@ import {
 } from 'node:fs'
 import { dirname, extname, isAbsolute, resolve } from 'node:path'
 import { createHash } from 'node:crypto'
+import { rootAvailability } from './root-availability'
 import type { IpcMain } from 'electron'
 import {
   DOCUMENT_INDEX_CHANNELS,
@@ -798,6 +799,15 @@ export function readGenOfficeIgnoreDetailed(dir: string): {
 } {
   const filePath = resolve(dir, '.genofficeignore')
   const cached = genOfficeIgnoreCache.get(dir)
+  if (rootAvailability.isKnownOffline(dir)) {
+    // Dead share: existsSync/statSync/readFileSync here can block the main thread for ~24s.
+    // Serve the last good rules from memory; they refresh once the root is back online.
+    return {
+      rules: cached?.rules ?? [],
+      mode: cached?.mode,
+      validationErrors: cached?.validationErrors,
+    }
+  }
   try {
     if (!existsSync(filePath)) {
       if (cached && cached.raw !== null) {
@@ -909,6 +919,8 @@ export function readGenOfficeIgnoreDetailed(dir: string): {
 
 export function refreshGenOfficeIgnoreForRoot(dir: string): boolean {
   evaluationRootCache.delete(dir)
+  // No synchronous fs on a root already found offline; the next online refresh picks up changes.
+  if (rootAvailability.isKnownOffline(dir)) return false
   const filePath = resolve(dir, '.genofficeignore')
   try {
     const cached = genOfficeIgnoreCache.get(dir)

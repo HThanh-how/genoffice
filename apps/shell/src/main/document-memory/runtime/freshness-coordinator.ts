@@ -54,6 +54,8 @@ function pathKey(p: string): string {
 }
 
 function safeStat(path: string): { mtimeMs: number; sizeBytes: number } | null {
+  // a sync stat on a dead share blocks the main thread for ~24s; the root's recovery re-enrolls the file
+  if (rootAvailability.isKnownOffline(path)) return null
   try {
     const s = statSync(path)
     return s.isFile() ? { mtimeMs: s.mtimeMs, sizeBytes: s.size } : null

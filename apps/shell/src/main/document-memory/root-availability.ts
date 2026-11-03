@@ -155,6 +155,17 @@ export class RootAvailability {
     this.errorProbes.set(root, this.now())
     return this.check(root, true)
   }
+  /**
+   * Pure in-memory verdict, never touches the filesystem: true only when a probe has already
+   * found this path's root (or the path itself) offline. Unknown roots are treated as reachable
+   * so first-use behaviour is unchanged; callers on the main thread use this to skip synchronous
+   * fs calls that would block for tens of seconds on a dead network share.
+   */
+  isKnownOffline(path: string): boolean {
+    const resolved = resolve(path)
+    if (this.states.get(resolved)?.online === false) return true
+    return this.states.get(resolve(this.rootOf(resolved)))?.online === false
+  }
   /** Synchronous selection guard: unknown/expired roots wait for a single bounded probe. */
   selectable(path: string): boolean {
     const root = this.rootOf(path)
