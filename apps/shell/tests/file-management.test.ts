@@ -331,4 +331,18 @@ describe('an allowed folder on an unreachable share', () => {
     rootAvailability.observe(root, true)
     expect(() => service.propose(1, { tool: 'list_folder', path: root })).not.toThrow()
   })
+
+  it('says it is still being checked while the first probe has not answered', () => {
+    const check = vi
+      .spyOn(rootAvailability, 'check')
+      .mockReturnValue(new Promise<boolean>(() => {}))
+    try {
+      rootAvailability.register(root)
+      expect(() => service.propose(1, { tool: 'list_folder', path: root })).toThrow(
+        /still being checked/,
+      )
+    } finally {
+      check.mockRestore()
+    }
+  })
 })

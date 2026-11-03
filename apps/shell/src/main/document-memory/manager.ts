@@ -223,7 +223,7 @@ export class DocumentMemoryManager {
   get aggregates(): StatusAggregates { return (this.statusAgg ??= new StatusAggregates(createThreadFetcher(this.dbPath), { activeSpace: () => this.embeddingCoord.currentProfile.embeddingId })) }
   status(activeSpaceId = this.embeddingCoord.currentProfile.embeddingId, stats: DocumentMemoryStats = this.store.stats(activeSpaceId)): DocumentMemoryStatus {
     const files = this.store.recentDocuments(20).map(({ id, path, name, status }) => ({ id, path, name, status }))
-    return { enabled: this.enabled, modelState: this.modelState, documents: stats.docs, chunks: stats.chunks, vectors: Math.min(stats.vectors, stats.chunks), pending: this.pendingCount + this.queue.length + this.embeddingCoord.getQueueLength() + this.gate.parked + this.pendingIntake.size, waitingForFolder: this.heldRoots.size, errors: stats.errors, dbPath: this.dbPath, ...(this.lastError ? { lastError: this.lastError } : {}), files }
+    return { enabled: this.enabled, modelState: this.modelState, documents: stats.docs, chunks: stats.chunks, vectors: Math.min(stats.vectors, stats.chunks), pending: this.pendingCount + this.queue.length + this.embeddingCoord.getQueueLength() + this.gate.parked + this.pendingIntake.reachableSize, waitingForFolder: this.heldRoots.size + this.pendingIntake.unreachableSize, errors: stats.errors, dbPath: this.dbPath, ...(this.lastError ? { lastError: this.lastError } : {}), files }
   }
   indexingActivityStatus(activeSpaceId = this.embeddingCoord.currentProfile.embeddingId, stats: DocumentMemoryStats = this.store.stats(activeSpaceId)) {
     const act = this.nowStatus(); const migration = this.embeddingMigration.progress()

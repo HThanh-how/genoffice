@@ -29,7 +29,11 @@ import {
   refreshGenOfficeIgnoreForRoot,
   writeGenOfficeIgnoreFile,
 } from '../src/main/document-memory/ignore-policy'
-import { RootAvailability, rootAvailability } from '../src/main/document-memory/root-availability'
+import {
+  pathUnderRoot,
+  RootAvailability,
+  rootAvailability,
+} from '../src/main/document-memory/root-availability'
 import { FolderWatchManager } from '../src/main/document-memory/folder-watch'
 import { HeldRootPaths } from '../src/main/document-memory/runtime/held-root-paths'
 import {
@@ -223,6 +227,33 @@ describe('RootAvailability.syncIoVerdict', () => {
     expect(roots.syncIoVerdict(root)).toBe('unverified')
   })
 
+  it('a probe that started before a root was removed and re-added cannot write its late answer', async () => {
+    let answerOld!: (online: boolean) => void
+    let call = 0
+    const probe = vi.fn(() =>
+      ++call === 1 ? new Promise<boolean>((r) => (answerOld = r)) : Promise.resolve(false),
+    )
+    const roots = new RootAvailability(probe)
+    roots.register(root)
+    const old = roots.check(root)
+    await tick(0)
+    roots.unregister(root)
+    roots.register(root)
+    answerOld(true) // the stale probe says online
+    await old
+    expect(roots.snapshot()).toEqual([]) // not recorded
+    expect(await roots.check(root)).toBe(false) // a probe started after the change is
+    expect(roots.snapshot()).toMatchObject([{ online: false }])
+  })
+
+  it('a removed root can be checked again later (the removal is not remembered forever)', async () => {
+    const roots = new RootAvailability(async () => true)
+    roots.register(root)
+    roots.unregister(root)
+    expect(await roots.check(root)).toBe(true)
+    expect(roots.snapshot()).toMatchObject([{ online: true }]) // e.g. a drive root checked on its own
+  })
+
   it('never touches the filesystem', () => {
     const roots = new RootAvailability(never)
     roots.register(root)
@@ -284,6 +315,31 @@ describe('other main-thread readers on an unreachable root', () => {
     resetCalls()
     expect(safeStat(file)).toBeNull()
     expect(syncCalls()).toBe(0)
+  })
+
+  it('counts held discoveries as waiting for the folder, not as pending', async () => {
+    const reachable = join(root, 'ok.docx')
+    writeFileSync(reachable, 'x')
+    await registerThen(true) // verified: its files are reachable
+    const intake = new PendingMetadataIntake({
+      isStopped: () => false,
+      isEnabled: () => false, // nothing replays: the intents stay queued
+      isWriteReady: () => true,
+      isAccountingReady: () => true,
+      isFreeDiskReady: () => true,
+      onRemember: () => true,
+      onDiscovered: () => ({ outcome: 'enrolled' as const }),
+    } as never)
+    try {
+      intake.enqueue(reachable, 'discovered', { mtimeMs: 1, sizeBytes: 1 })
+      expect([intake.size, intake.reachableSize, intake.unreachableSize]).toEqual([1, 1, 0])
+      rootAvailability.observe(root, false) // the drive goes away
+      expect([intake.size, intake.reachableSize, intake.unreachableSize]).toEqual([1, 0, 1])
+      intake.enqueue(join(root, 'new.docx'), 'discovered') // found while unreachable
+      expect([intake.size, intake.reachableSize, intake.unreachableSize]).toEqual([2, 0, 2])
+    } finally {
+      intake.close()
+    }
   })
 
   it('a discovery on an unreachable root is deferred and kept, not dropped as missing', async () => {
@@ -515,6 +571,28 @@ describe('FolderWatchManager on a root that is not reachable', () => {
       m.close()
     }
   })
+})
+
+describe('pathUnderRoot', () => {
+  it('handles nested roots, siblings with the same prefix, the root itself and a filesystem root', () => {
+    const base = join(root, 'a')
+    expect(pathUnderRoot(base, join(base, 'b', 'c.docx'))).toBe(true)
+    expect(pathUnderRoot(base, base)).toBe(true)
+    expect(pathUnderRoot(base, base + '-other')).toBe(false)
+    expect(pathUnderRoot(join(base, 'b'), join(base, 'x.docx'))).toBe(false)
+    expect(pathUnderRoot(base, join(root, 'elsewhere'))).toBe(false)
+    expect(pathUnderRoot(join(root, '..'), join(root, 'x'))).toBe(true) // an ancestor root
+    expect(pathUnderRoot(process.platform === 'win32' ? 'C:\\' : '/', join(root, 'x'))).toBe(true)
+  })
+
+  it.runIf(process.platform === 'win32')(
+    'is case-insensitive on Windows and knows UNC shares',
+    () => {
+      expect(pathUnderRoot('G:\\Mr Quốc', 'g:\\mr quốc\\a.docx')).toBe(true)
+      expect(pathUnderRoot('\\\\ut\\G', '\\\\ut\\G\\Mr Quốc\\a.docx')).toBe(true)
+      expect(pathUnderRoot('\\\\ut\\G', '\\\\ut\\H\\a.docx')).toBe(false)
+    },
+  )
 })
 
 describe('HeldRootPaths (files waiting for an unreachable root)', () => {

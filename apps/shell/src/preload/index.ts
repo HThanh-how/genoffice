@@ -136,6 +136,7 @@ function normalizeDocumentMemoryStatus(result: unknown): DocumentMemoryStatus {
     chunks: typeof r.chunks === 'number' ? r.chunks : 0,
     vectors: typeof r.vectors === 'number' ? r.vectors : 0,
     pending: typeof r.pending === 'number' ? r.pending : 0,
+    ...(typeof r.waitingForFolder === 'number' ? { waitingForFolder: r.waitingForFolder } : {}),
     errors: typeof r.errors === 'number' ? r.errors : 0,
     dbPath: typeof r.dbPath === 'string' ? r.dbPath : '',
     ...(typeof r.lastError === 'string' ? { lastError: r.lastError } : {}),
