@@ -6,7 +6,13 @@ import {
   runDeterministicPlan as runDeterministicPlanImpl,
   type PlanContext,
 } from '../src/renderer/plan-operations'
-import { runSendFlow, type LocalPlanResult, type SendFlowDeps } from '../src/renderer/ai/send-flow'
+import {
+  runSendFlow,
+  withBlockedReply,
+  type ChatEntryLike,
+  type LocalPlanResult,
+  type SendFlowDeps,
+} from '../src/renderer/ai/send-flow'
 
 function createMockPlanContext(): PlanContext {
   const adapter = new InMemoryWorkbookAdapter(initialSnapshot)
@@ -282,5 +288,40 @@ describe('runSendFlow: the send lock', () => {
       expect(await runSendFlow(h.deps)).toEqual({ kind: 'ignored' })
       expect(h.state.started).toEqual([])
     }
+  })
+})
+
+describe('withBlockedReply (what a blocked send adds to the chat)', () => {
+  const reply: ChatEntryLike = { role: 'assistant', text: 'not configured', isError: true }
+  const bubble: ChatEntryLike = { role: 'user', text: 'translate A1', undelivered: true }
+  const earlier: ChatEntryLike = { role: 'assistant', text: 'earlier answer' }
+
+  it('adds the undelivered bubble and then the error reply', () => {
+    expect(withBlockedReply([earlier], reply, bubble)).toEqual([earlier, bubble, reply])
+  })
+
+  it('adds only the reply for a message typed in the composer (nothing was handed over)', () => {
+    expect(withBlockedReply([earlier], reply, null)).toEqual([earlier, reply])
+  })
+
+  it('does not stack the same bubble and reply when the same message is sent again', () => {
+    const once = withBlockedReply([earlier], reply, bubble)
+    expect(withBlockedReply(once, reply, bubble)).toBe(once)
+  })
+
+  it('does not repeat the reply for a typed message sent again', () => {
+    const once = withBlockedReply([earlier], reply, null)
+    expect(withBlockedReply(once, reply, null)).toBe(once)
+  })
+
+  it('a different message gets its own bubble, and the repeated reply is not duplicated', () => {
+    const other: ChatEntryLike = { role: 'user', text: 'analyze the sheet', undelivered: true }
+    const once = withBlockedReply([earlier], reply, bubble)
+    expect(withBlockedReply(once, reply, other)).toEqual([earlier, bubble, reply, other])
+  })
+
+  it('is not fooled by an ordinary error reply with other text', () => {
+    const other: ChatEntryLike = { role: 'assistant', text: 'something else', isError: true }
+    expect(withBlockedReply([earlier, other], reply, null)).toEqual([earlier, other, reply])
   })
 })

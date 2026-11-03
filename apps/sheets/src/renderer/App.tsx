@@ -218,7 +218,7 @@ import { createMergeSkill } from './ai/merge-skill'
 import { mergeAttachedWorkbooks } from './merge-workbooks'
 import { createSearchSkill } from './ai/search-skill'
 import { createImageSkill } from './ai/image-skill'
-import { runSendFlow } from './ai/send-flow'
+import { runSendFlow, withBlockedReply } from './ai/send-flow'
 import { ATTACHMENT_IMAGE_EXTS } from '../shared/desktop-api'
 import type {
   AttachmentAddResult,
@@ -3812,23 +3812,34 @@ export function App({
     const instruction = (overrideInstruction ?? prompt).trim()
     // A message sent on the user's behalf (queued, selection ask, ribbon) leaves its source as soon
     // as it is handed over, so when it is not taken it must not vanish: it becomes an undelivered
-    // bubble with its attachments, and the existing Retry button sends it again. A typed message
-    // stays in the composer; a Retry keeps the bubble it came from.
-    const reportUndelivered = (): void => {
-      if (!overrideInstruction || retryIndex !== undefined) return
+    // bubble with its attachments and scope, and the existing Retry button sends it again. A typed
+    // message stays in the composer; a Retry keeps the bubble it came from.
+    const undeliveredEntry = (): AiChatMessage | null => {
+      if (!overrideInstruction || retryIndex !== undefined) return null
       const atts = overrideAttachments ?? []
-      appendChat({
+      const scope =
+        aiScope && !aiScopeDismissed
+          ? { label: scopeLabel(aiScope.a1, aiScope.columns ?? null, t) }
+          : undefined
+      return {
         role: 'user',
         text: instruction,
         tools: [],
         undelivered: true,
         ...(atts.length > 0 ? { attachments: atts } : {}),
-      })
+        ...(scope ? { scope } : {}),
+      }
+    }
+    // While a run streams, its reply is the LAST chat entry and every update patches that entry:
+    // nothing may be appended behind it. A message that cannot be taken then goes back to an
+    // empty composer instead of becoming a bubble.
+    const keepTextForUser = (): void => {
+      if (overrideInstruction) setPrompt((current) => (current.trim() ? current : instruction))
     }
     if (!instruction) return
     if (aiBusy || runStartingRef.current) {
       setMessage(t('appAiThinking'))
-      reportUndelivered()
+      keepTextForUser()
       return
     }
     // set once the message became a bubble: from then on an error must not also return it to the user
@@ -3856,7 +3867,6 @@ export function App({
           return !!loop && !loop.busy && !runStartingRef.current
         },
         consume: () => {
-          consumed = true
           runToolsRef.current = []
           runUsageRef.current = undefined
           // The message consumes the composer attachments: they ride along (echoed on the
@@ -3893,17 +3903,21 @@ export function App({
             ...(sentSkills.length > 0 ? { skills: sentSkills } : {}),
             ...(scope ? { scope } : {}),
           })
+          // only now is the message a bubble: an error before this point must not lose it
+          consumed = true
           // only clear what was sent: text typed while settings were being read stays
           if (!overrideInstruction)
             setPrompt((current) => (current.trim() === instruction ? '' : current))
           // the deterministic path consumes the composer too — the bubble already echoes the set
-          if (!overrideAttachments && sentAtts.length > 0) {
+          // the files skill lists attachments from this ref, so queued, ribbon and Retry sends need
+          // their files in it too, not only those that came from the composer
+          if (sentAtts.length > 0) {
             const seen = new Set(sentAttachmentsRef.current.map((a) => a.path))
             sentAttachmentsRef.current = [
               ...sentAttachmentsRef.current,
               ...sentAtts.filter((a) => !seen.has(a.path)),
             ]
-            setAttachments([])
+            if (!overrideAttachments) setAttachments([])
           }
           return { sentAtts, sentSkills }
         },
@@ -3916,37 +3930,48 @@ export function App({
         },
         onBlocked: (reason) => {
           // nothing was consumed: a typed message stays in the composer, so fixing the settings and
-          // pressing send again works. The reply says what is actually wrong, and the same reply
-          // is not stacked again and again.
+          // pressing send again works. The reply says what is actually wrong. Repeating the same
+          // send does not stack the same bubble and the same reply again.
           const text =
             reason === 'settings-unreadable'
               ? t('aiSettingsUnreadable')
               : t('aiProviderNotConfigured')
           setMessage(text)
-          reportUndelivered()
-          setChat((previous) => {
-            const last = previous[previous.length - 1]
-            if (last && last.role === 'assistant' && last.isError === true && last.text === text)
-              return previous
-            return [...previous, { role: 'assistant', text, tools: [], isError: true }]
-          })
+          const undelivered = undeliveredEntry()
+          setChat(
+            (previous) =>
+              withBlockedReply(
+                previous,
+                { role: 'assistant', text, tools: [], isError: true },
+                undelivered,
+              ) as AiChatMessage[],
+          )
         },
         log: (message, error) => console.warn(`[sheets-ai] ${message}`, error),
       })
-      if (outcome.kind === 'ignored' || outcome.kind === 'busy') {
+      // 'ignored' means the same message is already being handled (a double click): say nothing more
+      if (outcome.kind === 'busy') {
         setMessage(t('appAiThinking'))
-        reportUndelivered()
+        keepTextForUser()
       }
     } catch (err) {
       // never an unhandled rejection from a send: say what failed
       const errorText = err instanceof Error ? err.message : String(err)
       console.warn('[sheets-ai] send failed', err)
-      // a run that threw while starting must not leave the starter flag set
+      // a run that threw while starting must not leave the starter flag or the busy state set
       runStartingRef.current = false
+      const loopBusy = agentLoopRef.current?.busy === true
+      if (!loopBusy) setAiBusy(false)
       setMessage(errorText)
-      // a message that already became a bubble is not shown a second time
-      if (!consumed) reportUndelivered()
-      appendChat({ role: 'assistant', text: errorText, tools: [], isError: true })
+      if (loopBusy) {
+        // another run is streaming into the last entry: nothing is appended behind it
+        keepTextForUser()
+      } else {
+        // a message that already became a bubble is not shown a second time
+        const undelivered = consumed ? null : undeliveredEntry()
+        if (undelivered) appendChat(undelivered)
+        appendChat({ role: 'assistant', text: errorText, tools: [], isError: true })
+      }
     }
   }
 

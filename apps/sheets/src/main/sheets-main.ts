@@ -1763,7 +1763,10 @@ function missingKeyMessage(
 ): string {
   const base = tm('errNoApiKey', { provider })
   const env = config?.profile?.apiKeyEnv?.trim()
-  return env ? `${base} (${env})` : base
+  if (!env) return base
+  // Only a name that looks like one is shown: the field is free text, and a real key pasted into
+  // it must not end up in an error message (environment variable names are UPPER_SNAKE_CASE).
+  return /^[A-Z][A-Z0-9_]{0,63}$/.test(env) ? `${base} (${env})` : `${base} (env var)`
 }
 
 const tm = (key: Parameters<typeof tMain>[1], params?: Parameters<typeof tMain>[2]) =>

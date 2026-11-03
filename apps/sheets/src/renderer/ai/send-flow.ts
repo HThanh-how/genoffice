@@ -99,3 +99,39 @@ export async function runSendFlow<TSent>(deps: SendFlowDeps<TSent>): Promise<Sen
     deps.lock.held = false
   }
 }
+
+/** The few fields of a chat entry the blocked-reply bookkeeping looks at. */
+export interface ChatEntryLike {
+  readonly role: string
+  readonly text: string
+  readonly isError?: boolean | undefined
+  readonly undelivered?: boolean | undefined
+}
+
+/**
+ * Adds what a blocked send shows: the undelivered bubble of a message sent on the user's behalf
+ * (when there is one) followed by the error reply. Pressing send again for the same message does
+ * not stack the same bubble and the same reply again; if nothing is new, `previous` is returned
+ * as is. Always appends at the end, so call it only while no run is streaming into the last entry.
+ */
+export function withBlockedReply<T extends ChatEntryLike>(
+  previous: readonly T[],
+  reply: T,
+  undelivered: T | null,
+): readonly T[] {
+  const last = previous[previous.length - 1]
+  const before = previous[previous.length - 2]
+  const sameError =
+    !!last && last.role === reply.role && last.isError === true && last.text === reply.text
+  const sameBubble =
+    sameError &&
+    !!undelivered &&
+    !!before &&
+    before.role === undelivered.role &&
+    before.undelivered === true &&
+    before.text === undelivered.text
+  const next = [...previous]
+  if (undelivered && !sameBubble) next.push(undelivered)
+  if (!sameError) next.push(reply)
+  return next.length === previous.length ? previous : next
+}
