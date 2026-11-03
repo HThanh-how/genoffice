@@ -112,4 +112,6 @@ export const de = {
   aiScopeClearTitle: 'Bereichsvorgabe aufheben und das ganze Blatt verwenden',
   aiProviderNotConfigured:
     'KI-Anbieter ist nicht konfiguriert. Wählen Sie einen Anbieter oder melden Sie sich an und versuchen Sie es erneut.',
+  aiSettingsUnreadable:
+    'Die KI-Einstellungen konnten nicht gelesen werden. Versuchen Sie es gleich noch einmal oder starten Sie die App neu, falls es weiterhin auftritt.',
 } satisfies Record<keyof typeof zh, string>

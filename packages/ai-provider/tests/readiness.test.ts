@@ -11,6 +11,7 @@ function makeSettings(provider: AiProviderId, config?: Partial<AiProviderConfig>
         model: config?.model ?? 'test-model',
         baseUrl: config?.baseUrl,
         cliPath: config?.cliPath,
+        profile: config?.profile,
       },
     } as any,
   }
@@ -113,5 +114,24 @@ describe('canAttemptChat (SPEC R1.11 READY-01 to READY-12)', () => {
       baseUrl: 'http://localhost:11434/v1',
     })
     expect(canAttemptChat(customWhitespaceKey)).toBe(false)
+  })
+
+  // READY-13: a custom endpoint whose key comes from an environment variable
+  it('READY-13: a custom endpoint naming an apiKeyEnv credential counts as configured', () => {
+    const base = { apiKey: '', model: 'llama3:latest', baseUrl: 'http://localhost:11434/v1' }
+    expect(
+      canAttemptChat(makeSettings('custom', { ...base, profile: { apiKeyEnv: 'MY_GATEWAY_KEY' } })),
+    ).toBe(true)
+    // a blank name is no reference, and a model is still required
+    expect(canAttemptChat(makeSettings('custom', { ...base, profile: { apiKeyEnv: '  ' } }))).toBe(
+      false,
+    )
+    expect(
+      canAttemptChat(
+        makeSettings('custom', { ...base, model: '', profile: { apiKeyEnv: 'MY_GATEWAY_KEY' } }),
+      ),
+    ).toBe(false)
+    // an inline key still works without any reference
+    expect(canAttemptChat(makeSettings('custom', { ...base, apiKey: 'sk-test' }))).toBe(true)
   })
 })

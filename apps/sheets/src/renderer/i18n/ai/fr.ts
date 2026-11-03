@@ -112,4 +112,6 @@ export const fr = {
   aiScopeClearTitle: 'Retirer la portée de la plage et viser toute la feuille',
   aiProviderNotConfigured:
     'Le fournisseur d’IA n’est pas configuré. Choisissez un fournisseur ou connectez-vous, puis réessayez.',
+  aiSettingsUnreadable:
+    'Impossible de lire les paramètres de l’IA. Réessayez dans un instant, ou rouvrez l’application si le problème persiste.',
 } satisfies Record<keyof typeof zh, string>

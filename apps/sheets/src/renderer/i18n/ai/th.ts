@@ -110,4 +110,6 @@ export const th = {
   aiScopeClearTitle: 'ยกเลิกขอบเขตช่วงนี้และใช้ทั้งแผ่นงาน',
   aiProviderNotConfigured:
     'ไม่ได้กำหนดค่าผู้ให้บริการ AI โปรดเลือกผู้ให้บริการหรือเข้าสู่ระบบแล้วลองอีกครั้ง',
+  aiSettingsUnreadable:
+    'อ่านการตั้งค่า AI ไม่ได้ โปรดลองอีกครั้งในอีกสักครู่ หรือเปิดแอปใหม่หากยังเกิดขึ้นอีก',
 } satisfies Record<keyof typeof zh, string>

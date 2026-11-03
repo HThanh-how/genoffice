@@ -110,4 +110,6 @@ export const ar = {
   aiScopeClearTitle: 'إلغاء نطاق التحديد واستهداف الورقة بأكملها',
   aiProviderNotConfigured:
     'لم يتم تكوين موفر الذكاء الاصطناعي. اختر موفرًا أو سجّل الدخول ثم أعد المحاولة.',
+  aiSettingsUnreadable:
+    'تعذّرت قراءة إعدادات الذكاء الاصطناعي. حاول مرة أخرى بعد قليل، أو أعد فتح التطبيق إذا استمرت المشكلة.',
 } satisfies Record<keyof typeof zh, string>

@@ -112,4 +112,6 @@ export const nl = {
   aiScopeClearTitle: 'Bereikbereik wissen en het hele blad gebruiken',
   aiProviderNotConfigured:
     'AI-provider is niet geconfigureerd. Kies een provider of meld u aan en probeer het opnieuw.',
+  aiSettingsUnreadable:
+    'De AI-instellingen konden niet worden gelezen. Probeer het zo opnieuw, of open de app opnieuw als het blijft gebeuren.',
 } satisfies Record<keyof typeof zh, string>

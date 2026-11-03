@@ -8,7 +8,8 @@ import { getProviderAdapter } from './registry'
  * - 'agy-cli': local Antigravity CLI does not require an API key or explicit model in config
  * - 'codex-chatgpt': Codex app-server bridge uses the local Codex login session
  * - 'gsk-login': Genspark proxy requires a configured model
- * - 'api-key': direct providers require both a non-empty API key and a model
+ * - 'api-key': direct providers require both a non-empty API key (or, for a custom endpoint,
+ *   a named apiKeyEnv credential reference) and a model
  */
 export function canAttemptChat(settings: AiSettings | null | undefined): boolean {
   if (!settings) return false
@@ -30,7 +31,12 @@ export function canAttemptChat(settings: AiSettings | null | undefined): boolean
     case 'gsk-login':
       return Boolean(config.model)
     case 'api-key':
-      return Boolean(config.apiKey?.trim() && config.model?.trim())
+      // A custom endpoint may name an environment variable (profile.apiKeyEnv) instead of carrying
+      // the key: the main process resolves it at request time, so the renderer only sees the name.
+      // Naming one counts as configured; if the variable is unset the request reports that itself.
+      return Boolean(
+        (config.apiKey?.trim() || config.profile?.apiKeyEnv?.trim()) && config.model?.trim(),
+      )
     default:
       return false
   }

@@ -110,4 +110,6 @@ export const ja = {
   aiScopeClearTitle: '範囲指定を解除してシート全体を対象にする',
   aiProviderNotConfigured:
     'AI プロバイダーが設定されていません。プロバイダーを選択するかサインインしてからやり直してください。',
+  aiSettingsUnreadable:
+    'AI の設定を読み込めませんでした。しばらくしてからもう一度お試しください。解消しない場合はアプリを開き直してください。',
 } satisfies Record<keyof typeof zh, string>

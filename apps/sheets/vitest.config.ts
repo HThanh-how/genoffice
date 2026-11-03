@@ -13,11 +13,6 @@ export default defineConfig({
       '@genoffice/ai-provider': local('../../packages/ai-provider/src/index.ts'),
     },
   },
-  server: {
-    fs: {
-      strict: false,
-    },
-  },
   test: {
     environment: 'node',
     include: ['tests/**/*.test.ts'],

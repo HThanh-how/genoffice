@@ -112,4 +112,6 @@ export const pt = {
   aiScopeClearTitle: 'Remover o escopo do intervalo e usar a planilha inteira',
   aiProviderNotConfigured:
     'O provedor de IA não está configurado. Escolha um provedor ou faça login e tente novamente.',
+  aiSettingsUnreadable:
+    'Não foi possível ler as configurações de IA. Tente novamente em instantes ou reabra o aplicativo se o problema continuar.',
 } satisfies Record<keyof typeof zh, string>

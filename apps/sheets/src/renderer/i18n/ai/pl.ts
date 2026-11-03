@@ -110,4 +110,6 @@ export const pl = {
   aiScopeClearTitle: 'Usuń zakres zaznaczenia i obejmij cały arkusz',
   aiProviderNotConfigured:
     'Dostawca sztucznej inteligencji nie jest skonfigurowany. Wybierz dostawcę lub zaloguj się i spróbuj ponownie.',
+  aiSettingsUnreadable:
+    'Nie udało się odczytać ustawień AI. Spróbuj ponownie za chwilę lub uruchom aplikację ponownie, jeśli problem się powtarza.',
 } satisfies Record<keyof typeof zh, string>

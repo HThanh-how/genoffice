@@ -218,7 +218,7 @@ import { createMergeSkill } from './ai/merge-skill'
 import { mergeAttachedWorkbooks } from './merge-workbooks'
 import { createSearchSkill } from './ai/search-skill'
 import { createImageSkill } from './ai/image-skill'
-import { routePrompt } from './ai/prompt-routing'
+import { runSendFlow } from './ai/send-flow'
 import { ATTACHMENT_IMAGE_EXTS } from '../shared/desktop-api'
 import type {
   AttachmentAddResult,
@@ -1185,15 +1185,15 @@ export function App({
   const aiSettingsRef = useRef<AiSettings | null>(null)
   aiSettingsRef.current = aiSettings
 
+  /** The stored settings, re-read. Rejects when they cannot be read; the send flow handles that. */
   async function getFreshAiSettings(): Promise<AiSettings | null> {
-    try {
-      const settings = await window.desktopApi.getAiSettings()
+    const settings = await window.desktopApi.getAiSettings()
+    // never replace settings already held with an empty answer
+    if (settings) {
       aiSettingsRef.current = settings
       setAiSettingsState(settings)
-      return settings
-    } catch {
-      return aiSettingsRef.current
     }
+    return settings ?? null
   }
 
   /** gsk login state for the cloud-tools gate (refreshed on mount and window focus) */
@@ -2068,7 +2068,13 @@ export function App({
   }
 
   useEffect(() => {
-    const loadSettings = () => void window.desktopApi.getAiSettings().then(setAiSettingsState)
+    const loadSettings = () =>
+      void window.desktopApi
+        .getAiSettings()
+        .then(setAiSettingsState)
+        .catch((error: unknown) =>
+          console.warn('[sheets-ai] could not load the AI settings', error),
+        )
     loadSettings()
     return window.desktopApi.onAiSettingsChanged?.(loadSettings)
   }, [])
@@ -3804,95 +3810,111 @@ export function App({
     retryIndex?: number,
   ): Promise<void> {
     const instruction = (overrideInstruction ?? prompt).trim()
-    if (!instruction || aiBusy || runStartingRef.current || aiSendRoutingRef.current) return
-    aiSendRoutingRef.current = true
+    if (!instruction || aiBusy || runStartingRef.current) return
+    // A message sent for the user (queue, selection ask, ribbon) must not vanish when it is not
+    // taken: it goes back to the composer unless the user has typed something there since.
+    const keepForUser = (): void => {
+      if (overrideInstruction) setPrompt((current) => (current.trim() ? current : instruction))
+    }
     try {
-      runToolsRef.current = []
-      runUsageRef.current = undefined
-      // The message consumes the composer attachments: they ride along (echoed on the
-      // bubble, images multimodal, files via the files skill) and the composer clears.
-      // Retry passes the failed message's original set instead.
-      const sentAtts = overrideAttachments ?? attachmentsRef.current
-      // skills ride with this one message only: the chips clear like attachments do
-      const sentSkills = overrideInstruction ? [] : attachedSkillsRef.current
-      if (sentSkills.length > 0) setAttachedSkills([])
-      // Retry re-sends in place: drop the failed bubble and its error reply instead
-      // of stacking a "Not sent" duplicate above the resent copy.
-      const alreadyPersisted = retryIndex !== undefined && chat[retryIndex]?.persisted === true
-      if (retryIndex !== undefined) {
-        setChat((previous) => pruneFailedExchange(previous, retryIndex))
-      }
-      // A retried message was usually persisted by its original send — but that
-      // write is skipped while the chat refs are still resolving, so re-issue it
-      // then instead of dropping the question from the stored transcript.
-      // a retry quotes what the failed message quoted; a fresh send the live scope runAgent freezes for the run
-      const scope =
-        retryIndex !== undefined
-          ? chat[retryIndex]?.scope
-          : aiScope && !aiScopeDismissed
-            ? { label: scopeLabel(aiScope.a1, aiScope.columns ?? null, t) }
-            : undefined
-      const persisted =
-        alreadyPersisted || persistChatMessage('user', instruction, undefined, sentAtts, scope)
-      appendChat({
-        role: 'user',
-        text: instruction,
-        tools: [],
-        persisted,
-        ...(sentAtts.length > 0 ? { attachments: sentAtts } : {}),
-        ...(sentSkills.length > 0 ? { skills: sentSkills } : {}),
-        ...(scope ? { scope } : {}),
-      })
-      if (!overrideInstruction) setPrompt('')
-      // the deterministic path consumes the composer too — the bubble already echoes the set
-      if (!overrideAttachments && sentAtts.length > 0) {
-        const seen = new Set(sentAttachmentsRef.current.map((a) => a.path))
-        sentAttachmentsRef.current = [
-          ...sentAttachmentsRef.current,
-          ...sentAtts.filter((a) => !seen.has(a.path)),
-        ]
-        setAttachments([])
-      }
-      // real LLM configured → let the agent read context and propose operations;
-      // otherwise fall back to the local, deterministic regex planner
-      // (kept for offline use and for the fixed micro-DSL it still supports).
-      try {
-        const outcome = await routePrompt({
-          instruction,
-          sentAtts,
-          currentSettings: aiSettingsRef.current,
-          getFreshSettings: getFreshAiSettings,
-          runAgent: (text, atts) => runAgent(text, atts, sentSkills),
-          runDeterministicPlan,
-        })
-        if (outcome.action === 'agent') return
-
-        const responseText =
-          outcome.action === 'unconfigured' ? t('aiProviderNotConfigured') : outcome.message
-
-        if (responseText) {
-          setMessage(responseText)
+      const outcome = await runSendFlow({
+        instruction,
+        lock: {
+          get held() {
+            return aiSendRoutingRef.current
+          },
+          set held(value: boolean) {
+            aiSendRoutingRef.current = value
+          },
+        },
+        currentSettings: () => aiSettingsRef.current,
+        getFreshSettings: getFreshAiSettings,
+        adoptSettings: (settings) => {
+          // one source for the decision and the run (the transport reads this ref)
+          aiSettingsRef.current = settings
+          setAiSettingsState(settings)
+        },
+        canStartAgent: () => {
+          const loop = agentLoopRef.current
+          return !!loop && !loop.busy && !runStartingRef.current
+        },
+        consume: () => {
+          runToolsRef.current = []
+          runUsageRef.current = undefined
+          // The message consumes the composer attachments: they ride along (echoed on the
+          // bubble, images multimodal, files via the files skill) and the composer clears.
+          // Retry passes the failed message's original set instead.
+          const sentAtts = overrideAttachments ?? attachmentsRef.current
+          // skills ride with this one message only: the chips clear like attachments do
+          const sentSkills = overrideInstruction ? [] : attachedSkillsRef.current
+          if (sentSkills.length > 0) setAttachedSkills([])
+          // Retry re-sends in place: drop the failed bubble and its error reply instead
+          // of stacking a "Not sent" duplicate above the resent copy.
+          const alreadyPersisted = retryIndex !== undefined && chat[retryIndex]?.persisted === true
+          if (retryIndex !== undefined) {
+            setChat((previous) => pruneFailedExchange(previous, retryIndex))
+          }
+          // A retried message was usually persisted by its original send — but that
+          // write is skipped while the chat refs are still resolving, so re-issue it
+          // then instead of dropping the question from the stored transcript.
+          // a retry quotes what the failed message quoted; a fresh send the live scope runAgent freezes for the run
+          const scope =
+            retryIndex !== undefined
+              ? chat[retryIndex]?.scope
+              : aiScope && !aiScopeDismissed
+                ? { label: scopeLabel(aiScope.a1, aiScope.columns ?? null, t) }
+                : undefined
+          const persisted =
+            alreadyPersisted || persistChatMessage('user', instruction, undefined, sentAtts, scope)
           appendChat({
-            role: 'assistant',
-            text: responseText,
+            role: 'user',
+            text: instruction,
             tools: [],
-            isError: outcome.isError,
+            persisted,
+            ...(sentAtts.length > 0 ? { attachments: sentAtts } : {}),
+            ...(sentSkills.length > 0 ? { skills: sentSkills } : {}),
+            ...(scope ? { scope } : {}),
           })
-          persistChatMessage('assistant', responseText)
-        }
-      } catch (err) {
-        const errorText = err instanceof Error ? err.message : String(err)
-        setMessage(errorText)
-        appendChat({
-          role: 'assistant',
-          text: errorText,
-          tools: [],
-          isError: true,
-        })
-        persistChatMessage('assistant', errorText)
-      }
-    } finally {
-      aiSendRoutingRef.current = false
+          if (!overrideInstruction) setPrompt('')
+          // the deterministic path consumes the composer too — the bubble already echoes the set
+          if (!overrideAttachments && sentAtts.length > 0) {
+            const seen = new Set(sentAttachmentsRef.current.map((a) => a.path))
+            sentAttachmentsRef.current = [
+              ...sentAttachmentsRef.current,
+              ...sentAtts.filter((a) => !seen.has(a.path)),
+            ]
+            setAttachments([])
+          }
+          return { sentAtts, sentSkills }
+        },
+        startAgent: ({ sentAtts, sentSkills }) => runAgent(instruction, sentAtts, sentSkills),
+        runDeterministicPlan,
+        replyLocal: (_sent, result) => {
+          setMessage(result.text)
+          appendChat({ role: 'assistant', text: result.text, tools: [], isError: result.isError })
+          persistChatMessage('assistant', result.text)
+        },
+        onBlocked: (reason) => {
+          // nothing was consumed: the text stays in the composer, so fixing the settings and
+          // pressing send again works. The reply says what is actually wrong.
+          const text =
+            reason === 'settings-unreadable'
+              ? t('aiSettingsUnreadable')
+              : t('aiProviderNotConfigured')
+          setMessage(text)
+          appendChat({ role: 'assistant', text, tools: [], isError: true })
+          keepForUser()
+        },
+        log: (message, error) => console.warn(`[sheets-ai] ${message}`, error),
+      })
+      if (outcome.kind === 'ignored' || outcome.kind === 'busy') keepForUser()
+    } catch (err) {
+      // never an unhandled rejection from a send: say what failed
+      const errorText = err instanceof Error ? err.message : String(err)
+      console.warn('[sheets-ai] send failed', err)
+      setMessage(errorText)
+      appendChat({ role: 'assistant', text: errorText, tools: [], isError: true })
+      keepForUser()
     }
   }
 

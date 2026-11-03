@@ -111,4 +111,6 @@ export const hi = {
   aiScopeClearTitle: 'श्रेणी दायरा हटाएँ और पूरी शीट पर काम करें',
   aiProviderNotConfigured:
     'AI प्रदाता कॉन्फ़िगर नहीं है। कोई प्रदाता चुनें या साइन इन करें, फिर पुनः प्रयास करें।',
+  aiSettingsUnreadable:
+    'AI सेटिंग्स पढ़ी नहीं जा सकीं। थोड़ी देर बाद फिर कोशिश करें, और समस्या बनी रहे तो ऐप दोबारा खोलें।',
 } satisfies Record<keyof typeof zh, string>

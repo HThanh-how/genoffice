@@ -111,4 +111,6 @@ export const tr = {
   aiScopeClearTitle: 'Aralık kapsamını bırak ve tüm sayfayı hedefle',
   aiProviderNotConfigured:
     'Yapay zeka sağlayıcısı yapılandırılmamış. Bir sağlayıcı seçin veya oturum açın, ardından tekrar deneyin.',
+  aiSettingsUnreadable:
+    'Yapay zeka ayarları okunamadı. Birazdan tekrar deneyin; sorun sürerse uygulamayı yeniden açın.',
 } satisfies Record<keyof typeof zh, string>

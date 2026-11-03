@@ -110,4 +110,6 @@ export const id = {
   aiScopeClearTitle: 'Hapus cakupan rentang dan gunakan seluruh lembar',
   aiProviderNotConfigured:
     'Penyedia AI belum dikonfigurasi. Pilih penyedia atau masuk, lalu coba lagi.',
+  aiSettingsUnreadable:
+    'Pengaturan AI tidak dapat dibaca. Coba lagi sebentar lagi, atau buka ulang aplikasi jika masih terjadi.',
 } satisfies Record<keyof typeof zh, string>

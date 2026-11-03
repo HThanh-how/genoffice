@@ -111,4 +111,6 @@ export const it = {
   aiScopeClearTitle: "Rimuovi l'ambito dell'intervallo e usa tutto il foglio",
   aiProviderNotConfigured:
     'Il provider di intelligenza artificiale non è configurato. Scegli un provider o accedi, quindi riprova.',
+  aiSettingsUnreadable:
+    'Impossibile leggere le impostazioni dell’IA. Riprova tra un momento o riapri l’app se il problema persiste.',
 } satisfies Record<keyof typeof zh, string>

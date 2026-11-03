@@ -113,4 +113,6 @@ export const es = {
   aiScopeClearTitle: 'Quitar el ámbito del rango y usar toda la hoja',
   aiProviderNotConfigured:
     'El proveedor de IA no está configurado. Elija un proveedor o inicie sesión y vuelva a intentarlo.',
+  aiSettingsUnreadable:
+    'No se pudo leer la configuración de IA. Inténtalo de nuevo en un momento o vuelve a abrir la aplicación si sigue ocurriendo.',
 } satisfies Record<keyof typeof zh, string>

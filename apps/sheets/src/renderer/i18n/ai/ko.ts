@@ -109,4 +109,6 @@ export const ko = {
   aiScopeClearTitle: '범위 지정을 해제하고 시트 전체를 대상으로 하기',
   aiProviderNotConfigured:
     'AI 공급자가 구성되지 않았습니다. 공급자를 선택하거나 로그인한 후 다시 시도하세요.',
+  aiSettingsUnreadable:
+    'AI 설정을 읽을 수 없습니다. 잠시 후 다시 시도하고, 계속되면 앱을 다시 여세요.',
 } satisfies Record<keyof typeof zh, string>

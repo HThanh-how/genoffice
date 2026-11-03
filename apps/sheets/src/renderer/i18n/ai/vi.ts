@@ -110,4 +110,6 @@ export const vi = {
   aiScopeClearTitle: 'Bỏ phạm vi dải ô và áp dụng cho toàn bộ trang tính',
   aiProviderNotConfigured:
     'Chưa cấu hình nhà cung cấp AI. Hãy chọn nhà cung cấp hoặc đăng nhập rồi thử lại.',
+  aiSettingsUnreadable:
+    'Không đọc được cài đặt AI. Hãy thử lại sau giây lát, hoặc mở lại ứng dụng nếu lỗi vẫn tiếp diễn.',
 } satisfies Record<keyof typeof zh, string>
