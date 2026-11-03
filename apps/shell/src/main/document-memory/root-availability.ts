@@ -194,6 +194,15 @@ export class RootAvailability {
     }
     return 'ok'
   }
+  /**
+   * Resolves once the root of `path` has a verdict: immediately unless it is a registered root no
+   * probe has answered for, in which case it waits for that one probe (bounded by the probe
+   * deadline). IPC handlers await this so they answer from a verified root instead of reporting a
+   * healthy folder as unusable just because the launch-time probe is still in flight.
+   */
+  async settled(path: string): Promise<void> {
+    if (this.syncIoVerdict(path) === 'unverified') await this.check(this.rootOf(path))
+  }
   /** True when a synchronous fs call under `path` must not run now (offline or not yet verified). */
   shouldDeferSyncIo(path: string): boolean {
     return this.syncIoVerdict(path) !== 'ok'

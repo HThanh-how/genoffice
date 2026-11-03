@@ -120,6 +120,15 @@ export function isInsideRoot(root: string, path: string): boolean {
 }
 
 export function describeRoot(root: string): FolderRoot {
+  // mkdirDirs / accessSync / statSync below would block on a dead or unverified share
+  if (rootAvailability.shouldDeferSyncIo(root))
+    return {
+      path: root,
+      name: basename(root) || root,
+      usable: false,
+      readable: false,
+      removable: false,
+    }
   let usable: boolean
   try {
     // per-level mkdir, not recursive: a filesystem that refuses the leaf while
@@ -403,11 +412,14 @@ export class FolderWatcher {
     // a created/removed folder changes its parent's listing; a file inside
     // changes its own folder's listing — report both candidates
     this.pending.add(dirname(changed))
-    let isDir: boolean
-    try {
-      isDir = statSync(changed).isDirectory()
-    } catch {
-      isDir = false
+    let isDir = false
+    // no stat of a changed path on a root that went offline since the watcher was opened
+    if (!rootAvailability.shouldDeferSyncIo(changed)) {
+      try {
+        isDir = statSync(changed).isDirectory()
+      } catch {
+        isDir = false
+      }
     }
     if (isDir) this.pending.add(changed)
     if (this.timer) clearTimeout(this.timer)

@@ -147,13 +147,15 @@ export class FreshnessCoordinator {
   ): FileEnrollmentResult {
     if (this.options.isStopped?.()) return { outcome: 'skipped', reason: 'stopped' }
     const p = resolve(path)
-    const admission = discoveredPathAdmission(p)
-    if (!admission.allowed) return { outcome: 'excluded', reason: admission.reason }
-    // a sync stat on a dead share blocks the main thread for ~24s: defer, keeping the discovery
-    if (!metadata && this.roots.shouldDeferSyncIo(p)) {
-      this.options.intakeAdapter?.onDiscovered(p)
+    // A root that is offline or not verified yet: its .genofficeignore rules may be unknown (empty),
+    // and a sync stat would block the main thread for ~24s. Defer and keep the discovery; never
+    // enroll or exclude a file on a root we cannot see.
+    if (this.roots.shouldDeferSyncIo(p)) {
+      this.options.intakeAdapter?.onDiscovered(p, metadata)
       return { outcome: 'deferred', reason: 'root-unreachable' }
     }
+    const admission = discoveredPathAdmission(p)
+    if (!admission.allowed) return { outcome: 'excluded', reason: admission.reason }
     const current = metadata ?? safeStat(p)
     if (!current) return { outcome: 'error', error: 'File not found or unreadable' }
     if (this.options.isEnabled && !this.options.isEnabled()) {

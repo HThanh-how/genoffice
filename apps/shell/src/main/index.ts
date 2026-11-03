@@ -1,3 +1,4 @@
+import './uv-threadpool'
 import { watchRootAvailability } from './document-memory/runtime/root-lifecycle'
 import { powerMonitor as rootPowerMonitor } from 'electron'
 import { installIpcTracing, traceOp } from './trace-op'
@@ -4130,6 +4131,12 @@ const SEARCH_EXT_FAMILY: Record<string, readonly string[]> = {
 
 let folderRootRecoveryHooked = false
 
+/** tell every window a root's state changed; Home reloads its root list when that root was unusable */
+function notifyFolderRootChanged(root: string): void {
+  for (const wc of webContents.getAllWebContents())
+    if (!wc.isDestroyed()) wc.send(HOME_CHANNELS.folderChanged, [root])
+}
+
 /** one recursive watcher per tree root; follows the save-folder setting and the added folders */
 function ensureFolderWatchers(): void {
   const wanted = new Set<string>()
@@ -4143,14 +4150,16 @@ function ensureFolderWatchers(): void {
       void rootAvailability.check(root).then((online) => {
         if (!online) return
         ensureFolderWatchers()
-        for (const wc of webContents.getAllWebContents())
-          if (!wc.isDestroyed()) wc.send(HOME_CHANNELS.folderChanged, [root])
+        notifyFolderRootChanged(root)
       })
     }
   }
   if (!folderRootRecoveryHooked) {
     folderRootRecoveryHooked = true
-    rootAvailability.onRecovered(() => ensureFolderWatchers())
+    rootAvailability.onRecovered((recovered) => {
+      ensureFolderWatchers()
+      notifyFolderRootChanged(recovered)
+    })
   }
   for (const [root, watcher] of folderWatchers) {
     if (wanted.has(root) && watcher.active) continue
@@ -5720,12 +5729,18 @@ function indexAddedFoldersNotYetScanned(): void {
   // scanning it too would walk, watch and refresh the same files twice
   for (const root of outermostPaths(extraFolderRoots())) {
     const covered = scanned.some((done) => done === resolve(root) || isInsidePath(done, root))
-    if (covered || !describeExtraRoot(root).readable) continue
-    try {
-      folderScan.start(root)
-    } catch (error) {
-      console.warn('[folder-scan] could not start for', root, error)
-    }
+    if (covered) continue
+    // an unplugged or dead drive is skipped quietly (picked up on a later start); a root nobody has
+    // probed yet is probed first, so the check below never runs a sync stat on a dead share
+    rootAvailability.register(root)
+    void rootAvailability.settled(root).then(() => {
+      if (!folderScan || !describeExtraRoot(root).readable) return
+      try {
+        folderScan.start(root)
+      } catch (error) {
+        console.warn('[folder-scan] could not start for', root, error)
+      }
+    })
   }
 }
 
@@ -6095,6 +6110,7 @@ function registerHomeIpc(): void {
     },
     recordRecent: recordRecentFile,
     statFile: (path) => {
+      if (rootAvailability.shouldDeferSyncIo(path)) return null
       try {
         const stat = statSync(path)
         return { size: stat.size, mtimeMs: stat.mtimeMs }
@@ -7128,18 +7144,18 @@ function registerHomeIpc(): void {
     typeof path === 'string' && insideAnyRoot(path)
   const isRoot = (path: string) => isAnyRoot(path)
 
-  ipcMain.handle(HOME_CHANNELS.folderRoots, (): FolderRoot[] => {
+  ipcMain.handle(HOME_CHANNELS.folderRoots, async (): Promise<FolderRoot[]> => {
+    // Every root is registered and its first probe awaited (bounded, never blocking) before it is
+    // described, so a healthy folder is not reported unusable while the launch-time probe runs.
+    const saveDir = defaultSaveDir()
+    const extras = extraFolderRoots()
+    for (const root of [saveDir, ...extras]) rootAvailability.register(root)
+    await Promise.all([saveDir, ...extras].map((root) => rootAvailability.settled(root)))
     // describeRoot creates a missing save folder, so its watcher has something to attach to. The
     // folder stays the first root (it is where new files land); the tree only draws it when asked
-    const own = describeRoot(defaultSaveDir())
+    const own = describeRoot(saveDir)
     const show = showDefaultFolderFrom(readAppSettings(APP_SETTINGS_PATH()))
-    const roots = [
-      show ? own : { ...own, hidden: true },
-      ...extraFolderRoots().map((root) => {
-        rootAvailability.register(root)
-        return describeExtraRoot(root)
-      }),
-    ]
+    const roots = [show ? own : { ...own, hidden: true }, ...extras.map(describeExtraRoot)]
     ensureFolderWatchers()
     return roots
   })
@@ -7149,7 +7165,9 @@ function registerHomeIpc(): void {
   })
   ipcMain.handle(DOCUMENT_INDEX_CHANNELS.copyFilesToClipboard, (_event, paths: unknown) => {
     const list = stringPaths(paths)
-      .filter((path) => isAbsolute(path) && existsSync(path))
+      .filter(
+        (path) => isAbsolute(path) && !rootAvailability.shouldDeferSyncIo(path) && existsSync(path),
+      )
       .slice(0, 200)
     return writeClipboardFiles(list)
   })
@@ -7173,6 +7191,8 @@ function registerHomeIpc(): void {
   const addFolderRoot = (path: string): FolderRoot | null => {
     const extras = withExtraRoot(extraFolderRoots(), defaultSaveDir(), path)
     if (!extras) return null
+    // described before the root is registered for probing: the caller just chose this folder
+    const described = describeExtraRoot(path)
     writeAppSetting(APP_SETTINGS_PATH(), FOLDER_ROOTS_KEY, extras)
     ensureFolderWatchers()
     fileIndexer?.refresh()
@@ -7185,7 +7205,7 @@ function registerHomeIpc(): void {
       for (const inner of scannedRoots) if (isInsidePath(path, inner)) folderScan?.forget(inner)
       startFolderScan(path)
     }
-    return describeExtraRoot(path)
+    return described
   }
 
   ipcMain.handle(HOME_CHANNELS.addFolderRoot, async (): Promise<FolderRoot | null> => {
@@ -7227,6 +7247,7 @@ function registerHomeIpc(): void {
 
   ipcMain.handle(HOME_CHANNELS.listFolder, async (_event, dir: unknown): Promise<FolderListing> => {
     if (!insideRoot(dir)) return { dir: String(dir), folders: [], files: [] }
+    await rootAvailability.settled(dir)
     const listing = listFolder(dir, new Set(readStarredFiles()))
     // what Windows hides (Hidden / System attribute) stays out of the tree, as in Explorer
     const hidden = await hiddenNamesIn(dir)

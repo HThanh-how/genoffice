@@ -1527,14 +1527,74 @@ describe('resident worker lifecycle: prewarm TTL, heartbeat, retire log', () => 
     const onActivity = vi.fn()
     const turn = startTurn(mock, { onActivity })
     const settled = turn.catch(() => undefined)
-    await vi.advanceTimersByTimeAsync(160_000) // past the 150 s window
+    await vi.advanceTimersByTimeAsync(310_000) // past the 300 s window
     const atWindowEnd = onActivity.mock.calls.length
-    expect(atWindowEnd).toBeGreaterThanOrEqual(25)
-    await vi.advanceTimersByTimeAsync(200_000)
+    expect(atWindowEnd).toBeGreaterThanOrEqual(55)
+    await vi.advanceTimersByTimeAsync(100_000)
     expect(onActivity.mock.calls.length).toBe(atWindowEnd)
     shutdownAgyResidentServers(mock.deps)
     await vi.advanceTimersByTimeAsync(AGY_RESIDENT_TURN_TIMEOUT_MS)
     await settled
+  })
+
+  it('a 290 s cold boot is kept alive by the heartbeat and then completes', async () => {
+    vi.useFakeTimers()
+    const { mock } = withLog()
+    const onActivity = vi.fn()
+    const turn = startTurn(mock, { onActivity })
+    await vi.advanceTimersByTimeAsync(290_000)
+    // the renderer only cancels after 240 s WITHOUT a ping; the longest gap here is one beat
+    expect(onActivity.mock.calls.length).toBeGreaterThanOrEqual(55)
+    mock.children[0]!.emitLines([
+      JSON.stringify({
+        event: 'result',
+        result: { status: 'SUCCESS', structured_output: { text: 'late but fine', tool_calls: [] } },
+      }),
+    ])
+    await expect(turn).resolves.toBeUndefined() // completed, no timeout or cancel
+    shutdownAgyResidentServers(mock.deps)
+  })
+
+  it('stopping is per worker: a worker that already produced output is not pinged on a later turn', async () => {
+    vi.useFakeTimers()
+    const { mock } = withLog()
+    const result = JSON.stringify({
+      event: 'result',
+      result: { status: 'SUCCESS', structured_output: { text: 'ok', tool_calls: [] } },
+    })
+    const first = startTurn(mock, {}, 'warm-1')
+    await vi.advanceTimersByTimeAsync(10)
+    mock.children[0]!.emitLines([result])
+    await first
+    // second turn of the same session, well inside the worker's first 300 s
+    const onActivity = vi.fn()
+    const second = streamAgy(
+      config,
+      'sys',
+      [
+        { role: 'user', text: 'hello' },
+        { role: 'assistant', text: 'ok' },
+        { role: 'user', text: 'and again' },
+      ],
+      sampleTools,
+      1024,
+      {
+        sessionId: 'warm-1',
+        sessionScope: 'scope-life',
+        signal: new AbortController().signal,
+        onDelta: vi.fn(),
+        onToolCall: vi.fn(),
+        onActivity,
+      },
+      mock.deps,
+    )
+    const settled = second.catch(() => undefined)
+    await vi.advanceTimersByTimeAsync(60_000)
+    expect(mock.children).toHaveLength(1) // the same worker, not a fresh boot
+    expect(onActivity).not.toHaveBeenCalled()
+    mock.children[0]!.emitLines([result])
+    await settled
+    shutdownAgyResidentServers(mock.deps)
   })
 
   it('stops pinging once the child has produced output', async () => {
@@ -1559,7 +1619,7 @@ describe('resident worker lifecycle: prewarm TTL, heartbeat, retire log', () => 
     const { mock } = withLog()
     mock.deps.env = { GENOFFICE_AGY_PREWARM_TTL_MS: '3600000' }
     await prewarmAgy(config, mock.deps)
-    await vi.advanceTimersByTimeAsync(5 * 60_000) // booted long ago
+    await vi.advanceTimersByTimeAsync(6 * 60_000) // booted long ago
     const onActivity = vi.fn()
     const turn = startTurn(mock, { onActivity })
     const settled = turn.catch(() => undefined)

@@ -12,7 +12,7 @@ import {
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import type { Worker } from 'node:worker_threads'
-import { afterEach, beforeEach, describe, expect, it } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { chunkDocumentText } from '../src/main/document-memory/chunks'
 import { DocumentMemoryManager } from '../src/main/document-memory/manager'
 import {
@@ -257,6 +257,39 @@ describe('reading does not wait for vectors', () => {
     expect(firstEmbedAt).toBeGreaterThan(-1)
     expect(firstEmbedAt).toBeLessThan(extractAt[extractAt.length - 1]!)
   }, 60_000)
+})
+
+describe('files on a root that is not reachable yet', () => {
+  it('stay queued, are never read or judged by empty ignore rules, and are read once the root answers', async () => {
+    const { rootAvailability } = await import('../src/main/document-memory/root-availability')
+    const filesDir = join(dir, 'files')
+    seedLine(0, 4)
+    // a saved root whose launch-time probe has not answered yet
+    const check = vi
+      .spyOn(rootAvailability, 'check')
+      .mockReturnValue(new Promise<boolean>(() => {}))
+    rootAvailability.register(filesDir)
+    const worker = new FakeIndexWorker()
+    try {
+      manager = open(worker)
+      await new Promise((r) => setTimeout(r, 400))
+      expect(worker.seen.some((m) => m.type === 'extract')).toBe(false)
+      const queued = (manager as unknown as { queue: string[] }).queue
+      expect(queued.length).toBe(4) // held in the line, not dropped
+
+      check.mockRestore() // the real probe is back; the root now answers
+      rootAvailability.observe(filesDir, true)
+      ;(manager as unknown as { drain(): void }).drain()
+      await until(
+        () => (statusCounts().ready ?? 0) === 4,
+        20_000,
+        'files read after the root answered',
+      )
+    } finally {
+      check.mockRestore()
+      rootAvailability.unregister(filesDir)
+    }
+  }, 40_000)
 })
 
 describe('a backlog above the poll threshold is still polled', () => {

@@ -35,6 +35,8 @@ import {
 import { describeExtraRoot } from '../src/main/folder-roots'
 import { FolderWatcher, listFolder } from '../src/main/folder-tree'
 import { statPathEntriesAsync } from '../src/main/recent-files'
+import { FreshnessCoordinator } from '../src/main/document-memory/runtime/freshness-coordinator'
+import { DocumentMemoryStore } from '../src/main/document-memory/store'
 
 const syncCalls = () =>
   vi.mocked(fs.existsSync).mock.calls.length +
@@ -130,6 +132,33 @@ describe('RootAvailability.syncIoVerdict', () => {
     expect(probe).toHaveBeenCalledTimes(1) // forced, although the 1 h backoff has not elapsed
   })
 
+  it('settled() waits for the one launch-time probe, then answers; it is instant otherwise', async () => {
+    let answer!: (online: boolean) => void
+    const probe = vi.fn(() => new Promise<boolean>((r) => (answer = r)))
+    const roots = new RootAvailability(probe)
+    await roots.settled(join(root, 'x')) // unregistered: nothing to wait for
+    expect(probe).not.toHaveBeenCalled()
+    roots.register(root)
+    let done = false
+    const waiting = roots.settled(join(root, 'x', 'y.docx')).then(() => (done = true))
+    await tick(5)
+    expect(done).toBe(false)
+    answer(true)
+    await waiting
+    expect(roots.syncIoVerdict(root)).toBe('ok')
+    await roots.settled(root) // verified: instant, no second probe
+    expect(probe).toHaveBeenCalledTimes(1)
+  })
+
+  it('settled() is bounded by the probe deadline when the probe never answers', async () => {
+    const roots = new RootAvailability(never, Date.now, 40)
+    roots.register(root)
+    const started = Date.now()
+    await roots.settled(root)
+    expect(Date.now() - started).toBeLessThan(1000)
+    expect(roots.syncIoVerdict(root)).toBe('offline')
+  })
+
   it('never touches the filesystem', () => {
     const roots = new RootAvailability(never)
     roots.register(root)
@@ -220,6 +249,73 @@ describe('other main-thread readers on an unreachable root', () => {
     await intake.triggerReplay()
     expect(onDiscovered).toHaveBeenCalledTimes(1)
     expect(intake.has(file)).toBe(false)
+  })
+
+  it('replays held discoveries as soon as the root recovers', async () => {
+    const file = join(root, 'b.docx')
+    writeFileSync(file, 'x')
+    await registerThen(false)
+    const onDiscovered = vi.fn(() => ({ outcome: 'enrolled' as const }))
+    const intake = new PendingMetadataIntake({
+      isStopped: () => false,
+      isEnabled: () => true,
+      isWriteReady: () => true,
+      isAccountingReady: () => true,
+      isFreeDiskReady: () => true,
+      onRemember: () => true,
+      onDiscovered,
+    } as never)
+    intake.enqueue(file, 'discovered')
+    expect(intake.has(file)).toBe(true)
+    rootAvailability.observe(root, true) // recovery: no explicit replay call
+    await tick(20)
+    expect(onDiscovered).toHaveBeenCalledTimes(1)
+    expect(intake.has(file)).toBe(false)
+    intake.close()
+  })
+
+  it('a discovery on a root that never answers expires instead of holding a slot forever', async () => {
+    const file = join(root, 'c.docx')
+    writeFileSync(file, 'x')
+    await registerThen(false)
+    const onDiscovered = vi.fn(() => ({ outcome: 'enrolled' as const }))
+    const intake = new PendingMetadataIntake({
+      isStopped: () => false,
+      isEnabled: () => true,
+      isWriteReady: () => true,
+      isAccountingReady: () => true,
+      isFreeDiskReady: () => true,
+      onRemember: () => true,
+      onDiscovered,
+    } as never)
+    intake.enqueue(file, 'discovered')
+    intake.get(file)!.enqueuedAt = Date.now() - 25 * 60 * 60 * 1000
+    await intake.triggerReplay()
+    expect(intake.has(file)).toBe(false)
+    expect(onDiscovered).not.toHaveBeenCalled()
+    intake.close()
+  })
+
+  it('freshness coordinator defers a discovery on an unverified root even when metadata is supplied', async () => {
+    const store = new DocumentMemoryStore(join(root, 'dm.db'))
+    try {
+      neverProbed()
+      const held: string[] = []
+      const freshness = new FreshnessCoordinator({
+        store,
+        roots: rootAvailability,
+        intakeAdapter: { onDiscovered: (p: string) => void held.push(p) },
+      } as never)
+      const file = join(root, 'd.docx')
+      writeFileSync(file, 'x')
+      resetCalls()
+      const res = freshness.enrollDiscoveredFile(file, { mtimeMs: 1, sizeBytes: 1 })
+      expect(res).toEqual({ outcome: 'deferred', reason: 'root-unreachable' })
+      expect(held).toEqual([file])
+      expect(store.documentByPath(file)).toBeFalsy() // neither enrolled nor excluded
+    } finally {
+      store.close()
+    }
   })
 
   it('listFolder and describeExtraRoot do not touch an unreachable folder', () => {
