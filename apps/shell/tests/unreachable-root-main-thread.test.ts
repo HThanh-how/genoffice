@@ -14,6 +14,9 @@ vi.mock('node:fs', async (importOriginal) => {
     readFileSync: vi.fn(actual.readFileSync),
     readdirSync: vi.fn(actual.readdirSync),
     accessSync: vi.fn(actual.accessSync),
+    realpathSync: Object.assign(vi.fn(actual.realpathSync), {
+      native: vi.fn(actual.realpathSync.native),
+    }),
     watch: vi.fn(actual.watch),
   }
 })
@@ -28,6 +31,7 @@ import {
 } from '../src/main/document-memory/ignore-policy'
 import { RootAvailability, rootAvailability } from '../src/main/document-memory/root-availability'
 import { FolderWatchManager } from '../src/main/document-memory/folder-watch'
+import { HeldRootPaths } from '../src/main/document-memory/runtime/held-root-paths'
 import {
   PendingMetadataIntake,
   safeStat,
@@ -43,9 +47,17 @@ const syncCalls = () =>
   vi.mocked(fs.statSync).mock.calls.length +
   vi.mocked(fs.readFileSync).mock.calls.length +
   vi.mocked(fs.readdirSync).mock.calls.length +
-  vi.mocked(fs.accessSync).mock.calls.length
+  vi.mocked(fs.accessSync).mock.calls.length +
+  vi.mocked(fs.realpathSync.native).mock.calls.length
 const resetCalls = () => {
-  for (const fn of [fs.existsSync, fs.statSync, fs.readFileSync, fs.readdirSync, fs.accessSync])
+  for (const fn of [
+    fs.existsSync,
+    fs.statSync,
+    fs.readFileSync,
+    fs.readdirSync,
+    fs.accessSync,
+    fs.realpathSync.native,
+  ])
     vi.mocked(fn).mockClear()
   vi.mocked(fs.watch).mockClear()
 }
@@ -486,6 +498,75 @@ describe('FolderWatchManager on a root that is not reachable', () => {
       expect(watch).toHaveBeenCalled()
     } finally {
       m.close()
+    }
+  })
+})
+
+describe('HeldRootPaths (files waiting for an unreachable root)', () => {
+  it('holds paths of an unverified or offline root, and lets others through', async () => {
+    const wake = vi.fn()
+    const held = new HeldRootPaths(wake, 20)
+    try {
+      expect(held.take(join(root, 'free.docx'))).toBe(false) // unregistered root: nothing to wait for
+      neverProbed()
+      expect(held.take(join(root, 'a.docx'))).toBe(true)
+      expect(held.take(join(root, 'a.docx'))).toBe(true) // the same path twice is one entry
+      expect(held.size).toBe(1)
+      await tick(60)
+      expect(wake).toHaveBeenCalledTimes(1)
+      expect(wake).toHaveBeenCalledWith([join(root, 'a.docx')])
+      expect(held.size).toBe(0)
+    } finally {
+      held.dispose()
+    }
+  })
+
+  it('wakes at once when a root is verified, without waiting for the pause', async () => {
+    const wake = vi.fn()
+    const held = new HeldRootPaths(wake, 60_000)
+    try {
+      neverProbed()
+      held.take(join(root, 'a.docx'))
+      held.take(join(root, 'b.docx'))
+      vi.restoreAllMocks()
+      rootAvailability.observe(root, true) // the launch-time probe answers
+      expect(wake).toHaveBeenCalledTimes(1)
+      expect(wake.mock.calls[0]![0]).toHaveLength(2)
+      expect(held.size).toBe(0)
+    } finally {
+      held.dispose()
+    }
+  })
+
+  it('clear() forgets everything and cancels the wake; dispose() stops watching roots', async () => {
+    const wake = vi.fn()
+    const held = new HeldRootPaths(wake, 20)
+    neverProbed()
+    held.take(join(root, 'a.docx'))
+    held.clear()
+    expect(held.size).toBe(0)
+    await tick(60)
+    expect(wake).not.toHaveBeenCalled()
+    held.take(join(root, 'b.docx'))
+    held.dispose()
+    vi.restoreAllMocks()
+    rootAvailability.observe(root, true)
+    await tick(30)
+    expect(wake).not.toHaveBeenCalled()
+  })
+
+  it('a failing wake does not escape the timer callback', async () => {
+    vi.spyOn(console, 'warn').mockImplementation(() => {})
+    const held = new HeldRootPaths(() => {
+      throw new Error('boom')
+    }, 10)
+    try {
+      neverProbed()
+      held.take(join(root, 'a.docx'))
+      await tick(40) // would be an uncaught exception in the timer if it escaped
+      expect(held.size).toBe(0)
+    } finally {
+      held.dispose()
     }
   })
 })

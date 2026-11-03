@@ -19,6 +19,7 @@ import {
   type PendingFileAction,
 } from '@genoffice/agent-core'
 import { isInsideRoot } from './folder-tree'
+import { rootAvailability } from './document-memory/root-availability'
 import { isPathIgnored, isRestrictedRoot } from './document-memory/ignore-policy'
 import { isJunkFileName, shouldSkipDirectory } from './document-memory/scan-policy'
 import { isValidRawRenameName } from './rename-validation'
@@ -72,6 +73,9 @@ export class FileManagementService {
     const path = resolve(raw)
     const root = this.deps.roots().find((r) => isInsideRoot(r, path))
     if (!root) throw new Error('Path is outside allowed folders')
+    // realpath / stat below would block on a dead or unverified share for ~24s
+    if (rootAvailability.shouldDeferSyncIo(root) || rootAvailability.shouldDeferSyncIo(path))
+      throw new Error('The folder is not reachable right now')
     const canonicalRoot = realpathSync.native(root)
     const rel = relative(resolve(root), path)
     if (rel.startsWith('..') || isAbsolute(rel)) throw new Error('Path is outside allowed folders')

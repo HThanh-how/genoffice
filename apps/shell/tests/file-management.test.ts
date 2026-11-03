@@ -15,6 +15,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { FileAction, PendingFileAction } from '@genoffice/agent-core'
 import { FileManagementService, FILE_ACTION_TTL_MS } from '../src/main/file-management'
 import { setActiveIgnoreRules } from '../src/main/document-memory/ignore-policy'
+import { rootAvailability } from '../src/main/document-memory/root-availability'
 
 let sandbox: string
 let root: string
@@ -314,5 +315,20 @@ describe('main-process file permissions', () => {
     trash.mockRejectedValueOnce(new Error('trash unavailable'))
     await expect(service.decide(1, p.id, true)).rejects.toThrow(/trash unavailable/)
     expect(readFileSync(file('a.md'), 'utf8')).toBe('keep')
+  })
+})
+
+describe('an allowed folder on an unreachable share', () => {
+  afterEach(() => rootAvailability.unregister(root))
+
+  it('is refused at once instead of blocking the main process on realpath', () => {
+    rootAvailability.register(root)
+    rootAvailability.observe(root, false)
+    expect(() => service.propose(1, { tool: 'list_folder', path: root })).toThrow(/not reachable/)
+    expect(() => service.propose(1, { tool: 'list_folder', path: file('sub') })).toThrow(
+      /not reachable/,
+    )
+    rootAvailability.observe(root, true)
+    expect(() => service.propose(1, { tool: 'list_folder', path: root })).not.toThrow()
   })
 })

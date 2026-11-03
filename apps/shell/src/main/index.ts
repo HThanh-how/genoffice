@@ -7252,10 +7252,18 @@ function registerHomeIpc(): void {
 
   ipcMain.handle(HOME_CHANNELS.removeFolderRoot, (_event, path: unknown) => {
     if (typeof path !== 'string') return
-    const extras = withoutExtraRoot(extraFolderRoots(), path)
+    const before = extraFolderRoots()
+    const extras = withoutExtraRoot(before, path)
     writeAppSetting(APP_SETTINGS_PATH(), FOLDER_ROOTS_KEY, extras)
-    // forget its verdict: adding the same folder again must be probed afresh, not judged by a stale outage
-    if (!folderScan?.folders().some((entry) => resolve(entry.root) === resolve(path)))
+    // Forget its verdict (adding the same folder again must be probed afresh, not judged by a stale
+    // outage), but only for an added folder that was really removed: never the save folder, and not
+    // a root a scan still uses.
+    const wasExtra = before.some((root) => resolve(root) === resolve(path))
+    if (
+      wasExtra &&
+      resolve(path) !== resolve(defaultSaveDir()) &&
+      !folderScan?.folders().some((entry) => resolve(entry.root) === resolve(path))
+    )
       rootAvailability.unregister(path)
     ensureFolderWatchers()
     fileIndexer?.refresh()

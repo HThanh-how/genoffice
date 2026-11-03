@@ -287,6 +287,10 @@ describe('files on a root that is not reachable yet', () => {
     const worker = new FakeIndexWorker()
     try {
       manager = open(worker)
+      // vectors of healthy files start promptly although held files exist (the old design starved them)
+      await until(() => worker.seen.some((m) => m.type === 'embed'), 10_000, 'first vector batch')
+      // the files waiting for the root still count as pending work (status, watchdog, compaction)
+      expect(manager.status().pending).toBeGreaterThanOrEqual(heldPaths.length)
       // the healthy files are read AND embedded although held files exist
       await until(
         () => (statusCounts().ready ?? 0) === textOnlyPaths.length + pendingPaths.length,
