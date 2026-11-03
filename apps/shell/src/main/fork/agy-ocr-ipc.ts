@@ -30,6 +30,32 @@ import { OcrStateStore } from '../document-memory/agy-ocr-state'
 import type { DocumentMemoryManager } from '../document-memory/manager'
 import { currentIndexingPolicy } from './indexing-policy-bus'
 
+/**
+ * `agy usage` is a child process; the OCR job asks for it on every tick. Share one reading for a
+ * short window (and one in-flight call) instead of spawning agy each time.
+ */
+export const OCR_USAGE_CACHE_MS = 60_000
+export function cachedUsageReader<T>(
+  read: () => Promise<T>,
+  now: () => number,
+  ttlMs = OCR_USAGE_CACHE_MS,
+): () => Promise<T> {
+  let value: { at: number; result: T } | undefined
+  let inflight: Promise<T> | undefined
+  return () => {
+    if (value && now() - value.at < ttlMs) return Promise.resolve(value.result)
+    inflight ??= read()
+      .then((result) => {
+        value = { at: now(), result }
+        return result
+      })
+      .finally(() => {
+        inflight = undefined
+      })
+    return inflight
+  }
+}
+
 export interface AgyOcrDeps {
   ipcMain: Pick<IpcMain, 'handle'>
   /** absolute path of app-settings.json */
@@ -133,7 +159,7 @@ export function registerAgyOcr(deps: AgyOcrDeps): void {
         systemTimezoneOffset,
       ),
       recognize: recognizeWithAgy,
-      readUsage: () => readAgyUsage(),
+      readUsage: cachedUsageReader(() => readAgyUsage(), Date.now),
       policy,
       idleSeconds,
       localPass: () => local.runner.tick(),

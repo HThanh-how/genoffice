@@ -231,7 +231,10 @@ async function rebaseLegacyRecoveryInternal(
 async function removeEmptyVault(vault: string): Promise<boolean> {
   try {
     await rmdir(join(vault, ORIGINALS))
-    if (process.platform === 'win32') await execFileAsync('attrib', ['-h', vault]).catch(() => {})
+    if (process.platform === 'win32') {
+      hiddenVaults.delete(vault)
+      await execFileAsync('attrib', ['-h', vault], { windowsHide: true }).catch(() => {})
+    }
     await rmdir(vault)
     return true
   } catch {
@@ -240,9 +243,17 @@ async function removeEmptyVault(vault: string): Promise<boolean> {
   }
 }
 
+/** vaults already hidden in this process; attrib is a child process, so it runs once per vault */
+const hiddenVaults = new Set<string>()
+
 async function hideOnWindows(vault: string): Promise<void> {
-  if (process.platform !== 'win32') return
-  await execFileAsync('attrib', ['+h', vault]).catch(() => {})
+  if (process.platform !== 'win32' || hiddenVaults.has(vault)) return
+  // windowsHide: without it every attrib flashes a console window
+  const hidden = await execFileAsync('attrib', ['+h', vault], { windowsHide: true }).then(
+    () => true,
+    () => false,
+  )
+  if (hidden) hiddenVaults.add(vault)
 }
 
 /** Keep the original next to its converted document in a hidden, recoverable vault. */
