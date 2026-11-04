@@ -345,7 +345,7 @@ export class DocumentMemoryManager {
       this.queue.length = 0; this.queued.clear(); this.gate.clear(); this.urgent.clear(); this.deferred.clear()
     }
     return (this.shutdownPromise = (async () => {
-      let t = performance.now(); const lap = (n: string): void => { onStep?.(n, Math.round(performance.now() - t)); t = performance.now() }; try { await this.localOcrWiring?.dispose().catch(() => undefined); lap('ocr-dispose'); await this.host.terminate(); lap('worker-terminate') } finally { this.store.close(); lap('store-close') }
+      let t = performance.now(); const lap = (n: string): void => { onStep?.(n, Math.round(performance.now() - t)); t = performance.now() }; const limit = (p: Promise<unknown>): Promise<unknown> => Promise.race([p, new Promise<void>((r) => { setTimeout(r, 5_000).unref?.() })]); try { await limit(this.localOcrWiring?.dispose().catch(() => undefined) ?? Promise.resolve()); lap('ocr-dispose'); await limit(this.host.terminate()); lap('worker-terminate') } finally { this.store.close(); lap('store-close') }
     })())
   }
   private readonly heldRoots = new HeldRootPaths((paths) => { if (!this.stopped && this.enabled) for (const p of paths) try { this.enqueue(p) } catch {} }); private readonly stopFolderPauseWatch = folderPauses.subscribe(() => this.drain()); private enqueue(path: string, prioritize = false, bytes?: number): void {

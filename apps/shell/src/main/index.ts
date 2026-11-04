@@ -8843,7 +8843,12 @@ app.on('second-instance', (_event, argv, _cwd, additionalData) => {
   if (appShuttingDown) {
     // Closing (the windows are already hidden): do not bring a window back to a process that is
     // shutting its databases. Start the app again, with what was asked for, once this one is over.
-    relaunchRequests.add(argv)
+    // the same filtering as for a second copy that arrives while the app runs: only files that can be
+    // opened and folders to scan are handed on, never the other flags of that command line
+    relaunchRequests.add(
+      collectLaunchPaths(withoutFolderScanArgs(argv), additionalData),
+      parseFolderScanArgv(argv, additionalData),
+    )
     diag.info('quit', 'relaunch-requested')
     return
   }
@@ -9367,14 +9372,17 @@ app.on('before-quit', (event) => {
     // The quit is decided: take the windows off the screen now. What follows (closing large
     // databases) can keep the main thread busy for seconds, and a window that is still shown while
     // that happens is labelled "Not Responding" by Windows.
-    quitConfirmedAt = performance.now()
-    const before = describeWindows(BrowserWindow.getAllWindows())
-    hideWindowsForQuit(BrowserWindow.getAllWindows())
-    diag.info('quit', 'confirmed', {
-      windows: before.count,
-      visibleBefore: before.visible,
-      visibleAfter: describeWindows(BrowserWindow.getAllWindows()).visible,
-    })
+    // (app.quit() at the end of the clean-up lands here a second time: keep the first moment)
+    if (quitConfirmedAt === null) {
+      quitConfirmedAt = performance.now()
+      const before = describeWindows(BrowserWindow.getAllWindows())
+      hideWindowsForQuit(BrowserWindow.getAllWindows())
+      diag.info('quit', 'confirmed', {
+        windows: before.count,
+        visibleBefore: before.visible,
+        visibleAfter: describeWindows(BrowserWindow.getAllWindows()).visible,
+      })
+    }
     markSheetsShuttingDown()
     stopSheetsSidecar()
     stopMcpSync()
@@ -9445,6 +9453,18 @@ app.on('will-quit', (event) => {
         folderScanReadyListeners.clear()
       },
     },
+    // (no database in these: they stop at once, instead of staying up through the long closes below)
+    {
+      name: 'watchers-close',
+      essential: true,
+      run: () => {
+        stopAuthWatch?.()
+        for (const watcher of folderWatchers.values()) watcher.close()
+        controlServer?.close()
+        // a second instance that lost the lock quits too; it must not delete the running editor's list
+        if (ownsOpenDocumentsRegistry) clearOpenDocuments(OPEN_DOCUMENTS_PATH())
+      },
+    },
     // (sizes only: they say how long the closing below will take, and help to find out why the logs grow)
     {
       name: 'wal-sizes',
@@ -9491,17 +9511,6 @@ app.on('will-quit', (event) => {
     },
     // the largest databases last: the index of documents first, so that a long close of the file index cannot keep it from closing
     { name: 'file-index-store-close', essential: true, run: () => fileIndexStore?.close() },
-    {
-      name: 'watchers-close',
-      essential: true,
-      run: () => {
-        stopAuthWatch?.()
-        for (const watcher of folderWatchers.values()) watcher.close()
-        controlServer?.close()
-        // a second instance that lost the lock quits too; it must not delete the running editor's list
-        if (ownsOpenDocumentsRegistry) clearOpenDocuments(OPEN_DOCUMENTS_PATH())
-      },
-    },
   ]
 
   void runQuitSequence(steps, {

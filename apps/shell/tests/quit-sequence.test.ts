@@ -1,5 +1,7 @@
 import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
+import { parseFolderScanArgv, withoutFolderScanArgs } from '../src/main/folder-scan-argv'
+import { collectLaunchPaths } from '../src/main/launch-paths'
 import { describe, expect, it } from 'vitest'
 import {
   RelaunchRequests,
@@ -183,11 +185,29 @@ describe('how the quit is wired', () => {
     }
   })
 
+  it('notes the moment of the confirmation once: the second pass through before-quit leaves it alone', () => {
+    const at = index.indexOf('if (quitConfirmedAt === null) {')
+    expect(at).toBeGreaterThan(-1)
+    expect(index.slice(at, at + 400)).toContain('quitConfirmedAt = performance.now()')
+  })
+
+  it('stops the watchers and the control server before the long database closes', () => {
+    const steps = index.slice(
+      index.indexOf('const steps: QuitStep[]'),
+      index.indexOf('void runQuitSequence('),
+    )
+    expect(steps.indexOf("'watchers-close'")).toBeLessThan(steps.indexOf("'document-memory-close'"))
+    expect(steps.indexOf("'watchers-close'")).toBeLessThan(
+      steps.indexOf("'file-index-store-close'"),
+    )
+  })
+
   it('keeps the request to start again out of reach of a window being revived, and makes it on both ways out', () => {
     const handler = index.slice(index.indexOf("app.on('second-instance'"))
     const body = handler.slice(0, handler.indexOf('openLaunchPaths(paths)'))
     expect(body).toContain('appShuttingDown')
-    expect(body).toContain('relaunchRequests.add(argv)')
+    expect(body).toContain('relaunchRequests.add(')
+    expect(body).toContain('collectLaunchPaths(withoutFolderScanArgs(argv), additionalData)')
     // the normal end of the clean-up and the forced one both start the app again
     expect(index.match(/app\.relaunch\(\{ args: relaunchRequests\.toArgs\(\) \}\)/g)).toHaveLength(
       2,
@@ -263,6 +283,39 @@ describe('essential steps', () => {
     expect(entries.map((e) => e.ev)).toEqual(['deadline.waiting', 'deadline'])
   })
 
+  it('an essential step that never answers ends the process exactly once, at the hard limit', async () => {
+    const { entries, log } = logSink()
+    let exited = 0
+    let t = 0
+    const timers: Array<{ fn: () => void; ms: number }> = []
+    const ran: string[] = []
+    void runQuitSequence(
+      [
+        { name: 'closing', essential: true, run: () => new Promise<void>(() => undefined) },
+        { name: 'after', essential: true, run: () => void ran.push('after') },
+      ],
+      {
+        log,
+        forceExit: () => void exited++,
+        now: () => t,
+        setTimeout: ((fn: () => void, ms: number) => (
+          timers.push({ fn, ms }),
+          timers.length
+        )) as any,
+        clearTimeout: (() => undefined) as any,
+      },
+    )
+    await Promise.resolve()
+    t = 25_000
+    timers[0]!.fn()
+    t = 60_000
+    timers[1]!.fn()
+    expect(exited).toBe(1)
+    expect(timers).toHaveLength(2) // no third timer
+    expect(ran).toEqual([]) // the step behind it never started
+    expect(entries.map((e) => e.ev)).toEqual(['deadline.waiting', 'deadline'])
+  })
+
   it('end the process at the first deadline when only an optional step is waiting', async () => {
     const { log } = logSink()
     let exited = 0
@@ -280,20 +333,69 @@ describe('essential steps', () => {
 })
 
 describe('starting the app again after a quit', () => {
-  it('keeps every file asked for, once, from every second copy', () => {
+  it('keeps every file and folder asked for, once, and passes on nothing else', () => {
     const requests = new RelaunchRequests()
     expect(requests.isRequested).toBe(false)
-    requests.add(['GenOffice.exe', 'C:\\docs\\a.docx'])
-    requests.add(['GenOffice.exe', 'C:\\docs\\b.xlsx', 'C:\\docs\\a.docx'])
+    requests.add(['C:\\docs\\a.docx'], ['D:\\scan'])
+    requests.add(['C:\\docs\\b.xlsx', 'C:\\docs\\a.docx'], ['D:\\scan', 'E:\\other'])
     expect(requests.isRequested).toBe(true)
-    expect(requests.toArgs()).toEqual(['C:\\docs\\a.docx', 'C:\\docs\\b.xlsx'])
+    expect(requests.toArgs()).toEqual([
+      'C:\\docs\\a.docx',
+      'C:\\docs\\b.xlsx',
+      '--genoffice-scan-folder',
+      'D:\\scan',
+      '--genoffice-scan-folder',
+      'E:\\other',
+    ])
   })
 
-  it('a copy started without arguments still asks for a start', () => {
+  it('a copy started without anything to open still asks for a start', () => {
     const requests = new RelaunchRequests()
-    requests.add(['GenOffice.exe'])
+    requests.add([], [])
     expect(requests.isRequested).toBe(true)
     expect(requests.toArgs()).toEqual([])
+  })
+
+  it('never hands a flag on: a folder that looks like one is dropped', () => {
+    const requests = new RelaunchRequests()
+    requests.add([], ['--inspect=9229', 'D:\\scan'])
+    expect(requests.toArgs()).toEqual(['--genoffice-scan-folder', 'D:\\scan'])
+  })
+
+  it('the filtering the quit uses leaves out debug flags, a changed profile folder and files that do not exist', () => {
+    const argv = [
+      'GenOffice.exe',
+      '--inspect=9229',
+      '--remote-debugging-port=1',
+      '--user-data-dir=X',
+      '--no-sandbox',
+      '--genoffice-scan-folder',
+      'D:\\scan',
+      'a.docx',
+      'missing.docx',
+    ]
+    const additionalData = { launchPaths: ['payload.xlsx'], folderScanPaths: ['F:\\more'] }
+    const exists = (path: string): boolean => path === 'a.docx'
+    const requests = new RelaunchRequests()
+    requests.add(
+      collectLaunchPaths(withoutFolderScanArgs(argv), additionalData, exists),
+      parseFolderScanArgv(argv, additionalData),
+    )
+    const args = requests.toArgs()
+    for (const flag of [
+      '--inspect=9229',
+      '--remote-debugging-port=1',
+      '--user-data-dir=X',
+      '--no-sandbox',
+    ]) {
+      expect(args).not.toContain(flag)
+    }
+    expect(args).toContain('a.docx')
+    expect(args).not.toContain('missing.docx')
+    expect(args).toContain('payload.xlsx') // what the second copy sent in its additional data
+    expect(args).toEqual(
+      expect.arrayContaining(['--genoffice-scan-folder', 'D:\\scan', 'F:\\more']),
+    )
   })
 })
 

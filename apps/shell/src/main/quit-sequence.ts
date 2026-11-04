@@ -4,7 +4,14 @@
  * "Not Responding". So the order is: hide every window as soon as the quit is confirmed, then do the
  * clean-up one step at a time, timing each step, with an overall deadline after which the process
  * is ended (SQLite recovers what is left of a write-ahead log the next time the database is opened).
+ *
+ * What the deadline cannot do: a timer does not run inside one long synchronous call, so a step that
+ * blocks for good (a database closed while another program holds it) is not cut by anything, and
+ * the hidden process keeps the single-instance lock until it is ended from outside; the deadline
+ * decides about the steps that wait (`await`) and about the optional steps that have not started.
  */
+
+import { FOLDER_SCAN_FLAG } from './folder-scan-argv'
 
 export interface QuitWindow {
   isDestroyed(): boolean
@@ -149,25 +156,30 @@ export function describeWindows(windows: readonly (QuitWindow & { isVisible?: ()
 }
 
 /**
- * The arguments of the copies of the app that were started while this one was closing, kept so that the
- * app can be started again when it has closed: every file the user asked to open, once. The program and
- * its first argument slot are not kept (the new process has its own).
+ * What the copies of the app that were started while this one was closing asked for, kept so that the
+ * app can be started again when it has closed: the files to open and the folders to scan, each once.
+ * Nothing else of their command lines is kept (a flag such as --inspect, --remote-debugging-port or
+ * --user-data-dir must not be handed on to the new process): the caller passes what it has already
+ * filtered the same way it filters a second copy that arrives while the app runs.
  */
 export class RelaunchRequests {
-  private readonly args = new Set<string>()
+  private readonly paths = new Set<string>()
+  private readonly folders = new Set<string>()
   private requested = false
 
-  /** `argv` is the command line of the second copy, program first. */
-  add(argv: readonly string[]): void {
+  add(paths: readonly string[], folders: readonly string[] = []): void {
     this.requested = true
-    for (const arg of argv.slice(1)) this.args.add(arg)
+    for (const path of paths) if (path) this.paths.add(path)
+    // (a folder that looks like a flag would be read as one by the new process)
+    for (const folder of folders) if (folder && !folder.startsWith('--')) this.folders.add(folder)
   }
 
   get isRequested(): boolean {
     return this.requested
   }
 
+  /** The arguments for `app.relaunch`. */
   toArgs(): string[] {
-    return [...this.args]
+    return [...this.paths, ...[...this.folders].flatMap((folder) => [FOLDER_SCAN_FLAG, folder])]
   }
 }
