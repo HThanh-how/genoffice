@@ -119,8 +119,9 @@ interface Entry {
   readonly line: string
   /** how many times the write of this line was given up while it may have reached the file */
   tries?: number
-  /** made by the logger (the note that lines were dropped): never sent again, never counted */
+  /** made by the logger (the note that lines were dropped): sent again once, never counted */
   notice?: boolean
+  noticeRetried?: boolean
 }
 
 /** One try at writing: set to cancelled when it is given up, so that it changes nothing afterwards. */
@@ -652,13 +653,19 @@ export class DiagnosticsLogger {
           // that it is counted as dropped. The note that lines were dropped is made by the logger: it
           // is not sent again and not counted, or every note would make the next one. (A write given
           // up BEFORE the append, in the preparation, put nothing in the file and is not counted.)
-          const before = rest.length
-          rest = rest.filter(
-            (entry) =>
-              !entry.notice && (entry.tries = (entry.tries ?? 0) + 1) <= MAX_GIVEN_UP_TRIES,
-          )
-          const lost =
-            before - rest.length - entries.slice(inflight.from).filter((e) => e.notice).length
+          // (The note is sent once more, in case that write did not land after all; being a note it
+          // is never counted as dropped, so there is no loop of notes about notes.)
+          let lost = 0
+          rest = rest.filter((entry) => {
+            if (entry.notice) {
+              if (entry.noticeRetried) return false
+              entry.noticeRetried = true
+              return true
+            }
+            const keep = (entry.tries = (entry.tries ?? 0) + 1) <= MAX_GIVEN_UP_TRIES
+            if (!keep) lost++
+            return keep
+          })
           if (lost > 0) this.noteDropped(lost)
         }
         this.requeue(rest)

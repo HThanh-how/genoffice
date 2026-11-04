@@ -4,6 +4,7 @@ import { parseFolderScanArgv, withoutFolderScanArgs } from '../src/main/folder-s
 import { collectLaunchPaths, isOpenableLaunchPath } from '../src/main/launch-paths'
 import { describe, expect, it } from 'vitest'
 import {
+  ProcessEnd,
   RelaunchRequests,
   describeWindows,
   existingPaths,
@@ -198,12 +199,11 @@ describe('how the quit is wired', () => {
     )
   })
 
-  it('the forced exit also gives the checks their moment before it starts the app again and ends', () => {
+  it('the forced exit gives the checks their moment, then ends through the one way out', () => {
     const at = index.indexOf('forceExit: () => {')
-    const body = index.slice(at, at + 700)
+    const body = index.slice(at, at + 500)
     expect(body).toContain('relaunchRequests.settled(')
-    expect(body.indexOf('settled(')).toBeLessThan(body.indexOf('app.relaunch('))
-    expect(body.indexOf('app.relaunch(')).toBeLessThan(body.indexOf('app.exit(0)'))
+    expect(body.indexOf('settled(')).toBeLessThan(body.indexOf("processEnd.end('exit')"))
   })
 
   it('notes the moment of the confirmation once: the second pass through before-quit leaves it alone', () => {
@@ -233,10 +233,11 @@ describe('how the quit is wired', () => {
     expect(body).toContain('relaunchRequests.track(')
     expect(index).toContain('await relaunchRequests.settled(')
     expect(body).toContain('collectLaunchPaths(withoutFolderScanArgs(argv), additionalData)')
-    // the normal end of the clean-up and the forced one both start the app again
-    expect(index.match(/app\.relaunch\(\{ args: relaunchRequests\.toArgs\(\) \}\)/g)).toHaveLength(
-      2,
-    )
+    // the normal end of the clean-up and the forced one both go through the one way out
+    expect(index).toContain("processEnd.end('quit')")
+    expect(index).toContain("processEnd.end('exit')")
+    // and it is started again in one place only
+    expect(index.match(/app\.relaunch\(\{ args \}\)/g)).toHaveLength(1)
   })
 
   it('marks the databases and lists as essential steps, and the document index closes before the file index', () => {
@@ -545,14 +546,15 @@ describe('asking whether files exist without blocking', () => {
     expect(requests.toArgs()).toEqual(['a.docx'])
   })
 
-  it('waits for a check that was added while it was waiting', async () => {
+  it('waits for a check that was added while it was waiting (and not only for those there at the start)', async () => {
     const requests = new RelaunchRequests('win32')
     let releaseFirst: () => void = () => undefined
     let releaseSecond: () => void = () => undefined
     requests.track(
       new Promise<void>((resolve) => (releaseFirst = resolve)).then(() => requests.add(['a.docx'])),
     )
-    const waiting = requests.settled(2000)
+    let done = false
+    const waiting = requests.settled(5_000).then(() => void (done = true))
     await new Promise((r) => setTimeout(r, 10))
     // a second copy arrives while the first check is still running
     requests.track(
@@ -560,10 +562,12 @@ describe('asking whether files exist without blocking', () => {
         requests.add(['b.docx']),
       ),
     )
-    releaseFirst()
-    await new Promise((r) => setTimeout(r, 10))
+    releaseFirst() // the check that was there at the start is over...
+    await new Promise((r) => setTimeout(r, 40))
+    expect(done).toBe(false) // ...but the one added since is not, and the wait goes on
     releaseSecond()
     await waiting
+    expect(done).toBe(true)
     expect(requests.toArgs()).toEqual(['a.docx', 'b.docx'])
   })
 
@@ -587,5 +591,50 @@ describe('describing the windows for the log', () => {
       visible: 1,
     })
     expect(describeWindows([])).toEqual({ count: 0, visible: 0 })
+  })
+})
+
+describe('the way out of the process', () => {
+  const setup = (requested: boolean, relaunchThrows = false) => {
+    const calls: string[] = []
+    const requests = new RelaunchRequests('win32')
+    if (requested) requests.add(['a.docx'], [])
+    const end = new ProcessEnd(requests, {
+      relaunch: (args) => {
+        calls.push(`relaunch ${args.join(',')}`)
+        if (relaunchThrows) throw new Error('could not start')
+      },
+      quit: () => void calls.push('quit'),
+      exit: () => void calls.push('exit'),
+    })
+    return { calls, end }
+  }
+
+  it('starts the app again once when the clean-up and the watchdog both get there', () => {
+    const { calls, end } = setup(true)
+    end.end('exit') // the watchdog
+    end.end('quit') // the clean-up, finishing in the moment the watchdog waited
+    end.end('exit')
+    expect(calls).toEqual(['relaunch a.docx', 'exit'])
+    expect(end.isEnded).toBe(true)
+  })
+
+  it('the other order: the clean-up first, then the watchdog', () => {
+    const { calls, end } = setup(true)
+    end.end('quit')
+    end.end('exit')
+    expect(calls).toEqual(['relaunch a.docx', 'quit'])
+  })
+
+  it('does not start the app again when nobody asked', () => {
+    const { calls, end } = setup(false)
+    end.end('quit')
+    expect(calls).toEqual(['quit'])
+  })
+
+  it('ends the process even if starting the app again fails', () => {
+    const { calls, end } = setup(true, true)
+    end.end('exit')
+    expect(calls).toEqual(['relaunch a.docx', 'exit'])
   })
 })

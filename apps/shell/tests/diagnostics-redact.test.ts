@@ -963,4 +963,51 @@ describe('diagnostics redaction', () => {
     expect(out.sessionId.id).toBe(uuid)
     expect(out.traceId).toBe(uuid)
   })
+
+  it('a name for a setting protects a short value or a number, not a long value under it', () => {
+    for (const text of [
+      'user id:42',
+      'user step:2',
+      'user mode:v2',
+      'user status:ok3',
+      'user count:12345',
+      'user total:100000',
+      'user version:v2024',
+      'user key:abc12',
+    ]) {
+      expect(redactString(text), text).toBe(text)
+    }
+    for (const [text, secret] of [
+      ['user key:AbCd1234Ef', 'AbCd1234Ef'],
+      ['login time:Pw9876xyz', 'Pw9876xyz'],
+      ['user type:secret123', 'secret123'],
+      ['login session:s3cr3tvalue', 's3cr3tvalue'],
+      ['user session:abcdef012345', 'abcdef012345'],
+      ['user id:7f3a9c12', '7f3a9c12'],
+      ['user id:Hunter2024', 'Hunter2024'],
+      ['login level:Hunter2024', 'Hunter2024'],
+      ['user view:Hunter22', 'Hunter22'],
+      ['user mode:abc12345678', 'abc12345678'],
+    ] as const) {
+      expect(redactString(text), text).not.toContain(secret)
+    }
+  })
+
+  it('masks base64 and long mixed-case tokens after auth, even without digits', () => {
+    for (const [text, secret] of [
+      ['auth=dXNlcjpwYXNz', 'dXNlcjpwYXNz'],
+      ['auth=AbCdEfGhIjKlMnOpQrStUvWxYz', 'AbCdEfGhIjKlMnOpQrStUvWxYz'],
+      ['auth: abc+def/ghi=', 'abc+def/ghi='],
+    ] as const) {
+      expect(redactString(text), text).not.toContain(secret)
+    }
+  })
+
+  it('leaves, knowingly, what is too short or too plain to tell from a state', () => {
+    // a decision, not an oversight: short values after auth are states (auth=ok, auth: none), and a
+    // password of seven characters or less with no colon after "auth" is not told from them
+    for (const text of ['auth=hunter2', 'auth: failed', 'auth: expired']) {
+      expect(redactString(text), text).toBe(text)
+    }
+  })
 })

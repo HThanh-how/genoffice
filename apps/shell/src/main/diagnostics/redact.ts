@@ -548,7 +548,11 @@ export function redactString(input: string): string {
   s = s.replace(
     /(\bauth)(["']?\s*[:=]\s*["']?)(?!\[redacted\])([^\s"',;&]{4,})/gi,
     (match, name: string, sep: string, value: string) =>
-      value.includes(':') || (value.length >= 8 && /\d/.test(value))
+      value.includes(':') ||
+      /[=+/]/.test(value) ||
+      (value.length >= 8 && /\d/.test(value)) ||
+      // base64 or a token without digits: long, with capitals inside
+      (value.length >= 12 && /[a-z]/.test(value) && /[A-Z]/.test(value.slice(1)))
         ? `${name}${sep}[redacted]`
         : match,
   )
@@ -556,8 +560,13 @@ export function redactString(input: string): string {
     /(\b(?:login|user|username|credentials?)\s+)([A-Za-z][\w.-]*):([A-Za-z]*\d[A-Za-z0-9]*)\b/gi,
     (match, lead: string, name: string, value: string) =>
       // `user mode:v2`, `login step:2`, `user id:42` are diagnostics: a password is longer than a
-      // short value and is not under a name that describes a setting
-      value.length >= 5 && !DIAGNOSTIC_NAMES.has(name.toLowerCase()) ? `${lead}[redacted]` : match,
+      // short value and is not under a name that describes a setting. A name from the list protects
+      // a SHORT value or a number (`id:42`, `mode:v2`, `count:12345`); a long value under it
+      // (`session:s3cr3tvalue`, `key:AbCd1234Ef`) is a secret as ever.
+      value.length >= 5 &&
+      (!DIAGNOSTIC_NAMES.has(name.toLowerCase()) || (value.length >= 8 && !/^\d+$/.test(value)))
+        ? `${lead}[redacted]`
+        : match,
   )
   // URL query strings: names stay, values go
   s = s.replace(/([?&][^=&\s#"']{1,40}=)[^&\s#"']+/g, '$1[q]')

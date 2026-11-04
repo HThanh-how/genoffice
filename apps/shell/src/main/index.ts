@@ -517,6 +517,7 @@ import {
 import { installShellCloseGuard, promptDirtyTabs } from './window-close-guard'
 import { quitCoordinator } from './quit-coordinator'
 import {
+  ProcessEnd,
   RelaunchRequests,
   describeWindows,
   existingPaths,
@@ -9421,6 +9422,12 @@ app.on('before-quit', (event) => {
 let appShutdownState: 'idle' | 'shutting-down' | 'done' = 'idle'
 /** the app was started again while it was closing: it is started once more when it has closed */
 const relaunchRequests = new RelaunchRequests()
+/** the way out of the process: whichever of the clean-up and the watchdog gets there first, once */
+const processEnd = new ProcessEnd(relaunchRequests, {
+  relaunch: (args) => app.relaunch({ args }),
+  quit: () => app.quit(),
+  exit: () => app.exit(0),
+})
 /** when the quit was confirmed (the time between that and 'will-quit' is the windows closing) */
 let quitConfirmedAt: number | null = null
 /** the size of a database's write-ahead log, which decides how long closing it takes (0 if there is none) */
@@ -9534,17 +9541,13 @@ app.on('will-quit', (event) => {
       flushDiagnosticsSync()
       // (app.exit ends the process at once, so a start requested meanwhile has to be made here, once
       // the checks of the files asked for have had their moment)
-      void relaunchRequests.settled(1500).finally(() => {
-        if (relaunchRequests.isRequested) app.relaunch({ args: relaunchRequests.toArgs() })
-        app.exit(0)
-      })
+      void relaunchRequests.settled(1500).finally(() => processEnd.end('exit'))
     },
   }).finally(async () => {
     // (a check of files asked for by a second copy may still be running: give it a moment)
     await relaunchRequests.settled(1500)
     appShutdownState = 'done'
     // the app was started again during the clean-up: start it again now that this one is over
-    if (relaunchRequests.isRequested) app.relaunch({ args: relaunchRequests.toArgs() })
-    app.quit()
+    processEnd.end('quit')
   })
 })

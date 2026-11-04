@@ -1544,18 +1544,18 @@ describe('DiagnosticsLogger limits on sending a line again, and on closing', () 
     expect(log.stats().droppedTotal).toBe(afterTwelve.dropped)
     expect(log.stats().droppedTotal).toBeLessThanOrEqual(1)
     const notices = lines(dir).filter((l) => l.ev === 'dropped').length
-    expect(notices).toBeLessThanOrEqual(1)
+    expect(notices).toBeLessThanOrEqual(2) // the note is sent once more, then let go
   })
 
-  it('a write given up before the append (the folder did not answer) puts nothing in the file and is not counted as dropped', async () => {
+  it('a write given up before the append (the preparation is slow) puts nothing in the file and is not counted as dropped', async () => {
     const dir = tmp()
-    let release: () => void = () => undefined
-    let blocked = true
+    let slow = true
     const fs: LogFs = {
       ...realLogFs,
-      mkdir: async (d) => {
-        if (blocked) await new Promise<void>((resolve) => (release = resolve))
-        return realLogFs.mkdir(d)
+      // the size of the file takes longer than the write timeout, but it does come
+      size: async (p) => {
+        if (slow) await new Promise((r) => setTimeout(r, 60))
+        return realLogFs.size(p)
       },
     }
     const log = new DiagnosticsLogger({
@@ -1563,18 +1563,20 @@ describe('DiagnosticsLogger limits on sending a line again, and on closing', () 
       fs,
       writeTimeoutMs: 15,
       retryDelaysMs: [],
-      retryBackoffMs: 0,
+      retryBackoffMs: 50,
       switchAfterFailures: 1000,
       degradedAfterMs: 1e9,
       onInternalError: () => undefined,
     })
     log.error('a', 'kept-line')
-    for (let round = 0; round < 5; round++) await log.flush() // five givings-up before any append
+    for (let round = 0; round < 6; round++) {
+      await log.flush() // given up in the preparation
+      await new Promise((r) => setTimeout(r, 70)) // the slow answers come, and leave the count
+    }
+    // nothing of it counts towards the limit on sending a line again: the line is still there
     expect(log.stats().droppedTotal).toBe(0)
     expect(log.queued).toBe(1)
-    blocked = false
-    release()
-    await new Promise((r) => setTimeout(r, 10))
+    slow = false
     await log.flush()
     expect(lines(dir).filter((l) => l.ev === 'kept-line')).toHaveLength(1)
   })
