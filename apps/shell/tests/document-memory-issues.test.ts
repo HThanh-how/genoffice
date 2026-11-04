@@ -87,6 +87,8 @@ describe('issueReason classification', () => {
     ['No readable text; scanned documents need OCR', 'empty', 'no-text'],
     [null, 'empty', 'no-text'],
     ['No readable text in this file; there is nothing to search', 'empty', 'empty'],
+    ['No readable text; the 3 pictures in this file have not been read', 'empty', 'no-text'],
+    ['No readable text; the 1 picture in this file has not been read', 'empty', 'no-text'],
     ['Unsupported document type', 'error', 'unsupported'],
     ['Local embedding model unavailable; text search remains available', 'error', 'model'],
     ['TypeError: fetch failed', 'error', 'model'],

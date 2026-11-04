@@ -112,7 +112,8 @@ export function issueReason(error: string | null, status: string): IndexIssueRea
     )
   )
     return 'corrupt'
-  // a file that is not a PDF cannot be OCR'd: blank means blank
+  // a file with no text and no pictures is blank; a file that holds pictures ("the 3 pictures in this
+  // file have not been read") falls through to 'no-text' below: the text may be in the pictures
   if (/no readable text in this file/.test(value)) return 'empty'
   if (status === 'empty' || /no readable|no text|ocr/.test(value)) return 'no-text'
   if (/unsupported|cannot extract|not supported|invalid/.test(value)) return 'unsupported'
@@ -156,4 +157,3 @@ export function shortCause(error: string | null | undefined, max = 140): string 
 export function safeError(error: unknown): string {
   return error instanceof Error ? error.message : 'Document memory operation failed.'
 }
-
