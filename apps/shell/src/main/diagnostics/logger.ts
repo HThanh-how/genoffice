@@ -65,6 +65,8 @@ export interface LoggerOptions {
   readonly switchAfterFailures?: number
   /** one attempt to write (including its preparation) is given up after this long (default 30 s) */
   readonly writeTimeoutMs?: number
+  /** an append that has been handed to the file system is given up only after this long (default 4x the above) */
+  readonly appendHangMs?: number
   /** a second folder, on another drive, to move to when the first has not answered for `degradedAfterMs` */
   readonly altDir?: string
   readonly degradedAfterMs?: number
@@ -229,6 +231,7 @@ export class DiagnosticsLogger {
   private readonly maxQueueBytes: number
   private readonly switchAfterFailures: number
   private readonly writeTimeoutMs: number
+  private readonly appendHangMs: number
   private readonly degradedAfterMs: number
   private readonly yieldTick: () => Promise<void>
   private readonly retryDelays: readonly number[]
@@ -297,6 +300,7 @@ export class DiagnosticsLogger {
     this.maxQueueBytes = options.maxQueueBytes ?? 16_000_000
     this.switchAfterFailures = options.switchAfterFailures ?? 3
     this.writeTimeoutMs = options.writeTimeoutMs ?? 30_000
+    this.appendHangMs = options.appendHangMs ?? this.writeTimeoutMs * 4
     this.degradedAfterMs = options.degradedAfterMs ?? 120_000
     this.yieldTick = options.yieldTick ?? (() => new Promise((resolve) => setImmediate(resolve)))
     this.retryDelays = options.retryDelaysMs ?? [50, 200, 1000]
@@ -671,8 +675,9 @@ export class DiagnosticsLogger {
     return new Promise<T>((resolve, reject) => {
       let settled = false
       let hungOp: HungOp | undefined
+      let hardTimer: NodeJS.Timeout | undefined
       const dir = this.dir
-      const timer = setTimeout(() => {
+      const giveUp = (after: number): void => {
         if (settled) return
         settled = true
         attempt.cancelled = true
@@ -680,12 +685,31 @@ export class DiagnosticsLogger {
         if (attempt.appendStarted) this.maybeDuplicate = true
         hungOp = { at: Date.now(), dir }
         this.hung.add(hungOp)
-        reject(new TimeoutError(`no answer from the file system after ${this.writeTimeoutMs} ms`))
+        reject(new TimeoutError(`no answer from the file system after ${after} ms`))
+      }
+      const timer = setTimeout(() => {
+        if (settled) return
+        if (attempt.appendStarted) {
+          // The append has been handed over: giving up now would put the same lines back in the
+          // queue while this one may still land, and every retry would add another copy. A drive
+          // that is slow but alive gets until `appendHangMs`; only then is the append given up.
+          hardTimer = setTimeout(
+            () => giveUp(this.appendHangMs),
+            Math.max(0, this.appendHangMs - this.writeTimeoutMs),
+          )
+          hardTimer.unref?.()
+          return
+        }
+        giveUp(this.writeTimeoutMs)
       }, this.writeTimeoutMs)
       timer.unref?.()
+      const finish = (): void => {
+        clearTimeout(timer)
+        if (hardTimer) clearTimeout(hardTimer)
+      }
       work(attempt).then(
         (value) => {
-          clearTimeout(timer)
+          finish()
           if (attempt.cancelled) this.hung.delete(hungOp!)
           else {
             settled = true
@@ -693,7 +717,7 @@ export class DiagnosticsLogger {
           }
         },
         (error: unknown) => {
-          clearTimeout(timer)
+          finish()
           if (attempt.cancelled) this.hung.delete(hungOp!)
           else {
             settled = true

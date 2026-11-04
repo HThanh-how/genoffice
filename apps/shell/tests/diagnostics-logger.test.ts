@@ -1144,7 +1144,67 @@ describe('DiagnosticsLogger when the file system hangs: bounds and recovery', ()
     expect(lines(dir).map((l) => l.ev)).toEqual(['flush.maybeDuplicate', 'once'])
   })
 
-  it('a late append that really lands writes the batch twice, behind a marker (the documented cost)', async () => {
+  it('an append slower than the timeout but alive is waited for: each line once, no marker, no move', async () => {
+    const dir = tmp()
+    const fs: LogFs = {
+      ...realLogFs,
+      appendFile: async (p, t) => {
+        await new Promise((r) => setTimeout(r, 120)) // three times the timeout, well under the hang limit
+        return realLogFs.appendFile(p, t)
+      },
+    }
+    const log = new DiagnosticsLogger({
+      dir,
+      fs,
+      writeTimeoutMs: 40,
+      appendHangMs: 400,
+      retryDelaysMs: [],
+      retryBackoffMs: 0,
+      degradedAfterMs: 0,
+      altDir: join(dir, 'alt'),
+      onInternalError: () => undefined,
+    })
+    for (let round = 0; round < 5; round++) {
+      log.error('a', `line-${round}`)
+      await log.flush()
+    }
+    const events = lines(dir).map((l) => l.ev)
+    expect(events).toEqual(['line-0', 'line-1', 'line-2', 'line-3', 'line-4'])
+    expect(log.path).toBe(join(dir, 'genoffice.jsonl')) // a slow drive is not a dead one
+    expect(log.stats().internalErrors).toBe(0)
+  })
+
+  it('does not multiply lines while an append is slow and lines keep arriving', async () => {
+    const dir = tmp()
+    const fs: LogFs = {
+      ...realLogFs,
+      appendFile: async (p, t) => {
+        await new Promise((r) => setTimeout(r, 90))
+        return realLogFs.appendFile(p, t)
+      },
+    }
+    const log = new DiagnosticsLogger({
+      dir,
+      fs,
+      writeTimeoutMs: 30,
+      appendHangMs: 500,
+      retryDelaysMs: [],
+      retryBackoffMs: 0,
+      flushIntervalMs: 5,
+      flushLines: 1,
+      onInternalError: () => undefined,
+    })
+    for (let i = 0; i < 40; i++) {
+      log.error('a', `n${i}`)
+      await new Promise((r) => setTimeout(r, 5))
+    }
+    await log.close()
+    const events = lines(dir).map((l) => l.ev)
+    for (let i = 0; i < 40; i++) expect(events.filter((e) => e === `n${i}`)).toHaveLength(1)
+    expect(events).not.toContain('flush.maybeDuplicate')
+  })
+
+  it('an append that outlasts the hang limit is given up, and if it lands later the batch is a known repeat behind a marker', async () => {
     const dir = tmp()
     let call = 0
     const fs: LogFs = {
@@ -1152,7 +1212,7 @@ describe('DiagnosticsLogger when the file system hangs: bounds and recovery', ()
       appendFile: async (p, t) => {
         call++
         if (call === 1) {
-          await new Promise((r) => setTimeout(r, 120)) // too slow for the timeout, but it does write
+          await new Promise((r) => setTimeout(r, 300)) // beyond the hang limit, but it does write
           return realLogFs.appendFile(p, t)
         }
         return realLogFs.appendFile(p, t)
@@ -1161,19 +1221,19 @@ describe('DiagnosticsLogger when the file system hangs: bounds and recovery', ()
     const log = new DiagnosticsLogger({
       dir,
       fs,
-      writeTimeoutMs: 40,
+      writeTimeoutMs: 30,
+      appendHangMs: 100,
       retryDelaysMs: [],
       retryBackoffMs: 0,
-      onInternalError: quiet(),
+      onInternalError: () => undefined,
     })
     log.error('a', 'dup')
-    await log.flush() // times out
+    await log.flush() // given up
     await log.flush() // goes through, behind a marker
-    await new Promise((r) => setTimeout(r, 200)) // the first one lands too
+    await new Promise((r) => setTimeout(r, 350)) // the first one lands too
     const events = lines(dir).map((l) => l.ev)
     expect(events.filter((e) => e === 'dup')).toHaveLength(2)
     expect(events).toContain('flush.maybeDuplicate')
-    // the marker comes before the copy that was written second
     expect(events.indexOf('flush.maybeDuplicate')).toBeLessThan(events.lastIndexOf('dup'))
   })
 
@@ -1324,6 +1384,7 @@ describe('DiagnosticsLogger moving to the second folder', () => {
       fs,
       retryDelaysMs: [],
       writeTimeoutMs: 60,
+      appendHangMs: 60,
       onInternalError: () => undefined,
     })
     log.error('a', 'x')
