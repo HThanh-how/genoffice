@@ -675,10 +675,15 @@ const POSIX_FILE = new RegExp(
 // there is one, and at a space when there is not, `C:\Users\bob logged in`; on the others it stops at a space)
 const WINDOWS_USER =
   /([A-Za-z]:[\\/]Users[\\/])(?:[^\\/"'<>|*?:\r\n]+(?=[\\/])|[^\\/\s"'<>|*?:]+)/gi
-// ... and a home folder with nothing after it, named in capitals as a person is: `C:\Users\Nguyen Van A` at the end of
-// a line or of a quotation (no `i` flag: `C:\Users\bob logged in` is a user and some words)
-const WINDOWS_USER_WORDS =
-  /([A-Za-z]:[\\/]Users[\\/])[A-ZÀ-Ỹ][^\\/\s"'<>|*?:]*(?:[ \t]+[A-ZÀ-Ỹ][^\\/\s"'<>|*?:]*){1,3}(?=$|["'\r\n])/gm
+// ... and a home folder named as a person is: `C:\Users\Nguyen Van A` followed by nothing (the end of a line, a quotation,
+// a comma, a colon ...) or by a lower-case word (`... A and then failed`); a middle word of up to three letters may be in
+// lower case (`Nguyen van A`). It has no `i` flag, which would make every word a name: `C:\Users\bob logged in` is a user and
+// some words. (A drive letter and `Users` are spelled out in both cases for that reason.)
+const NAME_WORD = String.raw`[^\\/\s"'<>|*?:,;()\[\]]*`
+const WINDOWS_USER_WORDS = new RegExp(
+  String.raw`([A-Za-z]:[\\/][Uu][Ss][Ee][Rr][Ss][\\/])[A-ZÀ-Ỹ]${NAME_WORD}(?:[ \t]+(?:[A-ZÀ-Ỹ]${NAME_WORD}|[a-zà-ỹ]{1,3}(?=[ \t]+[A-ZÀ-Ỹ]))){1,5}(?=$|["'\r\n,:;)\]]|[ \t]+[a-zà-ỹ])`,
+  'gmu',
+)
 const POSIX_USER = /(?:(?<![\w:/])|(?<=file:\/\/))(\/(?:Users|home)\/)[^/\s"'<>|*?:]+/g
 
 /**

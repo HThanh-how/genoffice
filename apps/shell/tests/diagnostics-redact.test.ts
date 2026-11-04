@@ -1211,3 +1211,36 @@ describe('the second round of paths', () => {
     expect(hashed('home=C:\\Users\\Nguyen Van A')).not.toContain('Van A')
   })
 })
+
+describe('a home folder named as a person, whatever follows it', () => {
+  const scrub = (s: string): string => scrubPaths(s)
+  const hashed = (s: string): string =>
+    String(describeError(new Error(s), { hashPaths: true }).message)
+
+  it.each([
+    ['C:\\Users\\Nguyen Van A and then failed', 'C:\\Users\\<user> and then failed'],
+    ['open C:\\Users\\Nguyen Van A, failed', 'open C:\\Users\\<user>, failed'],
+    ['C:\\Users\\Nguyen Van A: EPERM', 'C:\\Users\\<user>: EPERM'],
+    ['C:\\Users\\Nguyen van A and so on', 'C:\\Users\\<user> and so on'],
+    ['c:\\users\\Nguyen Van A', 'c:\\users\\<user>'],
+    ['C:\\Users\\Nguyen Thi Thu Ha Anh Minh and then', 'C:\\Users\\<user> and then'],
+    ['(C:\\Users\\Nguyễn Văn A)', '(C:\\Users\\<user>)'],
+  ])('%s', (input, expected) => {
+    expect(scrub(input)).toBe(expected)
+    expect(hashed(input)).not.toContain('Van A')
+    expect(hashed(input)).not.toContain('Văn A')
+  })
+
+  it('keeps a user and some words, and a folder after the name', () => {
+    expect(scrub('cwd=C:\\Users\\bob logged in')).toBe('cwd=C:\\Users\\<user> logged in')
+    expect(scrub('C:\\Users\\Bob logged in')).toBe('C:\\Users\\<user> logged in')
+    expect(scrub('C:\\Users\\Nguyen Van A\\AppData\\x')).toBe('C:\\Users\\<user>\\AppData\\x')
+  })
+
+  it('is not slow on a long run of capitalised words', () => {
+    const started = performance.now()
+    scrub(`C:\\Users\\${'Aa '.repeat(1300)}`)
+    scrub(`C:\\Users\\Aa ${'Bb '.repeat(1300)}x`)
+    expect(performance.now() - started).toBeLessThan(300)
+  })
+})

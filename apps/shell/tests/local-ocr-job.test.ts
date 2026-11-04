@@ -727,6 +727,33 @@ describe('LocalOcrJob on scanned PDFs (real SQLite, real PDFium render, engine d
         }
       })
 
+      it('the file is no longer wanted by the slow pass (the limit was lowered, but still above the quick pass)', async () => {
+        const path = invoicePdf('lowered.pdf', 12)
+        enrollEmpty(path)
+        const job = makeJob(new ScriptedEngine(['good']), { light: 2, maxPages: 12 })
+        await afterOneVisit(job, path)
+        const lowered = makeJob(new ScriptedEngine(['good']), { light: 2, maxPages: 4 })
+        const run = await lowered.runOnce()
+        expect(run).toMatchObject({ files: 0, pages: 0 })
+        expect(reindexed).toEqual([path])
+        await lowered.runOnce()
+        expect(reindexed).toEqual([path])
+      })
+
+      it('the file is on a drive that is away or in a paused folder', async () => {
+        const path = invoicePdf('away-after.pdf', 12)
+        enrollEmpty(path)
+        const job = makeJob(new ScriptedEngine(['good']), { light: 2, maxPages: 12 })
+        await afterOneVisit(job, path)
+        const away = makeJob(new ScriptedEngine(['good']), {
+          light: 2,
+          maxPages: 12,
+          sourceAvailable: async () => false,
+        })
+        expect(await away.runOnce()).toMatchObject({ files: 0, pages: 0 })
+        expect(reindexed).toEqual([path])
+      })
+
       it('nothing more will be read now (on battery): what was read is indexed, once', async () => {
         const path = invoicePdf('battery-after.pdf', 12)
         enrollEmpty(path)

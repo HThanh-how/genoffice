@@ -217,6 +217,7 @@ export class LocalOcrJob {
     try {
       let budget = maxFiles
       let visited = 0
+      let slowVisited = 0
       // a file that is not read now (its folder is paused, its drive is away) is not "waiting in the
       // quick queue": the slow pass below starts when no file of the quick queue could be visited
       const visitPdf = async (
@@ -235,7 +236,8 @@ export class LocalOcrJob {
         const failedBefore = summary.failed
         const result = await this.readPdf(row, engine, limit, slow, options.signal, summary)
         summary.files++
-        if (!slow) visited++
+        if (slow) slowVisited++
+        else visited++
         // a visit that failed before it saved a page (the render, the first page) still ends the file's visits
         if (slow && summary.failed > failedBefore) this.flushUnindexed()
         return result ? stop(result) : 'skip'
@@ -263,8 +265,6 @@ export class LocalOcrJob {
       // The pages after the first ones come last: only when nothing of the quick queue was visited, a few
       // files at a time, so that a new file waits for at most REST_VISITS_PER_RUN visits.
       const rest = visited === 0 && !this.deps.onBattery?.() ? this.restPages() : 0
-      // nothing more will be read now (on battery, or the limit was lowered): what was read is indexed
-      if (visited === 0 && rest <= light) this.flushUnindexed()
       if (rest > light) {
         budget = Math.min(budget, REST_VISITS_PER_RUN)
         const candidates = this.ocr.candidates(rest, { mode: 'local', includeSensitive: true })
@@ -274,6 +274,10 @@ export class LocalOcrJob {
           if (outcome === 'done') break
         }
       }
+      // Nothing of the quick queue and no file of the slow pass was visited (on battery, the limit was lowered,
+      // the folder is paused or the drive is away, the gate...): the pages read so far are not waiting for a visit
+      // that is about to come, so they are put in the index now.
+      if (visited === 0 && slowVisited === 0) this.flushUnindexed()
       return summary
     } finally {
       // a Tesseract worker holds ~150 MB: do not keep it between runs
