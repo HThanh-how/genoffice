@@ -17,12 +17,19 @@ import { planOcrBatch } from '@genoffice/ai-provider/agy-ocr'
 import type { OcrRenderedPage, OcrRenderRequest, OcrRenderResult } from './agy-ocr-render'
 import { readImageMetadata } from './media/image-headers'
 import { classifyOcrSourceError } from './ocr-source-errors'
-import { TESSERACT_MAX_PIXELS } from './local-ocr/tesseract-prepare'
+import { prepareForTesseract, TESSERACT_MAX_PIXELS } from './local-ocr/tesseract-prepare'
 
 /** Pictures with both sides under this are icons and bullets (the same limit as for image files). */
 export const OFFICE_MIN_EDGE_PX = 120
 /** Files larger than this are not read (the same as for PDFs in the local pass). */
 export const OFFICE_MAX_BYTES = 64 * 1024 * 1024
+/** The scale the flattening is made for (what a rendered page of the PDF renderer is worth on A4). */
+const PREPARE_DPI = 137
+/**
+ * A picture that cannot be decoded here (interlaced or 16-bit PNG, progressive JPEG) would go to the engine
+ * as it is, at its full size; above this many pixels it is not handed over.
+ */
+const PASSTHROUGH_MAX_PIXELS = 16_000_000
 /** The pictures handed over in one answer: one batch is held in memory at once. */
 const MAX_BATCH_BYTES = 48 * 1024 * 1024
 
@@ -131,10 +138,33 @@ export async function renderOfficePicturesForOcr(
       })
       continue
     }
-    batchBytes += picture.byteLength
+    // The picture is decoded, shrunk and flattened here, in the index process, as the engine would do
+    // through a request of its own: what is handed over is small, and one that cannot be handled is found out now.
+    const prepared = ((): Uint8Array | null => {
+      try {
+        return prepareForTesseract(picture, PREPARE_DPI)
+      } catch {
+        return null
+      }
+    })()
+    const passedThrough = prepared === picture
+    if (
+      prepared === null ||
+      (passedThrough && size !== null && size.width * size.height > PASSTHROUGH_MAX_PIXELS)
+    ) {
+      pages.push({
+        page,
+        jpeg: new Uint8Array(0),
+        width: size?.width ?? 0,
+        height: size?.height ?? 0,
+        source: 'rendered',
+      })
+      continue
+    }
+    batchBytes += prepared.byteLength
     pages.push({
       page,
-      jpeg: picture,
+      jpeg: prepared,
       width: size?.width ?? 0,
       height: size?.height ?? 0,
       // (not a scan's own JPEG stream: a decoding fault is not retried by another way of rendering)

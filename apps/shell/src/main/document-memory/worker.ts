@@ -23,6 +23,7 @@ import { extname } from 'node:path'
 import {
   loadOfficePictures,
   mayHoldPictures,
+  realOfficeText,
   parseFileToText,
   pdfPageTextsSlice,
 } from '@genoffice/file-parse'
@@ -88,6 +89,10 @@ import { orientTesseractImage } from './local-ocr/orientation-image'
 import type { QuarterTurn } from './local-ocr/orientation'
 /** A Word, PowerPoint or Excel file with at least this much text is a document with pictures, not a scan. */
 export const OFFICE_TEXT_ENOUGH_CHARS = 200
+/** ... or this much for each large picture it holds: a page of a scan would hold about so much text. */
+const OFFICE_CHARS_PER_PICTURE = 150
+/** A file with this much real text is never looked at for pictures (the zip is not even opened). */
+const OFFICE_TEXT_CEILING = 3000
 /** `ocr` finds text the scanned-PDF reader stored for a PDF that has no text layer of its own. */
 /** A page with fewer characters than this has no usable text layer. */
 const MIN_PAGE_TEXT_CHARS = 20
@@ -185,6 +190,27 @@ export async function extractDocumentSliced(
       .replace(/&lt;/g, '<')
       .replace(/&gt;/g, '>')
   }
+  // A Word, PowerPoint or Excel file with next to no text may be made of scanned pages: its pictures, in
+  // the order of the document, are its "pages" for the OCR pass (the same lookup and storage as a scanned
+  // PDF's). What counts as "next to no text" is the words that are really in the file (the lines that the
+  // slide and sheet extractors write for a picture do not count, and are not indexed) against what that
+  // many large pictures would hold: with more, it is a document with illustrations and not OCR work.
+  let officePictures = 0
+  let officeUnreadable = 0
+  if (mayHoldPictures(path)) {
+    const real = realOfficeText(text, path)
+    if (real.trim().length < OFFICE_TEXT_CEILING) {
+      const found = await loadOfficePictures(bytes).catch(() => null)
+      if (found) {
+        officeUnreadable = found.unreadable
+        const needed = Math.max(OFFICE_TEXT_ENOUGH_CHARS, OFFICE_CHARS_PER_PICTURE * found.large)
+        if (found.names.length > 0 && real.trim().length < needed) {
+          officePictures = found.names.length
+          text = real
+        }
+      }
+    }
+  }
   let contentTruncated = false
   if (text.length > MAX_INDEX_TEXT_CHARS) {
     text = text.slice(0, MAX_INDEX_TEXT_CHARS)
@@ -214,15 +240,6 @@ export async function extractDocumentSliced(
     truncatedReason = 'pdf-page-limit'
   }
   const fileHash = createHash('sha256').update(bytes).digest('hex')
-  // A Word, PowerPoint or Excel file with next to no text may be made of scanned pages: its pictures, in
-  // the order of the document, are its "pages" for the OCR pass (the same lookup and storage as a
-  // scanned PDF's). With enough text of its own a file is a document with illustrations: not OCR work.
-  const officePictures =
-    mayHoldPictures(path) && text.trim().length < OFFICE_TEXT_ENOUGH_CHARS
-      ? await loadOfficePictures(bytes)
-          .then((found) => found.names.length)
-          .catch(() => 0)
-      : 0
   const scannedPages = pdfPages
     ? pdfPages.flatMap((pageText, index) =>
         pageText.trim().length < MIN_PAGE_TEXT_CHARS ? [index + 1] : [],
@@ -277,7 +294,9 @@ export async function extractDocumentSliced(
               ? 'No readable text; scanned documents need OCR'
               : officePictures > 0
                 ? `No readable text; the ${officePictures} ${officePictures === 1 ? 'picture in this file has' : 'pictures in this file have'} not been read`
-                : 'No readable text in this file; there is nothing to search',
+                : officeUnreadable > 0
+                  ? `No readable text; the ${officeUnreadable} ${officeUnreadable === 1 ? 'picture in this file cannot' : 'pictures in this file cannot'} be read (a vector drawing, or bigger than 30 MB)`
+                  : 'No readable text in this file; there is nothing to search',
         }),
   }
 }

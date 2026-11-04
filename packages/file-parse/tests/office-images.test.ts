@@ -2,10 +2,12 @@ import JSZip from 'jszip'
 import { describe, expect, it } from 'vitest'
 import {
   MIN_SIGNIFICANT_IMAGE_BYTES,
+  LARGE_PICTURE_BYTES,
   MAX_OFFICE_IMAGES,
   countEmbeddedImages,
   loadOfficePictures,
   mayHoldPictures,
+  realOfficeText,
 } from '../src/office-images'
 
 async function pack(files: Record<string, number | string>): Promise<Uint8Array> {
@@ -206,5 +208,123 @@ describe('loadOfficePictures', () => {
     expect(
       (await loadOfficePictures(await pack({ 'word/document.xml': '<w:document/>' }))).names,
     ).toEqual([])
+  })
+})
+
+describe('loadOfficePictures: what is a picture of the document', () => {
+  it('does not take the number of a bookmark or a change for the id of a relationship', async () => {
+    const bytes = await pack({
+      'word/document.xml':
+        '<w:document><w:bookmarkStart w:id="1" w:name="x"/><w:ins w:id="2"/></w:document>',
+      'word/_rels/document.xml.rels': rel([
+        ['1', 'media/header.png'],
+        ['2', 'media/other.png'],
+      ]),
+      'word/media/header.png': BIG,
+      'word/media/other.png': BIG,
+    })
+    expect((await loadOfficePictures(bytes)).names).toEqual([])
+  })
+
+  it('reads the relationship attributes under another prefix of the same namespace', async () => {
+    const bytes = await pack({
+      'word/document.xml':
+        '<w:document xmlns:rel="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><a:blip rel:embed="rId7"/></w:document>',
+      'word/_rels/document.xml.rels': rel([['rId7', 'media/page.png']]),
+      'word/media/page.png': BIG,
+    })
+    expect((await loadOfficePictures(bytes)).names).toEqual(['word/media/page.png'])
+  })
+
+  it('leaves out the background of a page and follows a target spelled in another case', async () => {
+    const bytes = await pack({
+      'word/document.xml':
+        '<w:document><w:background><v:fill r:id="rId1"/></w:background><a:blip r:embed="rId2"/></w:document>',
+      'word/_rels/document.xml.rels': rel([
+        ['rId1', 'media/texture.png'],
+        ['rId2', 'media/SCAN.PNG'],
+      ]),
+      'word/media/texture.png': BIG,
+      'word/media/scan.png': BIG,
+    })
+    expect((await loadOfficePictures(bytes)).names).toEqual(['word/media/scan.png'])
+  })
+
+  it('counts what the document shows but nobody reads: too large, or a vector picture', async () => {
+    const bytes = await pack({
+      'word/document.xml':
+        '<w:document><a:blip r:embed="rId1"/><a:blip r:embed="rId2"/><a:blip r:embed="rId3"/></w:document>',
+      'word/_rels/document.xml.rels': rel([
+        ['rId1', 'media/drawing.emf'],
+        ['rId2', 'media/chart.svg'],
+        ['rId3', 'media/ok.png'],
+      ]),
+      'word/media/drawing.emf': BIG,
+      'word/media/chart.svg': BIG,
+      'word/media/ok.png': BIG,
+    })
+    const pictures = await loadOfficePictures(bytes)
+    expect(pictures.names).toEqual(['word/media/ok.png'])
+    expect(pictures.unreadable).toBe(2)
+  })
+
+  it('tells the large pictures (a page of a scan) from the figures', async () => {
+    const bytes = await pack({
+      'word/document.xml':
+        '<w:document><a:blip r:embed="rId1"/><a:blip r:embed="rId2"/></w:document>',
+      'word/_rels/document.xml.rels': rel([
+        ['rId1', 'media/page.png'],
+        ['rId2', 'media/figure.png'],
+      ]),
+      'word/media/page.png': LARGE_PICTURE_BYTES + 10,
+      'word/media/figure.png': BIG,
+    })
+    const pictures = await loadOfficePictures(bytes)
+    expect(pictures.names).toHaveLength(2)
+    expect(pictures.large).toBe(1)
+  })
+
+  it('stops a picture that declares a small size and inflates to a great one, before it is read', async () => {
+    const real = Buffer.alloc(3 * 1024 * 1024, 0)
+    const zip = new JSZip()
+    zip.file('word/document.xml', '<w:document><a:blip r:embed="rId1"/></w:document>')
+    zip.file('word/_rels/document.xml.rels', rel([['rId1', 'media/bomb.png']]))
+    zip.file('word/media/bomb.png', real, { compression: 'DEFLATE' })
+    const bytes = Buffer.from(
+      await zip.generateAsync({ type: 'uint8array', compression: 'DEFLATE' }),
+    )
+    // write the size of a small picture over the real one, in the local header and in the central directory
+    for (let at = bytes.indexOf(Buffer.from([0x50, 0x4b, 0x03, 0x04])); at !== -1;) {
+      const nameLength = bytes.readUInt16LE(at + 26)
+      if (bytes.toString('latin1', at + 30, at + 30 + nameLength) === 'word/media/bomb.png')
+        bytes.writeUInt32LE(20_000, at + 22)
+      at = bytes.indexOf(Buffer.from([0x50, 0x4b, 0x03, 0x04]), at + 4)
+    }
+    for (let at = bytes.indexOf(Buffer.from([0x50, 0x4b, 0x01, 0x02])); at !== -1;) {
+      const nameLength = bytes.readUInt16LE(at + 28)
+      if (bytes.toString('latin1', at + 46, at + 46 + nameLength) === 'word/media/bomb.png')
+        bytes.writeUInt32LE(20_000, at + 24)
+      at = bytes.indexOf(Buffer.from([0x50, 0x4b, 0x01, 0x02]), at + 4)
+    }
+    await expect(loadOfficePictures(bytes)).rejects.toThrow()
+  })
+})
+
+describe('realOfficeText', () => {
+  it('leaves out the lines that the slide and sheet extractors write for pictures', () => {
+    const slides =
+      '[No extractable text: none of the 3 slides carries text; the content is in embedded images, which this extraction does not read.]\n\n' +
+      '## Slide 1\n[picture-only slide: 1 image, no extractable text]\n\n## Slide 2\n[picture-only slide: 2 images, no extractable text]'
+    expect(realOfficeText(slides, 'deck.pptx').trim()).toBe('')
+    expect(
+      realOfficeText('# Sheet1\n[image-only sheet: 1 image, no cell data]', 'a.xlsx').trim(),
+    ).toBe('')
+  })
+
+  it('keeps the words of the document, and a heading in a Word file', () => {
+    expect(
+      realOfficeText('## Slide 1\nQuarterly results\n[picture-only slide: 1 image]', 'd.pptx'),
+    ).toBe('Quarterly results')
+    expect(realOfficeText('# Heading\nBody', 'letter.docx')).toBe('# Heading\nBody')
   })
 })

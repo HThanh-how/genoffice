@@ -21,14 +21,14 @@ import type {
   LocalOcrRecognition,
 } from '../src/main/document-memory/runtime/local-ocr-engine'
 import { DocumentMemoryStore } from '../src/main/document-memory/store'
+import { issueReason } from '../src/main/document-memory/issues'
 import { extractDocument } from '../src/main/document-memory/worker'
 import { testPattern } from './helpers/scanned-pdf'
 
 const PNG = readFileSync(join(__dirname, 'fixtures', 'ocr', 'invoice-synth.png'))
 const gray = decodePngGray(PNG)!
-const JPEG = Buffer.from(
-  encodeGrayJpeg(testPattern(gray.width, gray.height, 3), gray.width, gray.height, 70),
-)
+// (a different size from the PNG, so that the two can be told apart after they have been prepared)
+const JPEG = Buffer.from(encodeGrayJpeg(testPattern(640, 480, 3), 640, 480, 70))
 const GOOD =
   'HÓA ĐƠN GIÁ TRỊ GIA TĂNG\nSố: 0433 Ngày 15 tháng 09 năm 2025\nĐơn vị bán hàng: Công ty TNHH Viettel Tiền Giang\nMã số thuế: 0101234567'
 
@@ -106,9 +106,10 @@ describe('the pictures of a Word file as the pages of a scan', () => {
     expect(all.hash).toBe(createHash('sha256').update(readFileSync(path)).digest('hex'))
     expect(all.pages.map((p) => p.page)).toEqual([1, 2, 3])
     // page 1 is the first picture of the body (a PNG), not the first by name (the JPEG)
-    expect(Buffer.from(all.pages[0]!.jpeg).equals(PNG)).toBe(true)
-    expect(Buffer.from(all.pages[1]!.jpeg).equals(JPEG)).toBe(true)
     expect(all.pages[0]).toMatchObject({ width: gray.width, height: gray.height })
+    expect(all.pages[1]).toMatchObject({ width: 640, height: 480 })
+    // what is handed over is what the engine is given: a decoded, shrunk, flattened picture
+    for (const page of all.pages) expect(page.jpeg.byteLength).toBeGreaterThan(0)
 
     const later = await renderOfficePicturesForOcr(path, request({ done: [1], count: 1 }))
     if (!later.ok) throw new Error(later.message)
@@ -166,11 +167,115 @@ describe('the pictures of a Word file as the pages of a scan', () => {
   })
 })
 
+/** a PNG that is complete but that this code cannot decode (interlaced), of the size the header says */
+function interlacedPng(width: number, height: number): Buffer {
+  const crcTable = Array.from({ length: 256 }, (_x, n) => {
+    let c = n
+    for (let k = 0; k < 8; k++) c = c & 1 ? 0xedb88320 ^ (c >>> 1) : c >>> 1
+    return c >>> 0
+  })
+  const crc = (bytes: Buffer): number => {
+    let c = 0xffffffff
+    for (const b of bytes) c = crcTable[(c ^ b) & 0xff]! ^ (c >>> 8)
+    return (c ^ 0xffffffff) >>> 0
+  }
+  const chunk = (type: string, data: Buffer): Buffer => {
+    const head = Buffer.alloc(8)
+    head.writeUInt32BE(data.length, 0)
+    head.write(type, 4, 'latin1')
+    const tail = Buffer.alloc(4)
+    tail.writeUInt32BE(crc(Buffer.concat([head.subarray(4), data])), 0)
+    return Buffer.concat([head, data, tail])
+  }
+  const ihdr = Buffer.alloc(13)
+  ihdr.writeUInt32BE(width, 0)
+  ihdr.writeUInt32BE(height, 4)
+  ihdr[8] = 8
+  ihdr[9] = 2
+  ihdr[12] = 1 // interlaced
+  return Buffer.concat([
+    Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]),
+    chunk('IHDR', ihdr),
+    chunk('IDAT', Buffer.alloc(20_000, 9)),
+    chunk('IEND', Buffer.alloc(0)),
+  ])
+}
+
+describe('a picture that this code cannot decode', () => {
+  it('goes to the engine as it is when it is of a size that is safe, and is not handed over above 16 million pixels', async () => {
+    const path = await docx('interlaced.docx', [
+      { file: 'small.png', bytes: interlacedPng(2000, 1500) }, // 3 MP
+      { file: 'large.png', bytes: interlacedPng(5000, 4000) }, // 20 MP
+    ])
+    const result = await renderOfficePicturesForOcr(path, request())
+    if (!result.ok) throw new Error(result.message)
+    expect(result.pages.map((p) => [p.page, p.jpeg.byteLength > 0])).toEqual([
+      [1, true],
+      [2, false],
+    ])
+  })
+})
+
+describe('Word files with text and pictures', () => {
+  it('a title and a few scanned pages is a scan; the same words with a few figures is a document', async () => {
+    const title = 'BIÊN BẢN BÀN GIAO TÀI SẢN CỦA CÔNG TY. '.repeat(8) // about 300 characters
+    const big = Buffer.concat([PNG, Buffer.alloc(120 * 1024, 1)]) // a picture of 100 KB or more, as a page is
+    const pages = await docx(
+      'pages.docx',
+      [
+        { file: 'p1.png', bytes: big },
+        { file: 'p2.png', bytes: big },
+        { file: 'p3.png', bytes: big },
+      ],
+      title,
+    )
+    const scan = await extractDocument(pages)
+    expect(scan.scan).toEqual({ totalPages: 3, scannedPages: [1, 2, 3] }) // 300 characters for 3 large pictures
+    const figures = await docx(
+      'figures.docx',
+      [
+        { file: 'f1.png', bytes: PNG },
+        { file: 'f2.png', bytes: PNG },
+      ],
+      title,
+    )
+    expect('scan' in (await extractDocument(figures))).toBe(false)
+  })
+})
+
+describe('what a file shows and nobody reads', () => {
+  it('says so, instead of calling the file blank, when its only pictures are of a kind that cannot be read', async () => {
+    const zip = new JSZip()
+    zip.file(
+      '_rels/.rels',
+      '<Relationships><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="/word/document.xml"/></Relationships>',
+    )
+    zip.file(
+      'word/document.xml',
+      `<w:document ${W}><w:body><w:p><a:blip r:embed="rId1"/></w:p></w:body></w:document>`,
+    )
+    zip.file(
+      'word/_rels/document.xml.rels',
+      '<Relationships><Relationship Id="rId1" Target="media/scan.emf"/></Relationships>',
+    )
+    zip.file('word/media/scan.emf', Buffer.alloc(40_000, 4))
+    const path = join(tmp(), 'vector.docx')
+    writeFileSync(path, await zip.generateAsync({ type: 'uint8array' }))
+    const result = await extractDocument(path)
+    expect(result.error).toBe(
+      'No readable text; the 1 picture in this file cannot be read (a vector drawing, or bigger than 30 MB)',
+    )
+    expect('scan' in result).toBe(false)
+    // and the list of problems puts it with the files that wait for OCR, not with the files that are too big
+    expect(issueReason(result.error ?? null, result.status)).toBe('no-text')
+  })
+})
+
 describe('what Tesseract is handed', () => {
   it('reads the declared size of a PNG or JPEG from its header', () => {
     expect(declaredPixels(hugePng(9000, 9000))).toBe(81_000_000)
     expect(declaredPixels(PNG)).toBe(gray.width * gray.height)
-    expect(declaredPixels(JPEG)).toBe(gray.width * gray.height)
+    expect(declaredPixels(JPEG)).toBe(640 * 480)
     expect(declaredPixels(new Uint8Array([1, 2, 3]))).toBeNull()
   })
 
@@ -258,48 +363,171 @@ class Engine implements LocalOcrEngine {
   async dispose(): Promise<void> {}
 }
 
+const REL = 'http://schemas.openxmlformats.org/officeDocument/2006/relationships'
+const NS_A = 'xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main"'
+const NS_P = 'xmlns:p="http://schemas.openxmlformats.org/presentationml/2006/main"'
+const NS_R = `xmlns:r="${REL}"`
+
+async function deckOfPictures(slides: Array<{ file: string; bytes: Uint8Array }>): Promise<string> {
+  const pptx = new JSZip()
+  pptx.file(
+    '_rels/.rels',
+    `<Relationships><Relationship Id="rId1" Type="${REL}/officeDocument" Target="ppt/presentation.xml"/></Relationships>`,
+  )
+  pptx.file(
+    'ppt/presentation.xml',
+    `<p:presentation ${NS_P} ${NS_R}><p:sldIdLst>${slides
+      .map((_s, i) => `<p:sldId id="${256 + i}" r:id="rId${i + 1}"/>`)
+      .join('')}</p:sldIdLst></p:presentation>`,
+  )
+  pptx.file(
+    'ppt/_rels/presentation.xml.rels',
+    `<Relationships>${slides
+      .map(
+        (_s, i) =>
+          `<Relationship Id="rId${i + 1}" Type="${REL}/slide" Target="slides/slide${i + 1}.xml"/>`,
+      )
+      .join('')}</Relationships>`,
+  )
+  slides.forEach((slide, i) => {
+    pptx.file(
+      `ppt/slides/slide${i + 1}.xml`,
+      `<p:sld ${NS_P} ${NS_A} ${NS_R}><p:cSld><p:spTree><p:pic><p:blipFill><a:blip r:embed="rId1"/></p:blipFill></p:pic></p:spTree></p:cSld></p:sld>`,
+    )
+    pptx.file(
+      `ppt/slides/_rels/slide${i + 1}.xml.rels`,
+      `<Relationships><Relationship Id="rId1" Type="${REL}/image" Target="../media/${slide.file}"/></Relationships>`,
+    )
+    pptx.file(`ppt/media/${slide.file}`, slide.bytes)
+  })
+  const path = join(tmp(), 'deck.pptx')
+  writeFileSync(path, await pptx.generateAsync({ type: 'uint8array' }))
+  return path
+}
+
+async function workbookOfPictures(
+  sheets: Array<{ file: string; bytes: Uint8Array }>,
+): Promise<string> {
+  const xlsx = new JSZip()
+  xlsx.file(
+    '_rels/.rels',
+    `<Relationships><Relationship Id="rId1" Type="${REL}/officeDocument" Target="xl/workbook.xml"/></Relationships>`,
+  )
+  xlsx.file(
+    'xl/workbook.xml',
+    `<workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" ${NS_R}><sheets>${sheets
+      .map((_s, i) => `<sheet name="Sheet${i + 1}" sheetId="${i + 1}" r:id="rId${i + 1}"/>`)
+      .join('')}</sheets></workbook>`,
+  )
+  xlsx.file(
+    'xl/_rels/workbook.xml.rels',
+    `<Relationships>${sheets
+      .map(
+        (_s, i) =>
+          `<Relationship Id="rId${i + 1}" Type="${REL}/worksheet" Target="worksheets/sheet${i + 1}.xml"/>`,
+      )
+      .join('')}</Relationships>`,
+  )
+  sheets.forEach((sheet, i) => {
+    const n = i + 1
+    xlsx.file(
+      `xl/worksheets/sheet${n}.xml`,
+      `<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" ${NS_R}><sheetData/><drawing r:id="rId1"/></worksheet>`,
+    )
+    xlsx.file(
+      `xl/worksheets/_rels/sheet${n}.xml.rels`,
+      `<Relationships><Relationship Id="rId1" Type="${REL}/drawing" Target="../drawings/drawing${n}.xml"/></Relationships>`,
+    )
+    xlsx.file(
+      `xl/drawings/drawing${n}.xml`,
+      `<xdr:wsDr xmlns:xdr="http://schemas.openxmlformats.org/drawingml/2006/spreadsheetDrawing" ${NS_A} ${NS_R}><xdr:twoCellAnchor><xdr:pic><xdr:blipFill><a:blip r:embed="rId1"/></xdr:blipFill></xdr:pic></xdr:twoCellAnchor></xdr:wsDr>`,
+    )
+    xlsx.file(
+      `xl/drawings/_rels/drawing${n}.xml.rels`,
+      `<Relationships><Relationship Id="rId1" Type="${REL}/image" Target="../media/${sheet.file}"/></Relationships>`,
+    )
+    xlsx.file(`xl/media/${sheet.file}`, sheet.bytes)
+  })
+  const path = join(tmp(), 'book.xlsx')
+  writeFileSync(path, await xlsx.generateAsync({ type: 'uint8array' }))
+  return path
+}
+
 describe('slides and sheets made of pictures', () => {
-  it('lists the pictures of a PowerPoint file by slide, and of an Excel file by sheet', async () => {
-    const A = 'xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main"'
-    const P = 'xmlns:p="http://schemas.openxmlformats.org/presentationml/2006/main"'
-    const R = 'xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"'
-    const pptx = new JSZip()
-    pptx.file(
-      '_rels/.rels',
-      '<Relationships><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="ppt/presentation.xml"/></Relationships>',
-    )
-    pptx.file(
-      'ppt/presentation.xml',
-      `<p:presentation ${P} ${R}><p:sldIdLst><p:sldId id="256" r:id="rId1"/><p:sldId id="257" r:id="rId2"/></p:sldIdLst></p:presentation>`,
-    )
-    pptx.file(
-      'ppt/_rels/presentation.xml.rels',
-      '<Relationships><Relationship Id="rId1" Target="slides/slide1.xml"/><Relationship Id="rId2" Target="slides/slide2.xml"/></Relationships>',
-    )
-    for (const [n, file] of [
-      [1, 'one.png'],
-      [2, 'two.jpg'],
-    ] as const) {
-      pptx.file(
-        `ppt/slides/slide${n}.xml`,
-        `<p:sld ${P} ${A} ${R}><p:cSld><p:spTree><p:pic><p:blipFill><a:blip r:embed="rId1"/></p:blipFill></p:pic></p:spTree></p:cSld></p:sld>`,
+  it('a deck of pictures is a scan however many slides it has: the lines the extractor writes for a picture are not its words', async () => {
+    for (const slides of [1, 2, 5]) {
+      const path = await deckOfPictures(
+        Array.from({ length: slides }, (_x, i) => ({
+          file: `s${i + 1}.png`,
+          bytes: i % 2 ? JPEG : PNG,
+        })),
       )
-      pptx.file(
-        `ppt/slides/_rels/slide${n}.xml.rels`,
-        `<Relationships><Relationship Id="rId1" Target="../media/${file}"/></Relationships>`,
-      )
+      const result = await extractDocument(path)
+      expect(result.status, `${slides} slides`).toBe('empty')
+      expect(result.chunks).toEqual([]) // no chunk of "[picture-only slide: …]"
+      expect(result.scan).toEqual({
+        totalPages: slides,
+        scannedPages: Array.from({ length: slides }, (_x, i) => i + 1),
+      })
+      expect(result.error).toMatch(/not been read$/)
     }
-    pptx.file('ppt/media/one.png', PNG)
-    pptx.file('ppt/media/two.jpg', JPEG)
-    const dir = tmp()
-    const path = join(dir, 'deck.pptx')
-    writeFileSync(path, await pptx.generateAsync({ type: 'uint8array' }))
-    const result = await extractDocument(path)
-    expect(result.status).toBe('empty')
-    expect(result.scan).toEqual({ totalPages: 2, scannedPages: [1, 2] })
+  })
+
+  it("merges the text read from the slides, and not the extractor's own lines", async () => {
+    const path = await deckOfPictures([
+      { file: 'a.png', bytes: PNG },
+      { file: 'b.jpg', bytes: JPEG },
+    ])
+    const empty = await extractDocument(path)
+    const read = await extractDocument(path, (_p, hash) =>
+      hash === empty.hash ? { totalPages: 2, pages: [{ page: 2, text: GOOD }] } : null,
+    )
+    const all = read.chunks.map((c) => c.text).join('\n')
+    expect(all).toContain('Viettel')
+    expect(all).not.toContain('picture-only slide')
+    expect(all).not.toContain('No extractable text')
+  })
+
+  it('lists the pictures of a PowerPoint file by slide, in the order of the deck', async () => {
+    const path = await deckOfPictures([
+      { file: 'one.png', bytes: PNG },
+      { file: 'two.jpg', bytes: JPEG },
+    ])
     const rendered = await renderOfficePicturesForOcr(path, request())
     if (!rendered.ok) throw new Error(rendered.message)
-    expect(Buffer.from(rendered.pages[1]!.jpeg).equals(JPEG)).toBe(true)
+    expect(rendered.pages.map((p) => [p.page, p.width])).toEqual([
+      [1, gray.width],
+      [2, 640],
+    ])
+  })
+
+  it('an Excel file of pictures is a scan too, one page per picture in the order of the sheets', async () => {
+    const path = await workbookOfPictures([
+      { file: 'a.png', bytes: PNG },
+      { file: 'b.jpg', bytes: JPEG },
+      { file: 'c.png', bytes: PNG },
+    ])
+    const result = await extractDocument(path)
+    expect(result.status).toBe('empty')
+    expect(result.chunks).toEqual([])
+    expect(result.scan).toEqual({ totalPages: 3, scannedPages: [1, 2, 3] })
+    const rendered = await renderOfficePicturesForOcr(path, request())
+    if (!rendered.ok) throw new Error(rendered.message)
+    expect(rendered.pages.map((p) => p.width)).toEqual([gray.width, 640, gray.width])
+  })
+
+  it('a deck with real text of its own is not a scan', async () => {
+    const path = await deckOfPictures([{ file: 'a.png', bytes: PNG }])
+    const zip = await JSZip.loadAsync(readFileSync(path))
+    const words = 'Quarterly results and the plan for the next year. '.repeat(8)
+    zip.file(
+      'ppt/slides/slide1.xml',
+      `<p:sld ${NS_P} ${NS_A} ${NS_R}><p:cSld><p:spTree><p:sp><p:txBody><a:p><a:r><a:t>${words}</a:t></a:r></a:p></p:txBody></p:sp><p:pic><p:blipFill><a:blip r:embed="rId1"/></p:blipFill></p:pic></p:spTree></p:cSld></p:sld>`,
+    )
+    writeFileSync(path, await zip.generateAsync({ type: 'uint8array' }))
+    const result = await extractDocument(path)
+    expect(result.status).toBe('text-only')
+    expect('scan' in result).toBe(false)
   })
 })
 

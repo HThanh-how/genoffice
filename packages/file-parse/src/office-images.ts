@@ -1,5 +1,6 @@
 import { posix } from 'node:path'
 import JSZip from 'jszip'
+import { assertZipInflatesWithinLimits } from '@genoffice/docx-engine'
 
 /**
  * The pictures inside a Word, PowerPoint or Excel file (`word/media`, `ppt/media`, `xl/media`).
@@ -45,8 +46,11 @@ export function mayHoldPictures(path: string): boolean {
 
 // ---- the pictures in the order of the document --------------------------------------------------
 
-/** No more than this many pictures of one file are ever read (a photo album is not a scanned file). */
-export const MAX_OFFICE_IMAGES = 100
+/**
+ * No more than this many pictures of one file are ever read: the text of later ones is not put in the
+ * index (the limit of OCR pages per file), and a photo album is not a scanned file.
+ */
+export const MAX_OFFICE_IMAGES = 50
 /** A picture declared larger than this is not read at all; a package part larger than this is not parsed. */
 const MAX_IMAGE_BYTES = 30 * 1024 * 1024
 const MAX_XML_BYTES = 64 * 1024 * 1024
@@ -85,25 +89,48 @@ async function relationships(zip: JSZip, part: string): Promise<Map<string, stri
   return out
 }
 
-/** relationship ids that a part refers to (`r:embed`, `r:id`, `r:pict`...), in the order of the document */
+const REL_NAMESPACE = 'http://schemas.openxmlformats.org/officeDocument/2006/relationships'
+
+/**
+ * relationship ids that a part refers to (`r:embed`, `r:id`, `r:pict`...), in the order of the document.
+ * Only attributes of the relationships namespace count: a `w:id` of a bookmark or a change is a number of
+ * its own and can be the same as the id of a relationship.
+ */
 function referencedIds(xml: string): string[] {
+  const prefixes = new Set(['r'])
+  for (const match of xml.matchAll(/xmlns:([A-Za-z][\w.-]*)\s*=\s*"([^"]*)"/g))
+    if (match[2] === REL_NAMESPACE) prefixes.add(match[1]!)
+  const names = [...prefixes].map((prefix) => prefix.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'))
+  const pattern = new RegExp(`\\b(?:${names.join('|')}):(?:embed|id|pict)\\s*=\\s*"([^"]+)"`, 'g')
   const ids: string[] = []
-  for (const match of xml.matchAll(/\b[A-Za-z]+:(?:embed|id|pict)\s*=\s*"([^"]+)"/g))
-    ids.push(match[1]!)
+  for (const match of xml.matchAll(pattern)) ids.push(match[1]!)
   return ids
 }
 
 const MEDIA_PATH = /(?:^|\/)media\/[^/]+\.(?:png|jpe?g|gif|bmp|tiff?|webp)$/i
+/** pictures in a package that no engine here can read */
+const UNREADABLE_MEDIA = /(?:^|\/)media\/[^/]+\.(?:emf|wmf|svg|wdp|jxr)$/i
 
 /** the pictures that one part (a page of text, a slide, a drawing) shows, in the order it shows them */
-async function picturesOf(zip: JSZip, part: string): Promise<string[]> {
+async function picturesOf(
+  zip: JSZip,
+  part: string,
+  entries: ReadonlyMap<string, string>,
+): Promise<{ found: string[]; unreadable: number }> {
   const rels = await relationships(zip, part)
-  const out: string[] = []
-  for (const id of referencedIds(await xmlOf(zip, part))) {
+  // (the background of a Word page is not a page of the document)
+  const xml = (await xmlOf(zip, part)).replace(/<w:background\b[\s\S]*?<\/w:background>/g, '')
+  const found: string[] = []
+  let unreadable = 0
+  for (const id of referencedIds(xml)) {
     const target = rels.get(id)
-    if (target && MEDIA_PATH.test(target)) out.push(target)
+    if (!target) continue
+    // (a package may spell a path in another case than the relationship does)
+    const name = entries.get(target.toLowerCase())
+    if (name && MEDIA_PATH.test(name)) found.push(name)
+    else if (UNREADABLE_MEDIA.test(target)) unreadable++
   }
-  return out
+  return { found, unreadable }
 }
 
 async function orderedParts(zip: JSZip, kind: Kind): Promise<string[]> {
@@ -142,9 +169,16 @@ function naturalCompare(a: string, b: string): number {
 export interface OfficePictures {
   /** the paths inside the package, in the order of the document, each once, big enough to hold text */
   readonly names: readonly string[]
+  /** how many of them are large (100 KB or more), as a scan of a page is */
+  readonly large: number
+  /** pictures the document shows that are left out because they are too large or of a kind nobody here reads */
+  readonly unreadable: number
   /** the bytes of one of them */
   read(name: string): Promise<Uint8Array>
 }
+
+/** A picture of this size or more can be a page of a scan; a smaller one is a figure. */
+export const LARGE_PICTURE_BYTES = 100 * 1024
 
 /**
  * The pictures of a Word, PowerPoint or Excel file in the order the document shows them (the body
@@ -152,56 +186,86 @@ export interface OfficePictures {
  * of the scan is the same picture every time the file is read. Pictures that only the headers, the
  * masters or the layouts use, or that nothing uses, are not listed. A package that cannot be walked this
  * way (no main part, or a part that cannot be read) falls back to the media folder in the order of the names.
- * The same picture under two names is listed twice (comparing contents would mean reading every picture). Pictures smaller than `MIN_SIGNIFICANT_IMAGE_BYTES`
- * (logos, icons, rules) and larger than a sane limit are left out, and at most `MAX_OFFICE_IMAGES`
+ * The same picture under two names is listed twice (comparing contents would mean reading every picture).
+ * Pictures smaller than `MIN_SIGNIFICANT_IMAGE_BYTES` (logos, icons, rules) are left out, larger ones
+ * and kinds nobody here reads are counted in `unreadable`, and at most `MAX_OFFICE_IMAGES`
  * are listed. Only the list of the archive and the XML parts are read here; a picture is inflated
  * by `read`.
  */
 export async function loadOfficePictures(bytes: Uint8Array): Promise<OfficePictures> {
+  // (a part that declares a small size and inflates to a great one is stopped here, before a picture is read)
+  await assertZipInflatesWithinLimits(bytes)
   const zip = await JSZip.loadAsync(bytes)
+  const entries = new Map<string, string>()
+  for (const [name, entry] of Object.entries(zip.files))
+    if (!entry.dir) entries.set(name.toLowerCase(), name)
   const kind = kindOf(zip)
   let found: string[] = []
+  let unreadable = 0
   // The media folder in the order of the names is for a package that cannot be walked (no main part, or a
   // part that could not be read). A package that WAS walked and shows no picture has none: the pictures
   // that only a header, a footer or nobody uses are not the pages of a scan.
   let walked = false
   if (kind) {
     try {
-      for (const part of await orderedParts(zip, kind)) found.push(...(await picturesOf(zip, part)))
+      for (const part of await orderedParts(zip, kind)) {
+        const shown = await picturesOf(zip, part, entries)
+        found.push(...shown.found)
+        unreadable += shown.unreadable
+      }
       walked = true
     } catch {
       found = []
+      unreadable = 0
     }
   }
   if (!walked) {
-    found = Object.keys(zip.files)
-      .filter(
-        (name) =>
-          !zip.files[name]!.dir && /^(?:word|ppt|xl)\/media\//i.test(name) && MEDIA_PATH.test(name),
-      )
+    found = [...entries.values()]
+      .filter((name) => /^(?:word|ppt|xl)\/media\//i.test(name) && MEDIA_PATH.test(name))
       .sort(naturalCompare)
   }
   const names: string[] = []
+  let large = 0
   const seen = new Set<string>()
   for (const name of found) {
     const entry = zip.file(name)
     if (!entry || seen.has(name)) continue
     seen.add(name)
     const declared = declaredBytes(entry)
-    if (
-      declared !== undefined &&
-      (declared < MIN_SIGNIFICANT_IMAGE_BYTES || declared > MAX_IMAGE_BYTES)
-    )
+    if (declared !== undefined && declared > MAX_IMAGE_BYTES) {
+      unreadable++
       continue
-    names.push(name)
+    }
+    if (declared !== undefined && declared < MIN_SIGNIFICANT_IMAGE_BYTES) continue
     if (names.length >= MAX_OFFICE_IMAGES) break
+    names.push(name)
+    if (declared === undefined || declared >= LARGE_PICTURE_BYTES) large++
   }
   return {
     names,
+    large,
+    unreadable,
     read: async (name) => {
       const entry = zip.file(name)
       if (!entry || !names.includes(name)) throw new Error('No such picture in this file')
       return entry.async('uint8array')
     },
   }
+}
+
+const PLACEHOLDER =
+  /^\s*\[(?:No extractable text:|picture-only slide:|image-only sheet:)[^\n]*\]\s*$/
+
+/**
+ * The text of a Word, PowerPoint or Excel file that is really in it. The extractors of slides and sheets
+ * write lines of their own for a slide or a sheet that holds only pictures ("[picture-only slide: ...]",
+ * "[No extractable text: ...]") and a heading for each; those are not the words of the document, and
+ * counting them would make a deck of pictures look like a deck with text.
+ */
+export function realOfficeText(text: string, path: string): string {
+  const structured = /\.(?:pptx|xlsx|xlsm)$/i.test(path)
+  return text
+    .split('\n')
+    .filter((line) => !PLACEHOLDER.test(line) && !(structured && /^#{1,2} .{0,80}$/.test(line)))
+    .join('\n')
 }

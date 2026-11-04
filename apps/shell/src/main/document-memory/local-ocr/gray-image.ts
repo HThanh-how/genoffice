@@ -138,7 +138,10 @@ function decodeJpegGrayUnsafe(bytes: Uint8Array): GrayImage | null {
           pred: 0,
         })
       }
-    } else if (marker === 0xc2 || (marker >= 0xc3 && marker <= 0xcf && marker !== 0xc4 && marker !== 0xc8 && marker !== 0xcc)) {
+    } else if (
+      marker === 0xc2 ||
+      (marker >= 0xc3 && marker <= 0xcf && marker !== 0xc4 && marker !== 0xc8 && marker !== 0xcc)
+    ) {
       return null // progressive, lossless, arithmetic: not supported
     } else if (marker === 0xc4) {
       while (p < end) {
@@ -293,7 +296,11 @@ function decodeScan(
       if (restart && mcuCount > 0 && mcuCount % restart === 0) {
         // byte-align, skip the RSTn marker, reset predictors
         bitCnt = 0
-        while (pos + 1 < bytes.length && !(bytes[pos] === 0xff && bytes[pos + 1]! >= 0xd0 && bytes[pos + 1]! <= 0xd7)) pos++
+        while (
+          pos + 1 < bytes.length &&
+          !(bytes[pos] === 0xff && bytes[pos + 1]! >= 0xd0 && bytes[pos + 1]! <= 0xd7)
+        )
+          pos++
         pos += 2
         for (const c of comps) c.pred = 0
       }
@@ -312,7 +319,8 @@ function decodeScan(
 
   if (planeW === width && planeH === height) return { width, height, data: plane }
   const data = new Uint8Array(width * height)
-  for (let y = 0; y < height; y++) data.set(plane.subarray(y * planeW, y * planeW + width), y * width)
+  for (let y = 0; y < height; y++)
+    data.set(plane.subarray(y * planeW, y * planeW + width), y * width)
   return { width, height, data }
 }
 
@@ -337,7 +345,12 @@ function decodePngGrayUnsafe(bytes: Uint8Array): GrayImage | null {
   const idat: Uint8Array[] = []
   while (pos + 8 <= bytes.length) {
     const length = view.getUint32(pos)
-    const type = String.fromCharCode(bytes[pos + 4]!, bytes[pos + 5]!, bytes[pos + 6]!, bytes[pos + 7]!)
+    const type = String.fromCharCode(
+      bytes[pos + 4]!,
+      bytes[pos + 5]!,
+      bytes[pos + 6]!,
+      bytes[pos + 7]!,
+    )
     const body = bytes.subarray(pos + 8, pos + 8 + length)
     if (type === 'IHDR') {
       width = view.getUint32(pos + 8)
@@ -346,15 +359,23 @@ function decodePngGrayUnsafe(bytes: Uint8Array): GrayImage | null {
       const colorType = bytes[pos + 17]
       const interlace = bytes[pos + 20]
       if (depth !== 8 || interlace !== 0) return null
-      channels = colorType === 0 ? 1 : colorType === 2 ? 3 : colorType === 4 ? 2 : colorType === 6 ? 4 : 0
+      channels =
+        colorType === 0 ? 1 : colorType === 2 ? 3 : colorType === 4 ? 2 : colorType === 6 ? 4 : 0
       if (!channels || !width || !height || width * height > MAX_PIXELS) return null
     } else if (type === 'IDAT') idat.push(body)
     else if (type === 'IEND') break
     pos += 12 + length
   }
   if (!channels || !idat.length) return null
-  const raw = inflateSync(Buffer.concat(idat))
   const stride = width * channels
+  // The header says how much the data can be: a stream that inflates to more is not this image (and a
+  // few hundred KB of zlib can inflate to gigabytes).
+  let raw: Buffer
+  try {
+    raw = inflateSync(Buffer.concat(idat), { maxOutputLength: (stride + 1) * height })
+  } catch {
+    return null
+  }
   if (raw.length < (stride + 1) * height) return null
   const prev = new Uint8Array(stride)
   const cur = new Uint8Array(stride)
@@ -404,11 +425,22 @@ export function limitLongEdge(image: GrayImage, maxEdge: number): GrayImage {
   const scale = maxEdge / longest
   const width = Math.max(1, Math.round(image.width * scale))
   const height = Math.max(1, Math.round(image.height * scale))
-  return { width, height, data: downscaleGray(image.data, image.width, image.height, width, height) }
+  return {
+    width,
+    height,
+    data: downscaleGray(image.data, image.width, image.height, width, height),
+  }
 }
 
 /** Running-sum box blur along one axis of a float plane, edges replicated. */
-function boxBlurAxis(src: Float32Array, dst: Float32Array, w: number, h: number, radius: number, horizontal: boolean): void {
+function boxBlurAxis(
+  src: Float32Array,
+  dst: Float32Array,
+  w: number,
+  h: number,
+  radius: number,
+  horizontal: boolean,
+): void {
   const lines = horizontal ? h : w
   const len = horizontal ? w : h
   const step = horizontal ? 1 : w
@@ -417,10 +449,13 @@ function boxBlurAxis(src: Float32Array, dst: Float32Array, w: number, h: number,
   for (let l = 0; l < lines; l++) {
     const base = l * lineStep
     let sum = 0
-    for (let i = -radius; i <= radius; i++) sum += src[base + Math.min(len - 1, Math.max(0, i)) * step]!
+    for (let i = -radius; i <= radius; i++)
+      sum += src[base + Math.min(len - 1, Math.max(0, i)) * step]!
     for (let i = 0; i < len; i++) {
       dst[base + i * step] = sum / size
-      sum += src[base + Math.min(len - 1, i + radius + 1) * step]! - src[base + Math.max(0, i - radius) * step]!
+      sum +=
+        src[base + Math.min(len - 1, i + radius + 1) * step]! -
+        src[base + Math.max(0, i - radius) * step]!
     }
   }
 }
@@ -509,7 +544,8 @@ function chunk(type: string, body: Uint8Array): Buffer {
 export function encodeGrayPng(image: GrayImage): Buffer {
   const { width, height, data } = image
   const raw = Buffer.alloc((width + 1) * height)
-  for (let y = 0; y < height; y++) raw.set(data.subarray(y * width, (y + 1) * width), y * (width + 1) + 1)
+  for (let y = 0; y < height; y++)
+    raw.set(data.subarray(y * width, (y + 1) * width), y * (width + 1) + 1)
   const ihdr = Buffer.alloc(13)
   ihdr.writeUInt32BE(width, 0)
   ihdr.writeUInt32BE(height, 4)
