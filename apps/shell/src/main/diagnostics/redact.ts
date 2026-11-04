@@ -638,9 +638,10 @@ function hashPathsIn(s: string): string {
   // a file name may hold spaces: take the paths of files of a known kind whole first (and the name of a
   // Windows user, which may hold spaces too, is made one word so that the generic pattern below takes it whole)
   return s
+    .replace(WINDOWS_USER_WORDS, '$1user')
+    .replace(WINDOWS_USER, '$1user')
     .replace(FILE_URL, swap)
     .replace(FILE_URL_ANY, swap)
-    .replace(WINDOWS_USER, '$1user')
     .replace(WINDOWS_FILE, swap)
     .replace(POSIX_FILE, swap)
     .replace(WINDOWS_PATH, swap)
@@ -674,6 +675,10 @@ const POSIX_FILE = new RegExp(
 // there is one, and at a space when there is not, `C:\Users\bob logged in`; on the others it stops at a space)
 const WINDOWS_USER =
   /([A-Za-z]:[\\/]Users[\\/])(?:[^\\/"'<>|*?:\r\n]+(?=[\\/])|[^\\/\s"'<>|*?:]+)/gi
+// ... and a home folder with nothing after it, named in capitals as a person is: `C:\Users\Nguyen Van A` at the end of
+// a line or of a quotation (no `i` flag: `C:\Users\bob logged in` is a user and some words)
+const WINDOWS_USER_WORDS =
+  /([A-Za-z]:[\\/]Users[\\/])[A-ZÀ-Ỹ][^\\/\s"'<>|*?:]*(?:[ \t]+[A-ZÀ-Ỹ][^\\/\s"'<>|*?:]*){1,3}(?=$|["'\r\n])/gm
 const POSIX_USER = /(?:(?<![\w:/])|(?<=file:\/\/))(\/(?:Users|home)\/)[^/\s"'<>|*?:]+/g
 
 /**
@@ -692,6 +697,7 @@ export function scrubPaths(input: string): string {
     .replace(WINDOWS_FRAGMENT, (_m, ext: string) => `…\\<file>.${ext.toLowerCase()}`)
     .replace(POSIX_FILE, (_m, ext: string) => `/…/<file>.${ext.toLowerCase()}`)
     .replace(FILE_URL, (_m, ext: string) => `file:///…/<file>.${ext.toLowerCase()}`)
+    .replace(WINDOWS_USER_WORDS, '$1<user>')
     .replace(WINDOWS_USER, '$1<user>')
     .replace(POSIX_USER, '$1<user>')
 }

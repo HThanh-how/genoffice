@@ -300,7 +300,7 @@ export async function extractDocumentSliced(
             : isPdf
               ? 'No readable text; scanned documents need OCR'
               : officePictures > 0
-                ? `No readable text; the ${officePictures} ${officePictures === 1 ? 'picture in this file has' : 'pictures in this file have'} not been read`
+                ? `No readable text; the ${officeMore ? 'first ' : ''}${officePictures} ${officePictures === 1 ? 'picture in this file has' : 'pictures in this file have'} not been read`
                 : officeUnreadable > 0
                   ? `No readable text; the ${officeUnreadable} ${officeUnreadable === 1 ? 'picture in this file cannot' : 'pictures in this file cannot'} be read (a vector drawing, or bigger than 30 MB)`
                   : 'No readable text in this file; there is nothing to search',

@@ -650,6 +650,100 @@ describe('LocalOcrJob on scanned PDFs (real SQLite, real PDFium render, engine d
       expect(reindexed.length).toBeGreaterThan(0)
     })
 
+    describe('pages of an earlier visit are put in the index when a later visit ends before it saves a page', () => {
+      async function afterOneVisit(job: LocalOcrJob, path: string): Promise<void> {
+        await job.runOnce() // the quick pass
+        await reindexNow(path)
+        reindexed.length = 0
+        const visit = await job.runOnce() // pages 3-7: an ordinary visit, not put in the index
+        expect(present(path)).toEqual([1, 2, 3, 4, 5, 6, 7])
+        expect(visit.failed).toBe(0)
+        expect(reindexed).toEqual([])
+      }
+
+      it('a gate that closes before the next visit saves anything', async () => {
+        const path = invoicePdf('gate-first.pdf', 12)
+        enrollEmpty(path)
+        const job = makeJob(new ScriptedEngine(['good']), { light: 2, maxPages: 12 })
+        await afterOneVisit(job, path)
+        gateState = { ok: false, reason: 'user-active' }
+        // a new run, as the runner makes one for every batch
+        const next = makeJob(new ScriptedEngine(['good']), { light: 2, maxPages: 12 })
+        expect((await next.runOnce()).stoppedBecause).toBe('gate:user-active')
+        expect(reindexed).toEqual([path])
+        gateState = { ok: true }
+        expect((await next.runOnce()).pages).toBeGreaterThan(0) // and the file goes on
+        await next.runOnce()
+        expect(reindexed.filter((p) => p === path)).toHaveLength(2) // once at the stop, once when finished
+      })
+
+      it('an abort before the next visit saves anything', async () => {
+        const path = invoicePdf('abort-first.pdf', 12)
+        enrollEmpty(path)
+        const job = makeJob(new ScriptedEngine(['good']), { light: 2, maxPages: 12 })
+        await afterOneVisit(job, path)
+        const controller = new AbortController()
+        controller.abort()
+        const run = await makeJob(new ScriptedEngine(['good']), { light: 2, maxPages: 12 }).runOnce(
+          {
+            signal: controller.signal,
+          },
+        )
+        expect(run.stoppedBecause).toBe('aborted')
+        expect(reindexed).toEqual([path])
+      })
+
+      it('the engine fails for good on the first page of the next visit', async () => {
+        const path = invoicePdf('engine-first.pdf', 12)
+        enrollEmpty(path)
+        const job = makeJob(new ScriptedEngine(['good']), { light: 2, maxPages: 12 })
+        await afterOneVisit(job, path)
+        const failing = new ScriptedEngine(['good'])
+        failing.fail = 'generic'
+        const run = await makeJob(failing, { light: 2, maxPages: 12 }).runOnce()
+        expect(run.failed).toBe(1)
+        expect(present(path)).toEqual([1, 2, 3, 4, 5, 6, 7])
+        expect(reindexed).toEqual([path])
+      })
+
+      it('the render of the next visit fails or does not answer', async () => {
+        for (const answer of [{ ok: false, code: 'corrupt', message: 'damaged' } as const, null]) {
+          reindexed.length = 0
+          const path = invoicePdf(`render-${answer ? 'fail' : 'null'}.pdf`, 12)
+          enrollEmpty(path)
+          const job = makeJob(new ScriptedEngine(['good']), { light: 2, maxPages: 12 })
+          await afterOneVisit(job, path)
+          let broken = false
+          const next = makeJob(new ScriptedEngine(['good']), {
+            light: 2,
+            maxPages: 12,
+            render: async (file, request) =>
+              broken ? answer : renderPdfPagesForOcr(file, request),
+          })
+          broken = true
+          const run = await next.runOnce()
+          expect(run.failed).toBe(1)
+          expect(reindexed).toEqual([path])
+        }
+      })
+
+      it('nothing more will be read now (on battery): what was read is indexed, once', async () => {
+        const path = invoicePdf('battery-after.pdf', 12)
+        enrollEmpty(path)
+        const job = makeJob(new ScriptedEngine(['good']), { light: 2, maxPages: 12 })
+        await afterOneVisit(job, path)
+        const onBattery = makeJob(new ScriptedEngine(['good']), {
+          light: 2,
+          maxPages: 12,
+          onBattery: () => true,
+        })
+        await onBattery.runOnce()
+        expect(reindexed).toEqual([path])
+        await onBattery.runOnce()
+        expect(reindexed).toEqual([path]) // not again
+      })
+    })
+
     it('stops between two pages on an abort during the slow pass', async () => {
       const path = invoicePdf('abort-mid.pdf', 10)
       enrollEmpty(path)

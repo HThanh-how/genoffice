@@ -1197,4 +1197,17 @@ describe('the second round of paths', () => {
     expect(text).not.toContain('Van A')
     expect(text).not.toContain('Nguyen')
   })
+
+  it('hashes a file URL whose user name holds spaces', () => {
+    const text = hashed('file:///C:/Users/Nguyen Van A/z.js')
+    expect(text).not.toContain('Van A')
+    expect(text).toMatch(/\[path:[0-9a-f]+\]/)
+  })
+
+  it('takes a home folder named as a person at the end of a line or a quotation, but not a user and some words', () => {
+    expect(scrub('home=C:\\Users\\Nguyen Van A')).toBe('home=C:\\Users\\<user>')
+    expect(scrub('"C:\\Users\\Nguyễn Văn A" not found')).toBe('"C:\\Users\\<user>" not found')
+    expect(scrub('cwd=C:\\Users\\bob logged in')).toBe('cwd=C:\\Users\\<user> logged in')
+    expect(hashed('home=C:\\Users\\Nguyen Van A')).not.toContain('Van A')
+  })
 })

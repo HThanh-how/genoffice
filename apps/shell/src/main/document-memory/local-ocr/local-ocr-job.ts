@@ -141,6 +141,13 @@ function cleanText(text: string): string {
     .slice(0, MAX_TEXT_CHARS)
 }
 
+/**
+ * Per database: the files whose pages from the slow pass are in `ocr_pages` and not yet in the index.
+ * (A `LocalOcrJob` lives for one run, and the pages of one visit are indexed only when something ends the
+ * visits of the file: the file is finished, a page failed, the run was stopped.)
+ */
+const unindexed = new WeakMap<DatabaseSync, Set<string>>()
+
 export class LocalOcrJob {
   private readonly ocr: OcrSidecar
   /** characters stored by the last recognizeAndSave (0 = blank page) */
@@ -148,6 +155,21 @@ export class LocalOcrJob {
 
   constructor(private readonly deps: LocalOcrJobDeps) {
     this.ocr = new OcrSidecar(deps.db)
+  }
+
+  private pending(): Set<string> {
+    let paths = unindexed.get(this.deps.db)
+    if (!paths) unindexed.set(this.deps.db, (paths = new Set()))
+    return paths
+  }
+
+  /** Puts every file with pages that were read and not yet indexed back in the index. */
+  private flushUnindexed(): void {
+    const paths = this.pending()
+    for (const path of [...paths]) {
+      paths.delete(path)
+      this.deps.reindex(path)
+    }
   }
 
   /** Leading pages read per file on this machine. */
@@ -183,6 +205,7 @@ export class LocalOcrJob {
     const stop = (reason: string): LocalOcrRunSummary => {
       summary.stoppedBecause = reason
       this.deps.log?.({ kind: 'stopped', reason })
+      this.flushUnindexed() // the next run may be a long way off
       return summary
     }
     if (!settings.enabled) return stop('disabled')
@@ -209,9 +232,12 @@ export class LocalOcrJob {
         const picked = this.deps.registry.select(settings.engine)
         if (!picked) return stop('no-engine') // nothing fits the free RAM / no resources: try later
         engine = picked.engine
+        const failedBefore = summary.failed
         const result = await this.readPdf(row, engine, limit, slow, options.signal, summary)
         summary.files++
         if (!slow) visited++
+        // a visit that failed before it saved a page (the render, the first page) still ends the file's visits
+        if (slow && summary.failed > failedBefore) this.flushUnindexed()
         return result ? stop(result) : 'skip'
       }
       for (const row of pdfs) {
@@ -237,6 +263,8 @@ export class LocalOcrJob {
       // The pages after the first ones come last: only when nothing of the quick queue was visited, a few
       // files at a time, so that a new file waits for at most REST_VISITS_PER_RUN visits.
       const rest = visited === 0 && !this.deps.onBattery?.() ? this.restPages() : 0
+      // nothing more will be read now (on battery, or the limit was lowered): what was read is indexed
+      if (visited === 0 && rest <= light) this.flushUnindexed()
       if (rest > light) {
         budget = Math.min(budget, REST_VISITS_PER_RUN)
         const candidates = this.ocr.candidates(rest, { mode: 'local', includeSensitive: true })
@@ -442,17 +470,20 @@ export class LocalOcrJob {
     if (touched) {
       // pages of this version were stored and none failed: an earlier failure row is stale
       if (summary.failed === failedBefore) this.ocr.clearLocalFailure(row.path, file)
-      // The slow pass puts a file back in the index when its visit ENDS something (the file is finished, a page
-      // failed, the run was stopped), not after every ordinary visit: each reindex makes a new version of the
-      // text, and chunks and vectors would be made again and again. What was read stays in ocr_pages, and the
-      // file stays a candidate until it is finished.
-      if (
-        !slow ||
+      // The slow pass puts a file back in the index when its visits END (the file is finished, a page failed,
+      // the run was stopped), not after every ordinary visit: each reindex makes a new version of the text, and
+      // chunks and vectors would be made again and again. What was read stays in ocr_pages, the file stays a
+      // candidate until it is finished, and `unindexed` remembers it for a run that stops before it saves a page.
+      const ended =
         stopReason !== null ||
         summary.failed > failedBefore ||
         this.finished(row.path, file, meta.totalPages, limit, skip)
-      )
+      if (!slow || ended) {
+        this.pending().delete(row.path)
         this.deps.reindex(row.path)
+      } else {
+        this.pending().add(row.path)
+      }
     }
     return stopReason
   }

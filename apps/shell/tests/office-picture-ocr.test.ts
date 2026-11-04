@@ -252,6 +252,10 @@ describe('a file with more pictures than are read', () => {
     const result = await extractDocument(await docx('album.docx', pictures))
     expect(result.scan?.totalPages).toBe(50)
     expect(result).toMatchObject({ truncated: true, truncatedReason: 'content-limit' })
+    // and it does not say that it is all the file has
+    expect(result.error).toBe(
+      'No readable text; the first 50 pictures in this file have not been read',
+    )
   })
 })
 
