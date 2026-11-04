@@ -319,13 +319,42 @@ function readJson<T>(filePath: string): T | null {
   }
 }
 
+const RETRYABLE_RENAME_CODES = new Set(['EPERM', 'EACCES', 'EBUSY'])
+const RENAME_PAUSES_MS = [15, 40, 90, 200]
+
+/**
+ * `renameSync` that tries again when Windows refuses for a moment (a virus scanner, the search indexer
+ * or a sync client holds the target open): `EPERM`, `EACCES` and `EBUSY` are retried after short
+ * pauses, anything else, and the last failure, is thrown. The pauses block, but only after a failure
+ * and for under a third of a second in all. `pause` is a parameter so tests need not wait.
+ */
+export function renameWithRetrySync(
+  from: string,
+  to: string,
+  pause: (ms: number) => void = (ms) =>
+    Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms),
+  rename: (from: string, to: string) => void = renameSync,
+): void {
+  for (let attempt = 0; ; attempt++) {
+    try {
+      rename(from, to)
+      return
+    } catch (error) {
+      const code = (error as NodeJS.ErrnoException).code ?? ''
+      const wait = RENAME_PAUSES_MS[attempt]
+      if (!RETRYABLE_RENAME_CODES.has(code) || wait === undefined) throw error
+      pause(wait)
+    }
+  }
+}
+
 /** Atomic write: write to .tmp then rename, so a process interruption can't leave half-written JSON */
 function writeJson(filePath: string, data: unknown): void {
   ensureDir(dirname(filePath))
   const tmpPath = `${filePath}.${randomBytes(6).toString('hex')}.tmp`
   try {
     writeFileSync(tmpPath, JSON.stringify(data, null, 2), 'utf8')
-    renameSync(tmpPath, filePath)
+    renameWithRetrySync(tmpPath, filePath)
   } catch (error) {
     try {
       unlinkSync(tmpPath)

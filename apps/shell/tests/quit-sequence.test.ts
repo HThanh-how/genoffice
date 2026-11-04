@@ -6,6 +6,7 @@ import { describe, expect, it } from 'vitest'
 import {
   RelaunchRequests,
   describeWindows,
+  existingPaths,
   hideWindowsForQuit,
   runQuitSequence,
   type QuitStep,
@@ -197,6 +198,14 @@ describe('how the quit is wired', () => {
     )
   })
 
+  it('the forced exit also gives the checks their moment before it starts the app again and ends', () => {
+    const at = index.indexOf('forceExit: () => {')
+    const body = index.slice(at, at + 700)
+    expect(body).toContain('relaunchRequests.settled(')
+    expect(body.indexOf('settled(')).toBeLessThan(body.indexOf('app.relaunch('))
+    expect(body.indexOf('app.relaunch(')).toBeLessThan(body.indexOf('app.exit(0)'))
+  })
+
   it('notes the moment of the confirmation once: the second pass through before-quit leaves it alone', () => {
     const at = index.indexOf('if (quitConfirmedAt === null) {')
     expect(at).toBeGreaterThan(-1)
@@ -219,6 +228,10 @@ describe('how the quit is wired', () => {
     const body = handler.slice(0, handler.indexOf('openLaunchPaths(paths)'))
     expect(body).toContain('appShuttingDown')
     expect(body).toContain('relaunchRequests.add(')
+    expect(body).toContain('isOpenableLaunchPath')
+    expect(body).toContain('existingPaths(')
+    expect(body).toContain('relaunchRequests.track(')
+    expect(index).toContain('await relaunchRequests.settled(')
     expect(body).toContain('collectLaunchPaths(withoutFolderScanArgs(argv), additionalData)')
     // the normal end of the clean-up and the forced one both start the app again
     expect(index.match(/app\.relaunch\(\{ args: relaunchRequests\.toArgs\(\) \}\)/g)).toHaveLength(
@@ -374,25 +387,31 @@ describe('starting the app again after a quit', () => {
     expect(requests.toArgs()).toEqual(['--genoffice-scan-folder', 'D:\\scan'])
   })
 
-  const hand = (
+  const hand = async (
     argv: string[],
     additionalData: unknown,
     options: { exists?: (path: string) => boolean; platform?: NodeJS.Platform } = {},
-  ): string[] => {
+  ): Promise<string[]> => {
     const exists = options.exists ?? (() => true)
     const requests = new RelaunchRequests(options.platform ?? 'win32')
     // the same steps as the second-instance handler of the app
-    requests.add(
-      collectLaunchPaths(withoutFolderScanArgs(argv), additionalData, exists).filter((path) =>
-        isOpenableLaunchPath(path, exists),
-      ),
-      parseFolderScanArgv(argv, additionalData),
+    const asked = collectLaunchPaths(
+      withoutFolderScanArgs(argv),
+      additionalData,
+      () => true,
+    ).filter((path) => isOpenableLaunchPath(path, () => true))
+    requests.add([], parseFolderScanArgv(argv, additionalData))
+    requests.track(
+      existingPaths(asked, 100, async (path) => {
+        if (!exists(path)) throw new Error('ENOENT')
+      }).then((found) => requests.add(found)),
     )
+    await requests.settled(1000)
     return requests.toArgs()
   }
 
-  it('leaves out debug flags, a changed profile folder and files that do not exist', () => {
-    const args = hand(
+  it('leaves out debug flags, a changed profile folder and files that do not exist', async () => {
+    const args = await hand(
       [
         'GenOffice.exe',
         '--inspect=9229',
@@ -423,8 +442,8 @@ describe('starting the app again after a quit', () => {
     )
   })
 
-  it('does not let a flag in through the additional data of the second copy', () => {
-    const args = hand(['GenOffice.exe'], {
+  it('does not let a flag in through the additional data of the second copy', async () => {
+    const args = await hand(['GenOffice.exe'], {
       launchPaths: [
         '--inspect=9229',
         '--remote-debugging-port=9222',
@@ -438,8 +457,8 @@ describe('starting the app again after a quit', () => {
     expect(args).toEqual(['ok.docx', '--genoffice-scan-folder', 'D:\\scan'])
   })
 
-  it('does not let a flag in as the folder to scan on the command line', () => {
-    const args = hand(
+  it('does not let a flag in as the folder to scan on the command line', async () => {
+    const args = await hand(
       [
         'GenOffice.exe',
         '--genoffice-scan-folder',
@@ -461,9 +480,98 @@ describe('starting the app again after a quit', () => {
     expect(windows.toArgs()).toEqual(['C:\\a.docx', '\\\\host\\share\\b.docx'])
   })
 
-  it('keeps a file that exists and can be opened, sent in the additional data', () => {
-    const args = hand(['GenOffice.exe'], { launchPath: 'C:\\docs\\kept.docx' })
+  it('keeps a file that exists and can be opened, sent in the additional data', async () => {
+    const args = await hand(['GenOffice.exe'], { launchPath: 'C:\\docs\\kept.docx' })
     expect(args).toEqual(['C:\\docs\\kept.docx'])
+  })
+})
+
+describe('what the new process would take apart', () => {
+  it('drops a value that starts with a space, holds a quote or a control character', () => {
+    const requests = new RelaunchRequests('win32')
+    requests.add(
+      [' --inspect=1.docx', 'x" --inspect=1 "y.docx', 'tab\there.docx', 'C:\\ok.docx'],
+      [' --inspect=1', 'D:\\"quoted', 'line\nbreak', 'E:\\fine'],
+    )
+    expect(requests.toArgs()).toEqual(['C:\\ok.docx', '--genoffice-scan-folder', 'E:\\fine'])
+  })
+
+  it('keeps a path with a space inside it', () => {
+    const requests = new RelaunchRequests('win32')
+    requests.add(['C:\\My Documents\\a b.docx'], ['D:\\My Scans'])
+    expect(requests.toArgs()).toEqual([
+      'C:\\My Documents\\a b.docx',
+      '--genoffice-scan-folder',
+      'D:\\My Scans',
+    ])
+  })
+})
+
+describe('asking whether files exist without blocking', () => {
+  it('keeps the paths that answer, leaves out the ones that fail or do not answer in time', async () => {
+    const answers: Record<string, () => Promise<unknown>> = {
+      'a.docx': async () => undefined,
+      'gone.docx': async () => {
+        throw new Error('ENOENT')
+      },
+      'dead-share.docx': () => new Promise(() => undefined),
+    }
+    const started = Date.now()
+    const found = await existingPaths(['a.docx', 'gone.docx', 'dead-share.docx'], 50, (path) =>
+      answers[path]!(),
+    )
+    expect(found).toEqual(['a.docx'])
+    expect(Date.now() - started).toBeLessThan(500) // the dead share cost 50 ms, not its own timeout
+  })
+
+  it('asks all of them at once, so one dead share costs the limit once', async () => {
+    const started = Date.now()
+    await existingPaths(['a', 'b', 'c', 'd'], 60, () => new Promise(() => undefined))
+    expect(Date.now() - started).toBeLessThan(200)
+  })
+
+  it('a request waits for its checks, but not for longer than it is told', async () => {
+    const requests = new RelaunchRequests('win32')
+    let release: () => void = () => undefined
+    requests.track(
+      new Promise<void>((resolve) => (release = resolve)).then(() => requests.add(['a.docx'])),
+    )
+    const quick = Date.now()
+    await requests.settled(40) // the check does not finish in time
+    expect(Date.now() - quick).toBeLessThan(300)
+    expect(requests.toArgs()).toEqual([])
+    release()
+    await requests.settled(1000)
+    expect(requests.toArgs()).toEqual(['a.docx'])
+  })
+
+  it('waits for a check that was added while it was waiting', async () => {
+    const requests = new RelaunchRequests('win32')
+    let releaseFirst: () => void = () => undefined
+    let releaseSecond: () => void = () => undefined
+    requests.track(
+      new Promise<void>((resolve) => (releaseFirst = resolve)).then(() => requests.add(['a.docx'])),
+    )
+    const waiting = requests.settled(2000)
+    await new Promise((r) => setTimeout(r, 10))
+    // a second copy arrives while the first check is still running
+    requests.track(
+      new Promise<void>((resolve) => (releaseSecond = resolve)).then(() =>
+        requests.add(['b.docx']),
+      ),
+    )
+    releaseFirst()
+    await new Promise((r) => setTimeout(r, 10))
+    releaseSecond()
+    await waiting
+    expect(requests.toArgs()).toEqual(['a.docx', 'b.docx'])
+  })
+
+  it('a check that fails is not an error of the request', async () => {
+    const requests = new RelaunchRequests('win32')
+    requests.track(Promise.reject(new Error('boom')))
+    await expect(requests.settled(1000)).resolves.toBeUndefined()
+    expect(requests.isRequested).toBe(true)
   })
 })
 

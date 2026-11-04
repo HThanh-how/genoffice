@@ -454,6 +454,37 @@ function luhnValid(text: string): boolean {
   return digits.length >= 15 && sum % 10 === 0
 }
 
+/** Words that name a setting or a counter: `user mode:v2` is not a user name and a password. */
+const DIAGNOSTIC_NAMES: ReadonlySet<string> = new Set([
+  'id',
+  'mode',
+  'count',
+  'step',
+  'state',
+  'status',
+  'flow',
+  'attempt',
+  'theme',
+  'session',
+  'layout',
+  'type',
+  'kind',
+  'role',
+  'lang',
+  'language',
+  'version',
+  'level',
+  'page',
+  'tab',
+  'view',
+  'size',
+  'index',
+  'total',
+  'limit',
+  'time',
+  'key',
+])
+
 /** Cut before matching: patterns never see more than this. */
 function capInput(input: string): string {
   return input.length > MAX_REGEX_INPUT
@@ -510,6 +541,23 @@ export function redactString(input: string): string {
   s = s.replace(
     /([A-Za-z0-9_-]{0,32}?(?:api[_-]?key|secret[_-]?(?:access[_-]?)?key|token|secret|(?:access|signing|encryption|private)[_-]?key))(["']?\s*[:=]\s*["']?)(?!\[redacted\])[^\s"',;&]{4,}/gi,
     '$1$2[redacted]',
+  )
+  // `auth: user:password` and `login admin:pass123`: the value of these may hold a colon
+  // (`auth: failed` and `auth: oauth2` are states, not credentials: the value has to look like a
+  // user:password pair, or be long and hold a digit)
+  s = s.replace(
+    /(\bauth)(["']?\s*[:=]\s*["']?)(?!\[redacted\])([^\s"',;&]{4,})/gi,
+    (match, name: string, sep: string, value: string) =>
+      value.includes(':') || (value.length >= 8 && /\d/.test(value))
+        ? `${name}${sep}[redacted]`
+        : match,
+  )
+  s = s.replace(
+    /(\b(?:login|user|username|credentials?)\s+)([A-Za-z][\w.-]*):([A-Za-z]*\d[A-Za-z0-9]*)\b/gi,
+    (match, lead: string, name: string, value: string) =>
+      // `user mode:v2`, `login step:2`, `user id:42` are diagnostics: a password is longer than a
+      // short value and is not under a name that describes a setting
+      value.length >= 5 && !DIAGNOSTIC_NAMES.has(name.toLowerCase()) ? `${lead}[redacted]` : match,
   )
   // URL query strings: names stay, values go
   s = s.replace(/([?&][^=&\s#"']{1,40}=)[^&\s#"']+/g, '$1[q]')
@@ -689,7 +737,16 @@ export function redactValue(
           out[key] = redactValue(inner, options, depth + 1, 'content', rawKey, budget)
         }
       } else {
-        out[key] = redactValue(inner, options, depth + 1, mode, rawKey, budget)
+        // Under a weak secret name every value is judged by that name, not by the name of its own
+        // key: `{ token: { value: <uuid> } }` is a token, `value` says nothing.
+        out[key] = redactValue(
+          inner,
+          options,
+          depth + 1,
+          mode,
+          mode === 'weak' ? keyHint : rawKey,
+          budget,
+        )
       }
     }
     return out

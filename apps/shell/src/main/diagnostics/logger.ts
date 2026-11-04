@@ -65,6 +65,8 @@ export interface LoggerOptions {
   readonly switchAfterFailures?: number
   /** one attempt to write (including its preparation) is given up after this long (default 30 s) */
   readonly writeTimeoutMs?: number
+  /** close() waits no longer than this for the last writes (default 5 s) */
+  readonly closeTimeoutMs?: number
   /** an append that has been handed to the file system is given up only after this long (default 4x the above) */
   readonly appendHangMs?: number
   /** a second folder, on another drive, to move to when the first has not answered for `degradedAfterMs` */
@@ -115,6 +117,10 @@ interface Entry {
   readonly seq: number
   readonly rank: number
   readonly line: string
+  /** how many times the write of this line was given up while it may have reached the file */
+  tries?: number
+  /** made by the logger (the note that lines were dropped): never sent again, never counted */
+  notice?: boolean
 }
 
 /** One try at writing: set to cancelled when it is given up, so that it changes nothing afterwards. */
@@ -123,7 +129,15 @@ interface Attempt {
   appendStarted: boolean
 }
 
-class TimeoutError extends Error {}
+class TimeoutError extends Error {
+  /** the append had been handed to the file system: the lines may be in the file */
+  constructor(
+    message: string,
+    readonly afterAppend = false,
+  ) {
+    super(message)
+  }
+}
 
 /** The write was not tried because earlier operations are still stuck: the drive is the problem, not the file. */
 class HungError extends Error {}
@@ -196,6 +210,9 @@ function mergeBySeq(lists: Entry[][]): Entry[] {
   }
 }
 
+/** a line whose write was given up this many times is not sent again */
+const MAX_GIVEN_UP_TRIES = 2 // (the first write is not counted: three copies at most)
+
 const sleepUnref = (ms: number): Promise<void> =>
   new Promise((resolve) => {
     setTimeout(resolve, ms).unref?.()
@@ -231,6 +248,7 @@ export class DiagnosticsLogger {
   private readonly maxQueueBytes: number
   private readonly switchAfterFailures: number
   private readonly writeTimeoutMs: number
+  private readonly closeTimeoutMs: number
   private readonly appendHangMs: number
   private readonly degradedAfterMs: number
   private readonly yieldTick: () => Promise<void>
@@ -300,7 +318,12 @@ export class DiagnosticsLogger {
     this.maxQueueBytes = options.maxQueueBytes ?? 16_000_000
     this.switchAfterFailures = options.switchAfterFailures ?? 3
     this.writeTimeoutMs = options.writeTimeoutMs ?? 30_000
-    this.appendHangMs = options.appendHangMs ?? this.writeTimeoutMs * 4
+    this.closeTimeoutMs = options.closeTimeoutMs ?? 5_000
+    // (never shorter than the write timeout: the hang limit starts counting after it)
+    this.appendHangMs = Math.max(
+      options.appendHangMs ?? this.writeTimeoutMs * 4,
+      this.writeTimeoutMs,
+    )
     this.degradedAfterMs = options.degradedAfterMs ?? 120_000
     this.yieldTick = options.yieldTick ?? (() => new Promise((resolve) => setImmediate(resolve)))
     this.retryDelays = options.retryDelaysMs ?? [50, 200, 1000]
@@ -549,6 +572,7 @@ export class DiagnosticsLogger {
       entries.push({
         seq: this.seq++,
         rank: 2,
+        notice: true,
         line: JSON.stringify({
           ts: this.now().toISOString(),
           level: 'warn',
@@ -616,11 +640,27 @@ export class DiagnosticsLogger {
       if (outcome === 'superseded') return true
       if (outcome !== 'ok') {
         this.inflight = undefined
-        const rest = entries.slice(inflight.from)
+        let rest = entries.slice(inflight.from)
         this.report(
           `could not write ${this.activePath}; ${rest.length > 0 ? 'the lines are' : 'nothing'} kept for the next flush`,
           outcome.error,
         )
+        if (outcome.error instanceof TimeoutError && outcome.error.afterAppend) {
+          // A write that was given up after it had been handed over may still land, and a drive that
+          // answers after the hang limit every time would write each batch once per round for ever.
+          // A line is in the file at most three times in all (the first write and two more); after
+          // that it is counted as dropped. The note that lines were dropped is made by the logger: it
+          // is not sent again and not counted, or every note would make the next one. (A write given
+          // up BEFORE the append, in the preparation, put nothing in the file and is not counted.)
+          const before = rest.length
+          rest = rest.filter(
+            (entry) =>
+              !entry.notice && (entry.tries = (entry.tries ?? 0) + 1) <= MAX_GIVEN_UP_TRIES,
+          )
+          const lost =
+            before - rest.length - entries.slice(inflight.from).filter((e) => e.notice).length
+          if (lost > 0) this.noteDropped(lost)
+        }
         this.requeue(rest)
         // try again later, not at the next log call
         this.retryNotBefore = Date.now() + this.retryBackoffMs
@@ -683,9 +723,17 @@ export class DiagnosticsLogger {
         attempt.cancelled = true
         // the write itself may still go through later
         if (attempt.appendStarted) this.maybeDuplicate = true
-        hungOp = { at: Date.now(), dir }
-        this.hung.add(hungOp)
-        reject(new TimeoutError(`no answer from the file system after ${after} ms`))
+        // (the append that was only being waited for is counted already)
+        if (!hungOp) {
+          hungOp = { at: Date.now(), dir }
+          this.hung.add(hungOp)
+        }
+        reject(
+          new TimeoutError(
+            `no answer from the file system after ${after} ms`,
+            attempt.appendStarted,
+          ),
+        )
       }
       const timer = setTimeout(() => {
         if (settled) return
@@ -693,6 +741,10 @@ export class DiagnosticsLogger {
           // The append has been handed over: giving up now would put the same lines back in the
           // queue while this one may still land, and every retry would add another copy. A drive
           // that is slow but alive gets until `appendHangMs`; only then is the append given up.
+          // While it is waited for it counts as an operation the drive has not answered: nothing
+          // else is started beside it, and the synchronous write at exit leaves the drive alone.
+          hungOp = { at: Date.now(), dir }
+          this.hung.add(hungOp)
           hardTimer = setTimeout(
             () => giveUp(this.appendHangMs),
             Math.max(0, this.appendHangMs - this.writeTimeoutMs),
@@ -710,16 +762,16 @@ export class DiagnosticsLogger {
       work(attempt).then(
         (value) => {
           finish()
-          if (attempt.cancelled) this.hung.delete(hungOp!)
-          else {
+          if (hungOp) this.hung.delete(hungOp)
+          if (!attempt.cancelled) {
             settled = true
             resolve(value)
           }
         },
         (error: unknown) => {
           finish()
-          if (attempt.cancelled) this.hung.delete(hungOp!)
-          else {
+          if (hungOp) this.hung.delete(hungOp)
+          if (!attempt.cancelled) {
             settled = true
             reject(error)
           }
@@ -1012,6 +1064,13 @@ export class DiagnosticsLogger {
    * the queue.
    */
   flushSync(): void {
+    if (this.hungCount() > 0) {
+      // The drive is not answering (an operation is stuck, or a slow append is being waited for): a
+      // synchronous write would hold the main thread for as long, and the lines that are in flight
+      // belong to that operation, which is left to finish. Nothing is touched here.
+      this.report('the file system is not answering; the last lines are not written on exit')
+      return
+    }
     this.epoch++
     this.clearTimer()
     const held = this.inflight
@@ -1020,12 +1079,6 @@ export class DiagnosticsLogger {
     const fresh = this.takeBatch()
     const entries = [...resend, ...fresh]
     if (entries.length === 0) return
-    if (this.hungCount() > 0) {
-      // the drive is not answering: a synchronous write would hold the main thread for as long
-      this.report('the file system is not answering; the last lines are not written on exit')
-      this.requeue(entries)
-      return
-    }
     const lines: string[] = []
     if (resend.length > 0) {
       lines.push(
@@ -1055,11 +1108,20 @@ export class DiagnosticsLogger {
 
   /** Writes what is queued and stops accepting lines. */
   async close(): Promise<void> {
-    // lines that arrive while the last write runs are written too
-    // (but a drive that does not answer is not asked three times: stop when a pass wrote nothing)
+    // lines that arrive while the last write runs are written too, but the wait is bounded: a drive
+    // that does not answer must not keep the caller for as long as the writes take to give up
+    const deadline = Date.now() + this.closeTimeoutMs
     let before = Infinity
     for (let pass = 0; pass < 3; pass++) {
-      await this.flush()
+      const left = deadline - Date.now()
+      if (left <= 0) break
+      let timer: NodeJS.Timeout | undefined
+      const limit = new Promise<void>((resolve) => {
+        timer = setTimeout(resolve, left)
+        timer.unref?.()
+      })
+      await Promise.race([this.flush(), limit])
+      if (timer) clearTimeout(timer)
       // nothing more to write, no progress, or the drive is not answering: do not wait again
       if (this.queued === 0 || this.queued >= before) break
       if (this.hungCount() > 0 || this.retryNotBefore > Date.now()) break

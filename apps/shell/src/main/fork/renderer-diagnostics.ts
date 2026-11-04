@@ -99,11 +99,29 @@ export function rotatingFileWriter(
     report?: (message: string, error: unknown) => void
     now?: () => number
     retryRotateMs?: number
+    /** blocks for this many milliseconds (default: really waits); a test passes a recorder */
+    pause?: (ms: number) => void
   } = {},
 ): DiagnosticsWrite {
   const report = options.report ?? reportDiagnosticsProblem
   const now = options.now ?? Date.now
   const retryRotateMs = options.retryRotateMs ?? 60_000
+  const pause =
+    options.pause ?? ((ms) => void Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms))
+  /** a rename that Windows refuses for a moment (a scanner or an indexer holds the file) is tried again */
+  const renameAside = (from: string, to: string): void => {
+    for (let attempt = 0; ; attempt++) {
+      try {
+        deps.rename(from, to)
+        return
+      } catch (error) {
+        const code = (error as NodeJS.ErrnoException).code ?? ''
+        const wait = [15, 40, 90][attempt]
+        if (!['EPERM', 'EACCES', 'EBUSY'].includes(code) || wait === undefined) throw error
+        pause(wait)
+      }
+    }
+  }
   let nextRotateAt = 0
   return (line) => {
     // Rotation and appending are separate steps: a rotation that fails (a locked file on Windows,
@@ -111,7 +129,7 @@ export function rotatingFileWriter(
     try {
       if (now() >= nextRotateAt && deps.size(path) > maxBytes) {
         try {
-          deps.rename(path, `${path}.1`)
+          renameAside(path, `${path}.1`)
         } catch (error) {
           nextRotateAt = now() + retryRotateMs
           report(`could not rotate ${path}`, error)

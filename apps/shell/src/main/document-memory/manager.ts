@@ -14,7 +14,7 @@ import { EmbeddingCoordinator } from './runtime/embedding-coordinator'; import {
 import { MaintenanceScheduler, INITIAL_MAINTENANCE_DELAY_MS } from './runtime/maintenance-scheduler'; import { LegacyChunkMigrator } from './runtime/legacy-chunk-migrator'; import { AdmissionRetry } from './runtime/admission-retry'
 import { readActiveEmbeddingConfig } from './storage/embedding-settings'; import { StorageAdmissionController } from './runtime/storage-admission'; import { AnnHostAdmissionCoordinator } from './runtime/ann-host-admission'; import { SyncMetadataAdmissionCoordinator } from './runtime/sync-metadata-admission'
 import { StorageBudgetCoordinator } from './runtime/storage-budget-coordinator'; import type { StorageBudgetConfig, StorageBudgetPreset } from './storage/storage-settings'; import { createStorageBudget, type DocumentIndexStorageBudget, type StorageBudgetSnapshot } from './storage-budget'
-import { createIndexProcess } from './process-worker'; import workerPath from './worker?modulePath'; import { raceTimeout } from './runtime/race-timeout'
+import { createIndexProcess } from './process-worker'; import workerPath from './worker?modulePath'; import { raceTimeout } from './runtime/race-timeout'; import { stopEach } from './runtime/stop-each'
 import { safeError } from './issues'; import { orderQueue, nextInOrder, weightOf } from './queue-order'; import type { WorkerRequest, WorkerReply } from './worker-types'; import { isPathIgnored } from './ignore-policy'
 export type { FreshDocumentMemoryHit, FileEnrollmentOutcome, FileEnrollmentResult }
 function readEnabled(p: string): boolean { try { return JSON.parse(readFileSync(p, 'utf8'))?.enabled !== false } catch { return true } }
@@ -338,12 +338,11 @@ export class DocumentMemoryManager {
   close(): void { this.closeAsync().catch(() => undefined) }
   closeAsync(onStep?: (name: string, ms: number) => void): Promise<void> {
     if (this.shutdownPromise) return this.shutdownPromise
-    if (!this.stopped) { try {
-      this.stopped = true; this.heldRoots.dispose(); this.stopFolderPauseWatch(); this.sourceRecovery.dispose(); this.stopJunkPurge?.(); this.statusAgg?.close(); this.stopPolicyWatch(); this.epoch++
-      if (this.pollTimer) { clearInterval(this.pollTimer); this.pollTimer = null }; this.admissionRetry.dispose(); if (this.migrationTimer) { clearTimeout(this.migrationTimer); this.migrationTimer = null }
-      this.syncAdmissionCoord.close(); this.budgetCoord.close(); this.maintScheduler.dispose(); this.freshnessCoord.clearMissing(); this.embeddingCoord.clearQueue(); this.skippedMigrationDocs.clear(); this.admission.clear(); this.pendingIntake.close()
-      this.queue.length = 0; this.queued.clear(); this.gate.clear(); this.urgent.clear(); this.deferred.clear()
-    } catch { onStep?.('stop-failed', 0) } } // (a part that fails to stop must not keep the store from closing below)
+    if (!this.stopped) {
+      this.stopped = true; this.epoch++
+      stopEach([['held-roots', () => this.heldRoots.dispose()], ['folder-pause', () => this.stopFolderPauseWatch()], ['source-recovery', () => this.sourceRecovery.dispose()], ['junk-purge', () => this.stopJunkPurge?.()], ['status', () => this.statusAgg?.close()], ['policy-watch', () => this.stopPolicyWatch()], ['poll-timer', () => { if (this.pollTimer) { clearInterval(this.pollTimer); this.pollTimer = null } }], ['admission-retry', () => this.admissionRetry.dispose()], ['migration-timer', () => { if (this.migrationTimer) { clearTimeout(this.migrationTimer); this.migrationTimer = null } }]], (n) => onStep?.(`stop-failed:${n}`, 0))
+      stopEach([['sync-admission', () => this.syncAdmissionCoord.close()], ['budget', () => this.budgetCoord.close()], ['maintenance', () => this.maintScheduler.dispose()], ['freshness', () => this.freshnessCoord.clearMissing()], ['embedding-queue', () => this.embeddingCoord.clearQueue()], ['skipped-migration', () => this.skippedMigrationDocs.clear()], ['admission', () => this.admission.clear()], ['pending-intake', () => this.pendingIntake.close()], ['queues', () => { this.queue.length = 0; this.queued.clear(); this.gate.clear(); this.urgent.clear(); this.deferred.clear() }]], (n) => onStep?.(`stop-failed:${n}`, 0))
+    }
     return (this.shutdownPromise = (async () => {
       let t = performance.now(); const lap = (n: string): void => { onStep?.(n, Math.round(performance.now() - t)); t = performance.now() }; try { await raceTimeout(this.localOcrWiring?.dispose().catch(() => undefined) ?? Promise.resolve(), 5_000); lap('ocr-dispose'); await raceTimeout(this.host.terminate(), 5_000); lap('worker-terminate') } finally { this.store.close(); lap('store-close') }
     })())
