@@ -247,6 +247,50 @@ export function detectImageFormat(bytes: Uint8Array): DetectedImageFormat {
   return 'unknown'
 }
 
+/** More pixels than this are not decoded (gray-image.ts), and are not handed to Tesseract as they are either. */
+export const TESSERACT_MAX_PIXELS = 40_000_000
+
+/** Width x height that a PNG or JPEG declares, read from its header only; null when it says nothing. */
+export function declaredPixels(bytes: Uint8Array): number | null {
+  const format = detectImageFormat(bytes)
+  if (format === 'png') {
+    if (bytes.length < 24) return null
+    const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength)
+    return view.getUint32(16) * view.getUint32(20)
+  }
+  if (format === 'jpeg') {
+    let i = 2
+    while (i + 4 <= bytes.length) {
+      if (bytes[i] !== 0xff) {
+        i++
+        continue
+      }
+      const marker = bytes[i + 1]!
+      if (marker === 0xff) {
+        i++
+        continue
+      }
+      i += 2
+      if (marker === 0xd8 || marker === 0x01 || (marker >= 0xd0 && marker <= 0xd7)) continue
+      if (marker === 0xda || marker === 0xd9 || i + 2 > bytes.length) return null
+      const length = (bytes[i]! << 8) | bytes[i + 1]!
+      // SOF0..SOF15 except DHT (c4), JPG (c8) and DAC (cc)
+      if (
+        marker >= 0xc0 &&
+        marker <= 0xcf &&
+        marker !== 0xc4 &&
+        marker !== 0xc8 &&
+        marker !== 0xcc
+      ) {
+        if (i + 7 > bytes.length) return null
+        return ((bytes[i + 3]! << 8) | bytes[i + 4]!) * ((bytes[i + 5]! << 8) | bytes[i + 6]!)
+      }
+      i += Math.max(2, length)
+    }
+  }
+  return null
+}
+
 export function prepareForTesseract(bytes: Uint8Array, dpi: number): Uint8Array | null {
   if (!bytes || bytes.length < 8) {
     return null
@@ -255,6 +299,15 @@ export function prepareForTesseract(bytes: Uint8Array, dpi: number): Uint8Array 
   const format = detectImageFormat(bytes)
 
   if (format === 'heic') {
+    return null
+  }
+
+  // A picture too large to decode here is not passed on as it is either: Tesseract would take it whole
+  // (several times its pixels in memory) after this module declined to.
+  if (
+    (format === 'png' || format === 'jpeg') &&
+    (declaredPixels(bytes) ?? 0) > TESSERACT_MAX_PIXELS
+  ) {
     return null
   }
 

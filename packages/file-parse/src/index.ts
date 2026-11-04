@@ -8,9 +8,12 @@ export { docToText } from './doc'
 export { docxToText } from './docx'
 export {
   countEmbeddedImages,
+  loadOfficePictures,
   mayHoldPictures,
+  MAX_OFFICE_IMAGES,
   MIN_SIGNIFICANT_IMAGE_BYTES,
   type EmbeddedImages,
+  type OfficePictures,
 } from './office-images'
 export { pptToText } from './ppt'
 export { pptxToText } from './pptx'

@@ -21,7 +21,7 @@ import { readFile, stat } from 'node:fs/promises'
 import { createHash } from 'node:crypto'
 import { extname } from 'node:path'
 import {
-  countEmbeddedImages,
+  loadOfficePictures,
   mayHoldPictures,
   parseFileToText,
   pdfPageTextsSlice,
@@ -78,6 +78,7 @@ import { DocumentMemoryStore } from './store'
 import { runJunkPurgeStep } from './runtime/junk-purge'
 import { embedTexts } from './embeddings'
 import { renderPdfPagesForOcr, type OcrRenderRequest } from './agy-ocr-render'
+import { renderOfficePicturesForOcr } from './office-ocr-render'
 import { ocrChunksFromPages, ocrDocumentHash, type OcrLookup } from './ocr-sidecar'
 import { extractImageOcrText } from './image-ocr-extract'
 import { mediaKindOfPath } from './media/media-kinds'
@@ -85,6 +86,8 @@ import { prepareForTesseract } from './local-ocr/tesseract-prepare'
 import { readOcrRecoveryPage } from './storage/repositories/ocr-recovery-repository'
 import { orientTesseractImage } from './local-ocr/orientation-image'
 import type { QuarterTurn } from './local-ocr/orientation'
+/** A Word, PowerPoint or Excel file with at least this much text is a document with pictures, not a scan. */
+export const OFFICE_TEXT_ENOUGH_CHARS = 200
 /** `ocr` finds text the scanned-PDF reader stored for a PDF that has no text layer of its own. */
 /** A page with fewer characters than this has no usable text layer. */
 const MIN_PAGE_TEXT_CHARS = 20
@@ -169,11 +172,6 @@ export async function extractDocumentSliced(
     : await parseFileToText(path)
   if (!parsed.ok || parsed.kind !== 'text')
     throw new Error(parsed.error || 'Cannot extract text from this document')
-  const scannedPages = pdfPages
-    ? pdfPages.flatMap((text, index) =>
-        text.trim().length < MIN_PAGE_TEXT_CHARS ? [index + 1] : [],
-      )
-    : []
   const after = await stat(path)
   if (before.mtimeMs !== after.mtimeMs || before.size !== after.size)
     throw new Error('Document changed during indexing; retry after saving')
@@ -216,19 +214,27 @@ export async function extractDocumentSliced(
     truncatedReason = 'pdf-page-limit'
   }
   const fileHash = createHash('sha256').update(bytes).digest('hex')
-  // A Word, PowerPoint or Excel file with no text may be made of scanned pages: say that it holds
-  // pictures nobody has read, which is not the same as "blank". (Reading them is a separate step.)
-  const pictures =
-    !chunks.length && mayHoldPictures(path)
-      ? await countEmbeddedImages(bytes).catch(() => ({ count: 0, total: 0 }))
-      : { count: 0, total: 0 }
+  // A Word, PowerPoint or Excel file with next to no text may be made of scanned pages: its pictures, in
+  // the order of the document, are its "pages" for the OCR pass (the same lookup and storage as a
+  // scanned PDF's). With enough text of its own a file is a document with illustrations: not OCR work.
+  const officePictures =
+    mayHoldPictures(path) && text.trim().length < OFFICE_TEXT_ENOUGH_CHARS
+      ? await loadOfficePictures(bytes)
+          .then((found) => found.names.length)
+          .catch(() => 0)
+      : 0
+  const scannedPages = pdfPages
+    ? pdfPages.flatMap((pageText, index) =>
+        pageText.trim().length < MIN_PAGE_TEXT_CHARS ? [index + 1] : [],
+      )
+    : Array.from({ length: officePictures }, (_unused, index) => index + 1)
   let hash = fileHash
   let ocrRead = false
-  if (scannedPages.length && ocr && isPdf) {
+  if (scannedPages.length && ocr && (isPdf || officePictures > 0)) {
     const pagesToOcr = scannedPages.slice(0, DEFAULT_STORAGE_BUDGET.maxOcrPagesPerFile)
     if (scannedPages.length > DEFAULT_STORAGE_BUDGET.maxOcrPagesPerFile) {
       truncated = true
-      truncatedReason = truncatedReason ?? 'pdf-page-limit'
+      truncatedReason = truncatedReason ?? (isPdf ? 'pdf-page-limit' : 'content-limit')
     }
     // pages the user let Antigravity read: their transcription is added to whatever text the
     // PDF has itself (all of it for a pure scan, the missing pages for a mixed file)
@@ -255,8 +261,8 @@ export async function extractDocumentSliced(
     status: chunks.length ? 'text-only' : 'empty',
     ...(truncated ? { truncated: true, ...(truncatedReason ? { truncatedReason } : {}) } : {}),
     // Pages with no text layer, so the OCR reader knows which pages (and only those) to read.
-    ...(pdfPages && scannedPages.length
-      ? { scan: { totalPages: pdfPages.length, scannedPages } }
+    ...(scannedPages.length
+      ? { scan: { totalPages: pdfPages?.length ?? officePictures, scannedPages } }
       : {}),
     // Numeric tables stay searchable through FTS; vectors for digits are wasted work.
     ...(numeric && chunks.length ? { skipEmbeddings: true } : {}),
@@ -264,11 +270,13 @@ export async function extractDocumentSliced(
       ? {}
       : {
           error: ocrRead
-            ? 'No readable text; the scanned pages were read but contained no text'
+            ? isPdf
+              ? 'No readable text; the scanned pages were read but contained no text'
+              : 'No readable text; the pictures in this file were read but contained no text'
             : isPdf
               ? 'No readable text; scanned documents need OCR'
-              : pictures.count > 0
-                ? `No readable text; the ${pictures.count} ${pictures.count === 1 ? 'picture in this file has' : 'pictures in this file have'} not been read`
+              : officePictures > 0
+                ? `No readable text; the ${officePictures} ${officePictures === 1 ? 'picture in this file has' : 'pictures in this file have'} not been read`
                 : 'No readable text in this file; there is nothing to search',
         }),
   }
@@ -419,12 +427,13 @@ onIndexRequest(
                 extractDocumentSliced(request.path, lookup, request.sliceMs, request.maxPdfPages),
               )
         else if (request.type === 'ocr-render')
-          result = await withBackgroundBudget(() =>
-            renderPdfPagesForOcr(
-              request.path,
-              request.ocr ?? { count: 1, maxPages: 1000, done: [] },
-            ),
-          )
+          result = await withBackgroundBudget(() => {
+            const ocrRequest = request.ocr ?? { count: 1, maxPages: 1000, done: [] }
+            // the pictures of a Word, PowerPoint or Excel file are the pages of a scan of its own kind
+            return mayHoldPictures(request.path)
+              ? renderOfficePicturesForOcr(request.path, ocrRequest)
+              : renderPdfPagesForOcr(request.path, ocrRequest)
+          })
         else if (request.type === 'ocr-source-recovery')
           result = await withBackgroundBudget(() =>
             recoverOcrSourcesPage(getWorkerStore().rawDb, request.afterId ?? 0, request),

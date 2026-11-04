@@ -335,6 +335,17 @@ export class LocalOcrJob {
       }
       const started = performance.now()
       let saved: 'saved' | 'denied' | undefined
+      if (page.jpeg.byteLength === 0) {
+        // a picture of a document that must not go to an engine (a thumbnail, too many pixels, a damaged
+        // entry): a page without text, so that the file can be finished
+        saved = await this.saveBlankPage(row.path, page.page, engine, meta, summary)
+        if (saved === 'denied') {
+          stopReason = 'storage-denied'
+          break
+        }
+        touched = touched || saved === 'saved'
+        continue
+      }
       try {
         saved = await this.recognizeAndSave(
           row.path,
@@ -516,6 +527,31 @@ export class LocalOcrJob {
   // ---- shared --------------------------------------------------------------------------
 
   /** Recognise one page, decide on escalation, store it. 'denied' = the storage gate said no. */
+  private async saveBlankPage(
+    path: string,
+    page: number,
+    engine: LocalOcrEngine,
+    file: { hash: string; mtimeMs: number; sizeBytes: number; totalPages: number },
+    summary: LocalOcrRunSummary,
+  ): Promise<'saved' | 'denied'> {
+    const saved = await this.deps.savePages(
+      path,
+      {
+        ...file,
+        model: `local:${engine.id}`,
+        tier: 'local',
+        engine: engine.id,
+        quality: 0,
+        escalate: false,
+      },
+      [{ page, text: '' }],
+    )
+    if (saved && typeof saved === 'object' && saved.ok === false) return 'denied'
+    summary.pages++
+    this.lastChars = 0
+    return 'saved'
+  }
+
   private async recognizeAndSave(
     path: string,
     page: number,
