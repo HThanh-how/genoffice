@@ -442,10 +442,16 @@ export class LocalOcrJob {
     if (touched) {
       // pages of this version were stored and none failed: an earlier failure row is stale
       if (summary.failed === failedBefore) this.ocr.clearLocalFailure(row.path, file)
-      // The slow pass puts a file back in the index when it has read all it will read of it, not at every
-      // visit (each one makes a new version of the text: chunks and vectors would be made again and again).
-      // What was read stays in ocr_pages, and the file stays a candidate until it is finished.
-      if (!slow || this.finished(row.path, file, meta.totalPages, limit, skip))
+      // The slow pass puts a file back in the index when its visit ENDS something (the file is finished, a page
+      // failed, the run was stopped), not after every ordinary visit: each reindex makes a new version of the
+      // text, and chunks and vectors would be made again and again. What was read stays in ocr_pages, and the
+      // file stays a candidate until it is finished.
+      if (
+        !slow ||
+        stopReason !== null ||
+        summary.failed > failedBefore ||
+        this.finished(row.path, file, meta.totalPages, limit, skip)
+      )
         this.deps.reindex(row.path)
     }
     return stopReason

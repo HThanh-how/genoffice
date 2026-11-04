@@ -608,6 +608,48 @@ describe('LocalOcrJob on scanned PDFs (real SQLite, real PDFium render, engine d
       expect(present(path)).toEqual([1, 2, 3])
     })
 
+    it('puts the pages it did read in the index when a later page fails for good, or the run is stopped', async () => {
+      const path = invoicePdf('middle.pdf', 12)
+      enrollEmpty(path)
+      const engine = new ScriptedEngine(['good'])
+      const slow = makeJob(engine, { light: 2, maxPages: 12 })
+      await slow.runOnce()
+      await reindexNow(path)
+      reindexed.length = 0
+      const base = engine.calls
+      const recognize = engine.recognizePage.bind(engine)
+      engine.recognizePage = async () => {
+        if (engine.calls - base === 3) {
+          engine.calls++
+          throw new Error('the engine cannot read this page')
+        }
+        return recognize()
+      }
+      const run = await slow.runOnce()
+      expect(run.failed).toBe(1)
+      expect(present(path)).toEqual([1, 2, 3, 4, 5]) // 3-5 were read before page 6 failed
+      expect(reindexed).toEqual([path]) // so that they can be found, though the file is not finished
+
+      // and a run that is stopped in the middle of a visit
+      engine.recognizePage = recognize
+      const other = invoicePdf('stopped.pdf', 12)
+      enrollEmpty(other)
+      await slow.runOnce()
+      await reindexNow(other)
+      reindexed.length = 0
+      gateState = { ok: true }
+      const again = engine.recognizePage.bind(engine)
+      const mark = engine.calls
+      engine.recognizePage = async () => {
+        const r = await again()
+        if (engine.calls - mark === 2) gateState = { ok: false, reason: 'user-active' }
+        return r
+      }
+      const stopped = await slow.runOnce()
+      expect(stopped.stoppedBecause).toBe('gate:user-active')
+      expect(reindexed.length).toBeGreaterThan(0)
+    })
+
     it('stops between two pages on an abort during the slow pass', async () => {
       const path = invoicePdf('abort-mid.pdf', 10)
       enrollEmpty(path)
