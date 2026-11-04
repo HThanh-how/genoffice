@@ -86,10 +86,12 @@ export function installLifecycleLogging(options: LifecycleOptions): () => void {
     }
     wc.on('unresponsive', unresponsive)
     wc.on('responsive', responsive)
-    wc.once('destroyed', () => {
+    const detach = (): void => {
       wc.off('unresponsive', unresponsive)
       wc.off('responsive', responsive)
-    })
+    }
+    wc.once('destroyed', detach)
+    undo.push(detach)
   }
   for (const wc of options.existingWebContents?.() ?? []) watchContents(wc)
   on(app, 'web-contents-created', (_event: unknown, wc: WebContentsLike) => watchContents(wc))

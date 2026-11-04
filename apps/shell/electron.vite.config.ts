@@ -1,15 +1,34 @@
+import { execFileSync } from 'node:child_process'
 import { resolve } from 'node:path'
 import react from '@vitejs/plugin-react'
 import { defineConfig } from 'electron-vite'
+
+/** The commit this build comes from: CI passes it, a local build asks git; unknown is an empty string. */
+function buildCommit(): string {
+  const fromCi = process.env.GITHUB_SHA
+  if (fromCi) return fromCi.slice(0, 12)
+  try {
+    return execFileSync('git', ['rev-parse', '--short=12', 'HEAD'], {
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'ignore'],
+    }).trim()
+  } catch {
+    return ''
+  }
+}
 
 export default defineConfig({
   // Bundle everything into the shell main (same policy as apps/docs): the
   // imported docs/sheets main modules are TS source with no build artifacts,
   // so externalizing them would break Node ESM resolution at runtime.
   main: {
+    // the diagnostic log names the commit it was produced by
+    define: { 'process.env.GENOFFICE_BUILD_COMMIT': JSON.stringify(buildCommit()) },
     // node:sqlite is a Node 22+ builtin the bundler's builtin list may predate
     build: {
-      rollupOptions: { external: ['node:sqlite', 'onnxruntime-node', '@huggingface/tokenizers', 'tesseract.js'] },
+      rollupOptions: {
+        external: ['node:sqlite', 'onnxruntime-node', '@huggingface/tokenizers', 'tesseract.js'],
+      },
     },
   },
   preload: {

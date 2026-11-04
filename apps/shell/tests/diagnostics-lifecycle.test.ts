@@ -122,6 +122,16 @@ describe('lifecycle logging', () => {
     ])
   })
 
+  it('dispose also detaches from the web contents it was watching', () => {
+    const { app, dispose } = setup()
+    const wc = Object.assign(new EventEmitter(), { id: 9 })
+    app.emit('web-contents-created', {}, wc)
+    expect(wc.listenerCount('unresponsive')).toBe(1)
+    dispose()
+    expect(wc.listenerCount('unresponsive')).toBe(0)
+    expect(wc.listenerCount('responsive')).toBe(0)
+  })
+
   it('removes every listener on dispose', () => {
     const { app, proc, dispose } = setup()
     dispose()

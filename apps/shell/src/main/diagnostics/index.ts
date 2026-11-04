@@ -10,6 +10,9 @@ export { installLifecycleLogging, startupInfo } from './lifecycle'
 
 const PRE_INIT_LIMIT = 500
 
+/** Replaced by the build (electron.vite.config.ts) with the commit the installer was built from. */
+const BUILD_COMMIT: string | undefined = process.env.GENOFFICE_BUILD_COMMIT
+
 interface Pending {
   readonly at: Date
   readonly level: LogLevel
@@ -53,7 +56,7 @@ export function initDiagnostics(options: InitOptions): DiagnosticsLogger | undef
   }
   const verbose = env.GENOFFICE_LOG_VERBOSE === '1'
   configureFallbackReporter({ dir: join(options.userDataDir, 'logs') })
-  const commit = options.commit ?? env.GENOFFICE_COMMIT
+  const commit = options.commit ?? env.GENOFFICE_COMMIT ?? BUILD_COMMIT
   logger = new DiagnosticsLogger({
     dir: join(options.userDataDir, 'logs'),
     version: options.version,

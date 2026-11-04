@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { installIpcLogging } from '../src/main/diagnostics/ipc-logging'
+import { defaultWaitsForUser, installIpcLogging } from '../src/main/diagnostics/ipc-logging'
 
 type Handler = (event: unknown, ...args: any[]) => unknown
 
@@ -173,6 +173,21 @@ describe('IPC logging', () => {
     await ipc.handlers.get('home:scan-document-folder')!({})
     await Promise.resolve()
     expect(entries).toEqual([])
+  })
+
+  it('knows the dialogs of this app by name, and does not mistake prompts for them', () => {
+    for (const channel of [
+      'home:folder-root-add',
+      'integrations:save-skill-zip',
+      'home:import-opening-html',
+    ])
+      expect(defaultWaitsForUser(channel)).toBe(true)
+    for (const channel of [
+      'home:get-legacy-import-prompt',
+      'home:set-legacy-import-prompt',
+      'ai:chat',
+    ])
+      expect(defaultWaitsForUser(channel)).toBe(false)
   })
 
   it('still reports the failure of a call that waits for a person', async () => {

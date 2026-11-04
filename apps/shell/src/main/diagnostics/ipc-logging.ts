@@ -24,7 +24,7 @@ export interface IpcLoggingOptions {
  * person took, not a stall, so they would only add noise to the slow and pending lines.
  */
 const USER_WAIT =
-  /(^|[:.-])(browse|pick|choose|dialog|import|export|save-as|open-file|print|confirm|scan-document-folder)([:.-]|$)/i
+  /(^|[:.-])(browse|pick|choose|dialog|save-as|open-file|print|confirm|export|scan-document-folder|folder-root-add|save-skill-zip|import-opening-html)([:.-]|$)/i
 
 export const defaultWaitsForUser = (channel: string): boolean => USER_WAIT.test(channel)
 

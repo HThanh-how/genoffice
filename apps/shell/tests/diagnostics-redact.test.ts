@@ -183,21 +183,82 @@ describe('diagnostics redaction', () => {
     expect(out.set).toEqual({ size: 2 })
   })
 
-  it('redacts a personal number given as a number, but keeps measures', () => {
+  it('redacts a personal number given as a number under a personal-number key, and keeps the rest', () => {
     const out = redactValue({
       cccdNumber: 12345678901,
-      userNumber: 123456789,
+      citizen_id: 123456789012 - 1,
+      phone: 987654321,
+      exitCode: 3221225477,
+      status: 3221225477,
+      heapUsed: 150000000,
+      lastSeen: 1700000000000,
+      bytesWritten: 250000000,
+      free: 900000000,
       ms: 1700000000000,
-      sizeBytes: 250000000,
       pid: 4242,
-      createdAt: 1700000000000,
+      telemetry: 123456789,
+      syntaxLevel: 123456789,
+      international: 123456789,
+      microphone: 123456789,
     }) as Record<string, any>
     expect(out.cccdNumber).toEqual({ redacted: true, type: 'number' })
-    expect(out.userNumber).toEqual({ redacted: true, type: 'number' })
-    expect(out.ms).toBe(1700000000000)
-    expect(out.sizeBytes).toBe(250000000)
-    expect(out.pid).toBe(4242)
-    expect(out.createdAt).toBe(1700000000000)
+    expect(out.citizen_id).toEqual({ redacted: true, type: 'number' })
+    expect(out.phone).toEqual({ redacted: true, type: 'number' })
+    for (const key of [
+      'exitCode',
+      'status',
+      'heapUsed',
+      'lastSeen',
+      'bytesWritten',
+      'free',
+      'ms',
+      'pid',
+      'telemetry',
+      'syntaxLevel',
+      'international',
+      'microphone',
+    ]) {
+      expect(typeof out[key]).toBe('number')
+    }
+    expect(out.exitCode).toBe(3221225477)
+  })
+
+  it('redacts whole trees under secret-named keys, but keeps counters', () => {
+    const out = JSON.stringify(
+      redactValue({
+        apiKeys: ['abcdef123456'],
+        secrets: { a: 'plainsecret' },
+        tokens: { input: 5, output: 7 },
+        tokenCount: 12,
+      }),
+    )
+    expect(out).not.toContain('abcdef123456')
+    expect(out).not.toContain('plainsecret')
+    expect(out).toContain('"input":5')
+    expect(out).toContain('"tokenCount":12')
+  })
+
+  it('keeps the skeleton of content containers: roles and flags stay, text goes', () => {
+    const out = redactValue({
+      messages: [
+        { role: 'user', text: 'tell me about my salary please', partial: true, n: 3 },
+        {
+          role: 'assistant',
+          content: [{ type: 'tool_use', name: 'edit_cell', input: { a1: 'secret value here' } }],
+        },
+      ],
+    }) as any
+    expect(out.messages[0].role).toBe('user')
+    expect(out.messages[0].partial).toBe(true)
+    expect(out.messages[0].n).toBe(3)
+    expect(JSON.stringify(out)).not.toContain('salary')
+    expect(JSON.stringify(out)).not.toContain('secret value')
+    expect(out.messages[1].role).toBe('assistant')
+  })
+
+  it('does not throw on an invalid date', () => {
+    expect(() => redactValue({ at: new Date('nope') })).not.toThrow()
+    expect((redactValue({ at: new Date('nope') }) as any).at).toBe('Invalid Date')
   })
 
   it('cleans the cause of an error too', () => {

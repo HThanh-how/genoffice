@@ -37,8 +37,25 @@ export function shortHash(value: string): string {
 
 const normalizeKey = (key: string): string => key.toLowerCase().replace(/[_\-\s]/g, '')
 
-/** Keys (lower case, without `_`/`-`) whose value is user content or a credential. */
-const SENSITIVE_KEYS: ReadonlySet<string> = new Set([
+/** Keys (lower case, without `_`/`-`) that carry a credential: the whole value goes, whatever its type. */
+const CREDENTIAL_KEYS: ReadonlySet<string> = new Set([
+  'header',
+  'headers',
+  'cookie',
+  'cookies',
+  'setcookie',
+  'authorization',
+  'proxyauthorization',
+  'credential',
+  'credentials',
+])
+
+/**
+ * Keys that usually carry user content. A string under one of them becomes `{ len, hash }`; an
+ * object or array is kept as a skeleton (see `inContent` below), so a message list still shows its
+ * roles and sizes but none of its text.
+ */
+const CONTENT_KEYS: ReadonlySet<string> = new Set([
   'prompt',
   'systemprompt',
   'system',
@@ -64,40 +81,67 @@ const SENSITIVE_KEYS: ReadonlySet<string> = new Set([
   'args',
   'params',
   'title',
-  'header',
-  'headers',
-  'cookie',
-  'cookies',
-  'setcookie',
-  'authorization',
-  'proxyauthorization',
-  'credential',
-  'credentials',
 ])
+
 /** key names that end like a secret (`accessToken`, `client_secret`, `githubPassword`, `apiKey`) */
 const SECRET_SUFFIX = /(token|secret|password|passwd|passphrase|apikey|privatekey|credential)s?$/
 
-/** Numbers named like a duration, a size or a time stay as they are; any other big integer might be an ID. */
-const MEASURE_KEY =
-  /(ms|sec|secs|seconds|bytes|byte|size|count|len|length|dur|duration|ts|time|timestamp|pid|rss|mb|kb|age|epoch|at|limit|max|min|total|offset|seq|mtime)$/
-const ID_LIKE_KEY =
-  /(cccd|cmnd|cmt|ssn|passport|idnumber|idno|citizen|national|tax|phone|tel|account)/
+/** Words in a key name that say the number is a personal one (`cccdNumber`, `citizenId`, `phone`). */
+const ID_WORDS: ReadonlySet<string> = new Set([
+  'cccd',
+  'cmnd',
+  'cmt',
+  'ssn',
+  'passport',
+  'citizen',
+  'identity',
+  'phone',
+  'tel',
+  'mobile',
+  'account',
+  'tax',
+  'nid',
+])
 
-/** A 9 to 12 digit whole number under a key that is not a measure could be a personal number. */
+/** `cccdNumber`, `citizen_id`, `Phone` → ['cccd','number'], ['citizen','id'], ['phone'] */
+function keyWords(key: string): string[] {
+  return key
+    .replace(/([a-z0-9])([A-Z])/g, '$1 $2')
+    .toLowerCase()
+    .split(/[^a-z0-9]+/)
+    .filter(Boolean)
+}
+
+/** A whole number of 9 to 12 digits under a key named like a personal number. Measures are left alone. */
 function isPersonalNumber(key: string, value: unknown): boolean {
   if (typeof value !== 'number' || !Number.isInteger(value)) return false
   const abs = Math.abs(value)
-  if (abs < 1e8 || abs >= 1e13) return false
-  const k = normalizeKey(key)
-  return ID_LIKE_KEY.test(k) || !MEASURE_KEY.test(k)
+  if (abs < 1e8 || abs >= 1e12) return false
+  return keyWords(key).some((w) => ID_WORDS.has(w))
 }
 
-function isSensitiveKey(key: string, value: unknown): boolean {
+/** True when no string occurs anywhere in `value` (numbers and flags only: a usage record, say). */
+function holdsNoText(value: unknown, depth = 0): boolean {
+  if (typeof value === 'string') return false
+  if (value === null || typeof value !== 'object') return true
+  if (depth > 3) return false
+  const items = Array.isArray(value) ? value : Object.values(value as object)
+  return items.slice(0, MAX_KEYS).every((v) => holdsNoText(v, depth + 1))
+}
+
+type KeyKind = 'credential' | 'content' | undefined
+
+function keyKind(key: string, value: unknown): KeyKind {
   const k = normalizeKey(key)
   // a number or a flag is not content (`maxTokens: 4096`, `input: 12`)
-  if (value === null || typeof value === 'number' || typeof value === 'boolean') return false
-  if (SENSITIVE_KEYS.has(k)) return true
-  return typeof value === 'string' && SECRET_SUFFIX.test(k)
+  if (value === null || typeof value === 'number' || typeof value === 'boolean') return undefined
+  if (CREDENTIAL_KEYS.has(k)) return 'credential'
+  if (CONTENT_KEYS.has(k)) return 'content'
+  if (SECRET_SUFFIX.test(k)) {
+    // `apiKeys: ['…']`, `secrets: { a: '…' }` go whole; `tokens: { input: 5, output: 7 }` is a count
+    return holdsNoText(value) ? undefined : 'credential'
+  }
+  return undefined
 }
 
 /** `{ redacted: true, len, hash }` for a sensitive value: it can be compared, never read. */
@@ -233,10 +277,25 @@ function safeJson(value: unknown): string {
   }
 }
 
-/** A plain-data copy of `value` that is safe to write: bounded, with sensitive fields replaced. */
-export function redactValue(value: unknown, options: RedactOptions = {}, depth = 0): unknown {
+const IDENTIFIER = /^[\w.:-]{1,32}$/
+
+/**
+ * A plain-data copy of `value` that is safe to write: bounded, with sensitive fields replaced.
+ * `inContent` is set below a content key (`messages`, `args`, …): there a short identifier
+ * (`"user"`, `"tool_use"`) and every number or flag is kept, and any other text becomes `{ len, hash }`.
+ */
+export function redactValue(
+  value: unknown,
+  options: RedactOptions = {},
+  depth = 0,
+  inContent = false,
+): unknown {
   if (value === null || value === undefined) return value
-  if (typeof value === 'string') return cleanString(value, options)
+  if (typeof value === 'string') {
+    if (!inContent) return cleanString(value, options)
+    if (IDENTIFIER.test(value)) return cleanString(value, options)
+    return options.verbose ? cleanString(value, options, MAX_VERBOSE_STRING) : placeholder(value)
+  }
   if (typeof value === 'number' || typeof value === 'boolean') return value
   if (typeof value === 'bigint') return String(value)
   if (typeof value === 'function' || typeof value === 'symbol') return `[${typeof value}]`
@@ -245,12 +304,16 @@ export function redactValue(value: unknown, options: RedactOptions = {}, depth =
   if (ArrayBuffer.isView(value)) return { bytes: value.byteLength }
   if (value instanceof ArrayBuffer) return { bytes: value.byteLength }
   if (value instanceof Map || value instanceof Set) return { size: value.size }
+  if (value instanceof Date) {
+    return Number.isNaN(value.getTime()) ? 'Invalid Date' : value.toISOString()
+  }
   if (depth >= MAX_DEPTH) return '[depth]'
   if (Array.isArray(value)) {
-    const items = value.slice(0, MAX_ARRAY).map((v) => redactValue(v, options, depth + 1))
+    const items = value
+      .slice(0, MAX_ARRAY)
+      .map((v) => redactValue(v, options, depth + 1, inContent))
     return value.length > MAX_ARRAY ? [...items, `…(${value.length} items)`] : items
   }
-  if (value instanceof Date) return value.toISOString()
   if (typeof value === 'object') {
     const out: Record<string, unknown> = {}
     let count = 0
@@ -261,16 +324,21 @@ export function redactValue(value: unknown, options: RedactOptions = {}, depth =
       }
       // a key can be an e-mail address or a file name too
       const key = cleanString(rawKey, options, MAX_KEY)
+      const kind = keyKind(rawKey, inner)
       if (isPersonalNumber(rawKey, inner)) {
         out[key] = { redacted: true, type: 'number' }
-      } else if (isSensitiveKey(rawKey, inner)) {
-        out[key] = options.verbose
-          ? typeof inner === 'string'
+      } else if (kind === 'credential') {
+        out[key] = placeholder(inner)
+      } else if (kind === 'content') {
+        if (typeof inner === 'string') {
+          out[key] = options.verbose
             ? cleanString(inner, options, MAX_VERBOSE_STRING)
             : placeholder(inner)
-          : placeholder(inner)
+        } else {
+          out[key] = redactValue(inner, options, depth + 1, true)
+        }
       } else {
-        out[key] = redactValue(inner, options, depth + 1)
+        out[key] = redactValue(inner, options, depth + 1, inContent)
       }
     }
     return out

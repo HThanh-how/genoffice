@@ -1,8 +1,12 @@
-import { mkdtempSync, readFileSync, rmSync } from 'node:fs'
+import { mkdtempSync, readFileSync, rmSync, writeFileSync, existsSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
-import { FALLBACK_FILE, FallbackReporter } from '../src/main/diagnostics/fallback-report'
+import {
+  FALLBACK_FILE,
+  FallbackReporter,
+  type FallbackFs,
+} from '../src/main/diagnostics/fallback-report'
 
 const dirs: string[] = []
 afterEach(() => {
@@ -13,64 +17,125 @@ const tmp = (): string => {
   dirs.push(d)
   return d
 }
+const text = (dir: string): string => readFileSync(join(dir, FALLBACK_FILE), 'utf8')
 
 describe('the fallback channel for logger problems', () => {
-  it('writes the cause (code and message) to a plain file next to the logs', () => {
+  it('writes the cause (code and message) to a plain file next to the logs', async () => {
     const dir = tmp()
     const r = new FallbackReporter({ dir, echo: false })
     r.report(
       'could not rotate C:\\logs\\a.jsonl',
       Object.assign(new Error('busy'), { code: 'EBUSY' }),
     )
-    const text = readFileSync(join(dir, FALLBACK_FILE), 'utf8')
-    expect(text).toContain('could not rotate')
-    expect(text).toContain('code=EBUSY')
-    expect(text).toContain('busy')
+    await r.idle()
+    expect(text(dir)).toContain('could not rotate')
+    expect(text(dir)).toContain('code=EBUSY')
+    expect(text(dir)).toContain('busy')
   })
 
-  it('writes at most one line per interval and counts what it skipped', () => {
+  it('writes at most one line per interval and counts what it skipped', async () => {
     const dir = tmp()
     let now = 1_000_000
     const r = new FallbackReporter({ dir, echo: false, now: () => now })
     for (let i = 0; i < 50; i++) r.report(`problem ${i}`)
     now += 11_000
     r.report('later')
-    const lines = readFileSync(join(dir, FALLBACK_FILE), 'utf8').trim().split('\n')
+    await r.idle()
+    const lines = text(dir).trim().split('\n')
     expect(lines).toHaveLength(2)
     expect(lines[1]).toContain('(+49 skipped)')
     expect(r.stats()).toMatchObject({ total: 51, written: 2, suppressed: 49 })
   })
 
-  it('stops growing at the size cap', () => {
+  it('keeps the rate limit when the fallback file itself cannot be written', async () => {
+    let attempts = 0
+    const fs: FallbackFs = {
+      size: async () => 0,
+      mkdir: async () => undefined,
+      append: async () => {
+        attempts++
+        throw new Error('drive is gone')
+      },
+      move: async () => undefined,
+    }
+    let now = 0
+    const r = new FallbackReporter({ dir: '/x', echo: false, fs, now: () => now })
+    for (let i = 0; i < 100; i++) r.report(`problem ${i}`)
+    await r.idle()
+    expect(attempts).toBe(1)
+    expect(r.stats().failed).toBe(1)
+    now += 10_001
+    r.report('later')
+    await r.idle()
+    expect(attempts).toBe(2)
+  })
+
+  it('does not block: report returns before any file work is done', () => {
+    let touched = 0
+    const fs: FallbackFs = {
+      size: async () => {
+        touched++
+        return 0
+      },
+      mkdir: async () => void touched++,
+      append: async () => void touched++,
+      move: async () => void touched++,
+    }
+    const r = new FallbackReporter({ dir: '/x', echo: false, fs })
+    r.report('problem')
+    expect(touched).toBe(0)
+  })
+
+  it('stops growing at the size cap', async () => {
     const dir = tmp()
     let now = 0
     const r = new FallbackReporter({ dir, echo: false, now: () => now, maxBytes: 200 })
     for (let i = 0; i < 20; i++) {
       now += 20_000
       r.report(`a fairly long problem description number ${i}`)
+      await r.idle()
     }
     expect(readFileSync(join(dir, FALLBACK_FILE)).length).toBeLessThan(400)
   })
 
-  it('never throws, even when the folder cannot be written', () => {
-    const r = new FallbackReporter({
-      dir: '/x',
-      echo: false,
-      fs: {
-        size: () => 0,
-        mkdirSync: () => {
-          throw new Error('read-only')
-        },
-        appendFileSync: () => undefined,
-      },
-    })
-    expect(() => r.report('problem')).not.toThrow()
+  it('moves a file that is already full at the start of the run to .old, so it can speak again', async () => {
+    const dir = tmp()
+    writeFileSync(join(dir, FALLBACK_FILE), 'x'.repeat(300))
+    const r = new FallbackReporter({ dir, echo: false, maxBytes: 200 })
+    r.report('new run problem')
+    await r.idle()
+    expect(text(dir)).toContain('new run problem')
+    expect(existsSync(join(dir, `${FALLBACK_FILE}.old`))).toBe(true)
   })
 
-  it('does not write secrets that ended up in an error message', () => {
+  it('never throws, even when the console and the folder are unusable', () => {
+    const r = new FallbackReporter({
+      dir: '/x',
+      fs: {
+        size: async () => {
+          throw new Error('x')
+        },
+        mkdir: async () => undefined,
+        append: async () => undefined,
+        move: async () => undefined,
+      },
+    })
+    const original = console.error
+    console.error = () => {
+      throw new Error('no console')
+    }
+    try {
+      expect(() => r.report('problem')).not.toThrow()
+    } finally {
+      console.error = original
+    }
+  })
+
+  it('does not write secrets that ended up in an error message', async () => {
     const dir = tmp()
     const r = new FallbackReporter({ dir, echo: false })
     r.report('failed', new Error('Bearer abcdefghijklmnop1234'))
-    expect(readFileSync(join(dir, FALLBACK_FILE), 'utf8')).not.toContain('abcdefghijklmnop1234')
+    await r.idle()
+    expect(text(dir)).not.toContain('abcdefghijklmnop1234')
   })
 })
