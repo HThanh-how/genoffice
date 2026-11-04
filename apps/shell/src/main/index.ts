@@ -230,7 +230,7 @@ import {
   syncCloudProjects,
 } from './cloud-projects'
 import { handleDroppedFiles } from './dropped-files'
-import { collectLaunchPaths } from './launch-paths'
+import { collectLaunchPaths, isOpenableLaunchPath } from './launch-paths'
 import { parseFolderScanArgv, withoutFolderScanArgs } from './folder-scan-argv'
 import { FolderScanManager } from './document-memory/folder-scan'
 import { KnownSourcesManager } from './document-memory/known-sources'
@@ -789,11 +789,14 @@ function validLegacyDocEndpoint(value: unknown): value is string {
   }
 }
 const OPEN_DOCUMENTS_PATH = () => join(app.getPath('userData'), OPEN_DOCUMENTS_FILE)
+let appShuttingDown = false
 /** only the instance holding the single-instance lock may write or remove the registry */
 let ownsOpenDocumentsRegistry = false
 let stopAuthWatch: (() => void) | null = null
 const publishOpenDocumentsIfOwner = (paths: readonly string[]) => {
-  if (ownsOpenDocumentsRegistry) publishOpenDocuments(OPEN_DOCUMENTS_PATH(), paths)
+  // (not while closing: the list was cleared on purpose)
+  if (ownsOpenDocumentsRegistry && !appShuttingDown)
+    publishOpenDocuments(OPEN_DOCUMENTS_PATH(), paths)
 }
 
 /** every open file: the shell's tabs plus the detached editor windows */
@@ -4169,6 +4172,8 @@ function notifyFolderRootChanged(root: string): void {
 
 /** one recursive watcher per tree root; follows the save-folder setting and the added folders */
 function ensureFolderWatchers(): void {
+  // closing: the watchers were stopped on purpose, and a root that comes back must not start new ones
+  if (appShuttingDown) return
   const wanted = new Set<string>()
   for (const root of folderRootPaths()) {
     // register so the root gets probed; existsSync / fs.watch only run on a verified-reachable root
@@ -4860,7 +4865,6 @@ const storageStartup: StorageStartupTracker = registerStorageStartup({
       if (!win.isDestroyed()) win.webContents.send(channel, state)
   },
 })
-let appShuttingDown = false
 let everything: EverythingController | null = null
 const pendingRememberPaths: string[] = []
 function recordRecentFile(path: string): void {
@@ -8846,7 +8850,11 @@ app.on('second-instance', (_event, argv, _cwd, additionalData) => {
     // the same filtering as for a second copy that arrives while the app runs: only files that can be
     // opened and folders to scan are handed on, never the other flags of that command line
     relaunchRequests.add(
-      collectLaunchPaths(withoutFolderScanArgs(argv), additionalData),
+      // (the paths of the additional data are checked too: they are not an argument list, but they
+      // end up as one)
+      collectLaunchPaths(withoutFolderScanArgs(argv), additionalData).filter((path) =>
+        isOpenableLaunchPath(path),
+      ),
       parseFolderScanArgv(argv, additionalData),
     )
     diag.info('quit', 'relaunch-requested')
@@ -9460,6 +9468,7 @@ app.on('will-quit', (event) => {
       run: () => {
         stopAuthWatch?.()
         for (const watcher of folderWatchers.values()) watcher.close()
+        folderWatchers.clear()
         controlServer?.close()
         // a second instance that lost the lock quits too; it must not delete the running editor's list
         if (ownsOpenDocumentsRegistry) clearOpenDocuments(OPEN_DOCUMENTS_PATH())

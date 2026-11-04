@@ -1,7 +1,7 @@
 import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { parseFolderScanArgv, withoutFolderScanArgs } from '../src/main/folder-scan-argv'
-import { collectLaunchPaths } from '../src/main/launch-paths'
+import { collectLaunchPaths, isOpenableLaunchPath } from '../src/main/launch-paths'
 import { describe, expect, it } from 'vitest'
 import {
   RelaunchRequests,
@@ -185,6 +185,18 @@ describe('how the quit is wired', () => {
     }
   })
 
+  it('starts no watcher and publishes no list of documents while the app is closing', () => {
+    const watchers = index.slice(index.indexOf('function ensureFolderWatchers(): void {'))
+    expect(watchers.slice(0, 300)).toContain('if (appShuttingDown) return')
+    const publish = index.slice(index.indexOf('const publishOpenDocumentsIfOwner'))
+    expect(publish.slice(0, 300)).toContain('!appShuttingDown')
+    expect(index).toContain('folderWatchers.clear()')
+    // declared before the first function that reads it
+    expect(index.indexOf('let appShuttingDown = false')).toBeLessThan(
+      index.indexOf('const publishOpenDocumentsIfOwner'),
+    )
+  })
+
   it('notes the moment of the confirmation once: the second pass through before-quit leaves it alone', () => {
     const at = index.indexOf('if (quitConfirmedAt === null) {')
     expect(at).toBeGreaterThan(-1)
@@ -362,26 +374,39 @@ describe('starting the app again after a quit', () => {
     expect(requests.toArgs()).toEqual(['--genoffice-scan-folder', 'D:\\scan'])
   })
 
-  it('the filtering the quit uses leaves out debug flags, a changed profile folder and files that do not exist', () => {
-    const argv = [
-      'GenOffice.exe',
-      '--inspect=9229',
-      '--remote-debugging-port=1',
-      '--user-data-dir=X',
-      '--no-sandbox',
-      '--genoffice-scan-folder',
-      'D:\\scan',
-      'a.docx',
-      'missing.docx',
-    ]
-    const additionalData = { launchPaths: ['payload.xlsx'], folderScanPaths: ['F:\\more'] }
-    const exists = (path: string): boolean => path === 'a.docx'
-    const requests = new RelaunchRequests()
+  const hand = (
+    argv: string[],
+    additionalData: unknown,
+    options: { exists?: (path: string) => boolean; platform?: NodeJS.Platform } = {},
+  ): string[] => {
+    const exists = options.exists ?? (() => true)
+    const requests = new RelaunchRequests(options.platform ?? 'win32')
+    // the same steps as the second-instance handler of the app
     requests.add(
-      collectLaunchPaths(withoutFolderScanArgs(argv), additionalData, exists),
+      collectLaunchPaths(withoutFolderScanArgs(argv), additionalData, exists).filter((path) =>
+        isOpenableLaunchPath(path, exists),
+      ),
       parseFolderScanArgv(argv, additionalData),
     )
-    const args = requests.toArgs()
+    return requests.toArgs()
+  }
+
+  it('leaves out debug flags, a changed profile folder and files that do not exist', () => {
+    const args = hand(
+      [
+        'GenOffice.exe',
+        '--inspect=9229',
+        '--remote-debugging-port=1',
+        '--user-data-dir=X',
+        '--no-sandbox',
+        '--genoffice-scan-folder',
+        'D:\\scan',
+        'a.docx',
+        'missing.docx',
+      ],
+      { launchPaths: ['payload.xlsx', 'gone.xlsx'], folderScanPaths: ['F:\\more'] },
+      { exists: (path) => path === 'a.docx' || path === 'payload.xlsx' },
+    )
     for (const flag of [
       '--inspect=9229',
       '--remote-debugging-port=1',
@@ -390,12 +415,55 @@ describe('starting the app again after a quit', () => {
     ]) {
       expect(args).not.toContain(flag)
     }
-    expect(args).toContain('a.docx')
+    expect(args).toEqual(expect.arrayContaining(['a.docx', 'payload.xlsx']))
     expect(args).not.toContain('missing.docx')
-    expect(args).toContain('payload.xlsx') // what the second copy sent in its additional data
+    expect(args).not.toContain('gone.xlsx')
     expect(args).toEqual(
       expect.arrayContaining(['--genoffice-scan-folder', 'D:\\scan', 'F:\\more']),
     )
+  })
+
+  it('does not let a flag in through the additional data of the second copy', () => {
+    const args = hand(['GenOffice.exe'], {
+      launchPaths: [
+        '--inspect=9229',
+        '--remote-debugging-port=9222',
+        '-remote-debugging-port=1',
+        '/x',
+        'ok.docx',
+      ],
+      launchPath: '--inspect=9229',
+      folderScanPaths: ['-remote-debugging-port=1', '/flag', 'D:\\scan'],
+    })
+    expect(args).toEqual(['ok.docx', '--genoffice-scan-folder', 'D:\\scan'])
+  })
+
+  it('does not let a flag in as the folder to scan on the command line', () => {
+    const args = hand(
+      [
+        'GenOffice.exe',
+        '--genoffice-scan-folder',
+        '-remote-debugging-port=1',
+        '--genoffice-scan-folder',
+        '/flag',
+      ],
+      undefined,
+    )
+    expect(args).toEqual([])
+  })
+
+  it('treats a leading slash as a flag only on Windows (a Unix absolute path is a path)', () => {
+    const unix = new RelaunchRequests('darwin')
+    unix.add(['/Users/an/a.docx'], ['/Users/an/scan'])
+    expect(unix.toArgs()).toEqual(['/Users/an/a.docx', '--genoffice-scan-folder', '/Users/an/scan'])
+    const windows = new RelaunchRequests('win32')
+    windows.add(['/x', 'C:\\a.docx', '\\\\host\\share\\b.docx'], [])
+    expect(windows.toArgs()).toEqual(['C:\\a.docx', '\\\\host\\share\\b.docx'])
+  })
+
+  it('keeps a file that exists and can be opened, sent in the additional data', () => {
+    const args = hand(['GenOffice.exe'], { launchPath: 'C:\\docs\\kept.docx' })
+    expect(args).toEqual(['C:\\docs\\kept.docx'])
   })
 })
 

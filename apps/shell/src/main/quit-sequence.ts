@@ -167,11 +167,22 @@ export class RelaunchRequests {
   private readonly folders = new Set<string>()
   private requested = false
 
+  constructor(private readonly platform: NodeJS.Platform = process.platform) {}
+
+  /**
+   * Whether the new process would read this as an option: Chromium takes `-x` anywhere, and `/x` as
+   * well on Windows (a drive path such as `C:\a.docx` and a network path `\\host\share` are not).
+   */
+  private looksLikeFlag(value: string): boolean {
+    if (value.startsWith('-')) return true
+    return this.platform === 'win32' && value.startsWith('/')
+  }
+
   add(paths: readonly string[], folders: readonly string[] = []): void {
     this.requested = true
-    for (const path of paths) if (path) this.paths.add(path)
-    // (a folder that looks like a flag would be read as one by the new process)
-    for (const folder of folders) if (folder && !folder.startsWith('--')) this.folders.add(folder)
+    for (const path of paths) if (path && !this.looksLikeFlag(path)) this.paths.add(path)
+    for (const folder of folders)
+      if (folder && !this.looksLikeFlag(folder)) this.folders.add(folder)
   }
 
   get isRequested(): boolean {
