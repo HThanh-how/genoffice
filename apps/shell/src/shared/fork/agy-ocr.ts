@@ -41,14 +41,25 @@ export type LocalOcrEngineChoice = 'auto' | 'apple-vision' | 'tesseract-vie'
  */
 export interface LocalOcrSettings {
   enabled: boolean
-  /** leading pages of each file read locally (1..5) */
+  /** leading pages of each file read locally in the first, quick pass (1..5) */
   lightPages: number
+  /**
+   * Pages of each file read locally in all, 1..400. The pages after `lightPages` are read later by a
+   * slow background pass that only runs when the quick pass has nothing left, and never beyond the
+   * "PDF pages to index" limit; a value at or below `lightPages` turns that pass off.
+   */
+  maxPages: number
   engine: LocalOcrEngineChoice
 }
+
+/** The same ceiling as the indexer's own PDF page limit (chunks.ts LARGE_PDF_PAGES). */
+export const LOCAL_OCR_MAX_PAGES = 400
 
 export const DEFAULT_LOCAL_OCR_SETTINGS: LocalOcrSettings = {
   enabled: true,
   lightPages: 2,
+  // the same as the indexer's default PDF page limit (chunks.ts DEFAULT_PDF_PAGES): a book's contents
+  maxPages: 30,
   engine: 'auto',
 }
 
@@ -100,12 +111,22 @@ export const DEFAULT_AGY_OCR_SETTINGS: AgyOcrSettings = {
 const LOCAL_ENGINES: readonly LocalOcrEngineChoice[] = ['auto', 'apple-vision', 'tesseract-vie']
 
 /** The local OCR settings with defaults filled in; every field validated (stored input is untrusted). */
-export function mergeLocalOcrSettings(base: LocalOcrSettings | undefined, patch: unknown): LocalOcrSettings {
+export function mergeLocalOcrSettings(
+  base: LocalOcrSettings | undefined,
+  patch: unknown,
+): LocalOcrSettings {
   const from = base ?? DEFAULT_LOCAL_OCR_SETTINGS
   const p = (patch && typeof patch === 'object' ? patch : {}) as Record<string, unknown>
   return {
     enabled: typeof p.enabled === 'boolean' ? p.enabled : from.enabled,
     lightPages: int(p.lightPages, 1, 5, from.lightPages),
+    // settings stored before this field existed have none
+    maxPages: int(
+      p.maxPages,
+      1,
+      LOCAL_OCR_MAX_PAGES,
+      from.maxPages ?? DEFAULT_LOCAL_OCR_SETTINGS.maxPages,
+    ),
     engine: LOCAL_ENGINES.includes(p.engine as LocalOcrEngineChoice)
       ? (p.engine as LocalOcrEngineChoice)
       : from.engine,

@@ -199,6 +199,7 @@ const settings =
   () => ({
     enabled: true,
     lightPages: 2,
+    maxPages: 2,
     engine: 'auto',
     ...patch,
   })
@@ -662,7 +663,7 @@ describe('real Tesseract through the manager (image prepared by the index worker
     await until(() => reader!.documentByPath(receipt)?.status === 'ready')
     // the default registry (real Tesseract; its image preparation is an `ocr-prepare` request to the index worker)
     const wiring = manager!.localOcr(
-      () => ({ enabled: true, lightPages: 1, engine: 'tesseract-vie' }),
+      () => ({ enabled: true, lightPages: 1, maxPages: 1, engine: 'tesseract-vie' }),
       () => ({ ok: true }),
       {
         coolDown: async () => undefined,

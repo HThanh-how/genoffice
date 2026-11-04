@@ -59,6 +59,8 @@ export interface LocalOcrWiringDeps {
   registry?: LocalOcrEngineRegistry
   coolDown?(activeMs: number, signal: AbortSignal): Promise<void>
   totalRamMB?(): number
+  /** the indexer's PDF page limit: the slow pass over the later pages never reads past it */
+  pdfPageLimit?(): number
   log?(event: LocalOcrEvent): void
 }
 
@@ -166,6 +168,7 @@ export class LocalOcrRunner {
         d.coolDown ? d.coolDown(activeMs, signal) : policyCoolDown(activeMs, signal),
       isStopped: () => !d.isActive() || d.epoch() !== epoch,
       ...(d.totalRamMB ? { totalRamMB: d.totalRamMB } : {}),
+      ...(d.pdfPageLimit ? { pdfPageLimit: d.pdfPageLimit } : {}),
       ...(d.log ? { log: d.log } : {}),
     })
   }

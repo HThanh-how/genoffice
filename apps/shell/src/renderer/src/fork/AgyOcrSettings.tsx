@@ -8,6 +8,7 @@ import type {
   AgyOcrSettings as AgyOcrSettingsValue,
   AgyOcrStatus,
 } from '../../../shared/fork/agy-ocr'
+import { DEFAULT_LOCAL_OCR_SETTINGS, LOCAL_OCR_MAX_PAGES } from '../../../shared/fork/agy-ocr'
 import { activityLine, agyOcrString, formatCount, type AgyOcrStringKey } from './agy-ocr-strings'
 import { readIndexRequest } from './index-request'
 import './agy-ocr.css'
@@ -669,6 +670,26 @@ export function AgyOcrSettings() {
             label={t('maxPagesPerFile')}
             disabled={disabled}
             onCommit={(maxPagesPerFile) => save({ maxPagesPerFile })}
+          />
+        </SettingsRow>
+
+        <SettingsRow className="set-field set-field-top">
+          <div className="set-field-text">
+            <div className="set-field-stack">
+              <div className="set-field-label">{t('localMaxPages')}</div>
+              <div className="set-field-desc">{t('localMaxPagesDesc')}</div>
+            </div>
+          </div>
+          <NumberField
+            value={(settings?.localOcr ?? DEFAULT_LOCAL_OCR_SETTINGS).maxPages}
+            min={1}
+            max={LOCAL_OCR_MAX_PAGES}
+            label={t('localMaxPages')}
+            disabled={disabled}
+            onCommit={(maxPages) =>
+              settings &&
+              save({ localOcr: { ...(settings.localOcr ?? DEFAULT_LOCAL_OCR_SETTINGS), maxPages } })
+            }
           />
         </SettingsRow>
 

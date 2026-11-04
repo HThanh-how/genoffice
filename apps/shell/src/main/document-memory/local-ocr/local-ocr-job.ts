@@ -23,6 +23,7 @@ import { basename } from 'node:path'
 import { totalmem } from 'node:os'
 import type { DatabaseSync } from 'node:sqlite'
 import type { LocalOcrSettings } from '../../../shared/fork/agy-ocr'
+import { clampPdfPages, DEFAULT_PDF_PAGES } from '../chunks'
 import { backgroundCoolDown } from '../cpu-budget'
 import type { OcrRenderRequest, OcrRenderResult } from '../agy-ocr-render'
 import {
@@ -51,6 +52,12 @@ export const LOCAL_OCR_MAX_IMAGE_BYTES = MAX_OCR_IMAGE_BYTES
 export const LOCAL_OCR_MIN_IMAGE_EDGE_PX = 120
 /** Machines with this much RAM or less read one page per file. */
 export const LOW_RAM_TOTAL_MB = 4096
+/** The slow pass over the pages after the first ones: at most this many are read per file on such machines. */
+export const LOW_RAM_REST_PAGES = 10
+/** Pages of one file read per visit of the slow pass, so that the quick pass gets its turn between visits. */
+export const REST_PAGES_PER_VISIT = 5
+/** The slow pass waits this many times as long as the quick pass after each page. */
+export const REST_COOL_FACTOR = 2
 /** What the PDF renderer's 1600 px long edge is worth on A4, for the Tesseract flattening radius. */
 export const RENDERED_PAGE_DPI = 137
 const MAX_TEXT_CHARS = 30_000
@@ -85,6 +92,8 @@ export interface LocalOcrJobDeps {
   registry: { select(preference?: LocalOcrEnginePreference): EngineSelection | null }
   /** render PDF pages (the index worker's `ocr-render`); null = no answer in time */
   render(path: string, request: OcrRenderRequest): Promise<OcrRenderResult | null>
+  /** the indexer's PDF page limit: pages after it are never indexed, so the slow pass never reads them */
+  pdfPageLimit?(): number
   /** persistence through the storage admission / budget gate */
   savePages(
     path: string,
@@ -143,7 +152,22 @@ export class LocalOcrJob {
     return total <= LOW_RAM_TOTAL_MB ? 1 : wanted
   }
 
-  /** Read the next batch of files; safe to call repeatedly (done pages and images are never redone). */
+  /**
+   * Pages of one file read locally in all: the person's limit, never past the indexer's own page limit
+   * (text beyond it is not indexed), and fewer on a small machine. Never below `lightPages()`, which
+   * means "no slow pass".
+   */
+  restPages(): number {
+    const asked = this.deps.settings().maxPages
+    let wanted = Number.isFinite(asked) ? Math.round(asked) : 0
+    wanted = Math.min(wanted, clampPdfPages(this.deps.pdfPageLimit?.() ?? DEFAULT_PDF_PAGES))
+    const total = this.deps.totalRamMB ? this.deps.totalRamMB() : totalmem() / (1024 * 1024)
+    if (total <= LOW_RAM_TOTAL_MB) wanted = Math.min(wanted, LOW_RAM_REST_PAGES)
+    return Math.max(this.lightPages(), wanted)
+  }
+
+  /**
+   * Read the next batch of files; safe to call repeatedly (done pages and images are never redone). */
   async runOnce(
     options: { maxFiles?: number; signal?: AbortSignal } = {},
   ): Promise<LocalOcrRunSummary> {
@@ -159,11 +183,20 @@ export class LocalOcrJob {
     const maxFiles = Math.max(1, options.maxFiles ?? DEFAULT_MAX_FILES)
     const pdfs = this.ocr.candidates(light, { mode: 'local', includeSensitive: true })
     const images = await this.imageCandidates(maxFiles)
-    if (pdfs.length === 0 && images.length === 0) return summary
+    // The pages after the first ones come last: only when the quick pass has nothing left, so that new
+    // files are never kept waiting for the rest of an old one (each visit is short, see REST_PAGES_PER_VISIT).
+    const rest = pdfs.length === 0 && images.length === 0 ? this.restPages() : 0
+    const restPdfs =
+      rest > light ? this.ocr.candidates(rest, { mode: 'local', includeSensitive: true }) : []
+    if (pdfs.length === 0 && images.length === 0 && restPdfs.length === 0) return summary
+    const pdfJobs = [
+      ...pdfs.map((row) => ({ row, limit: light, slow: false })),
+      ...restPdfs.map((row) => ({ row, limit: rest, slow: true })),
+    ]
     let engine: LocalOcrEngine | null = null
     try {
       let budget = maxFiles
-      for (const row of pdfs) {
+      for (const { row, limit, slow } of pdfJobs) {
         if (folderPauses.paused(row.path)) continue
         if (this.deps.sourceAvailable && !(await this.deps.sourceAvailable(row.path))) continue
         if (budget-- <= 0) break
@@ -172,7 +205,7 @@ export class LocalOcrJob {
         const picked = this.deps.registry.select(settings.engine)
         if (!picked) return stop('no-engine') // nothing fits the free RAM / no resources: try later
         engine = picked.engine
-        const result = await this.readPdf(row, engine, light, options.signal, summary)
+        const result = await this.readPdf(row, engine, limit, slow, options.signal, summary)
         summary.files++
         if (result) return stop(result)
       }
@@ -235,7 +268,10 @@ export class LocalOcrJob {
   private async readPdf(
     row: OcrDocRow,
     engine: LocalOcrEngine,
-    light: number,
+    /** pages of the file read in all by this pass (the quick pass: the first ones) */
+    limit: number,
+    /** the slow pass over the later pages: a few pages per visit, longer pauses */
+    slow: boolean,
     signal: AbortSignal | undefined,
     summary: LocalOcrRunSummary,
   ): Promise<string | null> {
@@ -247,11 +283,12 @@ export class LocalOcrJob {
     }
     const present = this.ocr.pagesPresent(row.path, row.mtimeMs, row.sizeBytes)
     const skip = row.skipPages ?? []
-    const wantedCount = Math.max(1, light - row.pagesDone)
+    const missing = Math.max(1, limit - row.pagesDone)
+    const wantedCount = slow ? Math.min(REST_PAGES_PER_VISIT, missing) : missing
     const renderStarted = performance.now()
     const rendered = await this.deps.render(row.path, {
       done: [...present, ...skip],
-      maxPages: skip.length ? Math.max(row.totalPages ?? 0, light + skip.length) : light,
+      maxPages: skip.length ? Math.max(row.totalPages ?? 0, limit + skip.length) : limit,
       count: wantedCount,
     })
     const renderMs = performance.now() - renderStarted
@@ -318,7 +355,7 @@ export class LocalOcrJob {
           this.deps.log?.({ kind: 'file-failed', code: 'embedded-decode-error' })
           const fallback = await this.deps.render(row.path, {
             done: [...present, ...skip],
-            maxPages: light,
+            maxPages: limit,
             count: 1,
             retryRenderedPage: page.page,
           })
@@ -362,7 +399,9 @@ export class LocalOcrJob {
         break
       }
       touched = touched || saved === 'saved'
-      await this.cool((first ? renderMs : 0) + (performance.now() - started))
+      await this.cool(
+        ((first ? renderMs : 0) + (performance.now() - started)) * (slow ? REST_COOL_FACTOR : 1),
+      )
       first = false
     }
     if (touched) {

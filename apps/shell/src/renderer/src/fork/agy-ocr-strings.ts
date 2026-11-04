@@ -45,6 +45,9 @@ const zh = {
   maxPdfsPerDayDesc: '可选的上限。0 表示不限制，上面的额度保留线仍然有效。',
   maxPagesPerFile: '每个文件最多页数',
   maxPagesPerFileDesc: '只读取每个 PDF 的前几页，更长的文件会标记为仅部分索引。0 表示不限制页数。',
+  localMaxPages: '本机读取的最大页数',
+  localMaxPagesDesc:
+    '本机先快速读取每个文件的前几页；其余页面在电脑空闲时于后台慢慢读取，直到此页数（不会超过 PDF 索引页数上限）。设为 1 则关闭。',
   onlyAC: '仅在接通电源或电量充足时',
   onlyACDesc: '使用电池时，电量低于 50% 不读取。',
   onlyIdle: '仅在电脑空闲时',
@@ -147,6 +150,9 @@ const en = {
   maxPagesPerFile: 'Pages per file',
   maxPagesPerFileDesc:
     'Only the first pages of each PDF are read; longer files are marked as partly indexed. 0 means no limit.',
+  localMaxPages: 'Pages read on this computer',
+  localMaxPagesDesc:
+    'The first pages of each scan are read quickly on this computer; the later pages are read slowly in the background while it is idle, up to this many (never past the PDF page limit for indexing). 1 turns it off.',
   onlyAC: 'Only on AC power or a good charge',
   onlyACDesc: 'On battery, nothing is read below 50%.',
   onlyIdle: 'Only when idle',
@@ -248,6 +254,9 @@ const vi = {
   maxPagesPerFile: 'Số trang tối đa mỗi tệp',
   maxPagesPerFileDesc:
     'Chỉ đọc những trang đầu của mỗi PDF; tệp dài hơn sẽ được đánh dấu là chỉ lập chỉ mục một phần. 0 là không giới hạn số trang.',
+  localMaxPages: 'Số trang đọc trên máy này',
+  localMaxPagesDesc:
+    'Máy đọc nhanh vài trang đầu của mỗi bản scan; các trang sau được đọc chậm ở nền khi máy rảnh, tối đa đến số trang này (không vượt giới hạn số trang PDF khi lập chỉ mục). Đặt 1 để tắt.',
   onlyAC: 'Chỉ khi cắm điện hoặc pin còn đủ',
   onlyACDesc: 'Khi chạy bằng pin, dưới 50% thì không đọc.',
   onlyIdle: 'Chỉ khi máy rảnh',

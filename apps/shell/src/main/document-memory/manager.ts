@@ -66,7 +66,7 @@ export class DocumentMemoryManager {
   ocrHost(): OcrJobHost { return createOcrHost(this.ocrHostInput()) }
   /** Local OCR pass + the cloud host that waits for it; one per manager. The OCR scheduler tick calls `.runner.tick()`. */
   localOcr(settings: () => LocalOcrSettings, gate: () => LocalOcrGate, seams: Partial<LocalOcrWiringDeps> = {}): LocalOcrWiring {
-    return (this.localOcrWiring ??= createLocalOcrWiring({ hostInput: this.ocrHostInput(), db: this.store.rawDb, ask: (r, t) => this.ask(r as any, t), settings, gate, isActive: () => this.enabled && !this.stopped, epoch: () => this.epoch, canWork: () => !this.maintScheduler.isCompactionRunning() && this.maintScheduler.checkStorageBudget().limitState !== 'full', ...seams }))
+    return (this.localOcrWiring ??= createLocalOcrWiring({ hostInput: this.ocrHostInput(), db: this.store.rawDb, ask: (r, t) => this.ask(r as any, t), settings, gate, isActive: () => this.enabled && !this.stopped, epoch: () => this.epoch, pdfPageLimit: () => this.extractionCoord.getPdfMaxPages(), canWork: () => !this.maintScheduler.isCompactionRunning() && this.maintScheduler.checkStorageBudget().limitState !== 'full', ...seams }))
   }
   get lastIndexError(): string | undefined { return this.lastError }; countersReady(): Promise<void> { return this.counterBackfill }
   constructor(userDataDir: string, options: DocumentMemoryManagerOptions = {}) {
