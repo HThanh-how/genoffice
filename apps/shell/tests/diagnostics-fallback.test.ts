@@ -138,4 +138,50 @@ describe('the fallback channel for logger problems', () => {
     await r.idle()
     expect(text(dir)).not.toContain('abcdefghijklmnop1234')
   })
+
+  it('falls back to the other folder when the first cannot be written, and stays there', async () => {
+    const written: string[] = []
+    const fs: FallbackFs = {
+      size: async () => 0,
+      mkdir: async (dir) => {
+        if (dir === '/primary') throw new Error('read-only')
+      },
+      append: async (path) => void written.push(path),
+      move: async () => undefined,
+    }
+    let now = 0
+    const r = new FallbackReporter({
+      dir: '/primary',
+      altDir: '/alt',
+      echo: false,
+      fs,
+      now: () => now,
+    })
+    r.report('one')
+    await r.idle()
+    now += 20_000
+    r.report('two')
+    await r.idle()
+    expect(written).toHaveLength(2)
+    expect(written.every((p) => p.replace(/\\/g, '/').startsWith('/alt/'))).toBe(true)
+    expect(r.path.replace(/\\/g, '/')).toContain('/alt/')
+  })
+
+  it('gives up a hanging drive after the timeout instead of holding the next lines for ever', async () => {
+    const fs: FallbackFs = {
+      size: () => new Promise<number>(() => undefined),
+      mkdir: async () => undefined,
+      append: async () => undefined,
+      move: async () => undefined,
+    }
+    let now = 0
+    const r = new FallbackReporter({ dir: '/x', echo: false, fs, fsTimeoutMs: 30, now: () => now })
+    r.report('one')
+    await r.idle()
+    expect(r.stats().failed).toBe(1)
+    now += 20_000
+    r.report('two')
+    await r.idle() // the chain is not stuck behind the first
+    expect(r.stats().failed).toBe(2)
+  })
 })

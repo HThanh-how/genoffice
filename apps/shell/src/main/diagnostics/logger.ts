@@ -65,7 +65,7 @@ export interface LoggerOptions {
   readonly switchAfterFailures?: number
   /** one attempt to write (including its preparation) is given up after this long (default 30 s) */
   readonly writeTimeoutMs?: number
-  /** the queue holds at most this many characters (default 32 million) */
+  /** the queue holds at most this many characters (default 16 million) */
   readonly maxQueueBytes?: number
   /** a line longer than this is replaced by a short note (default 16 KB) */
   readonly maxLineChars?: number
@@ -111,6 +111,14 @@ interface Entry {
   readonly rank: number
   readonly line: string
 }
+
+/** One try at writing: set to cancelled when it is given up, so that it changes nothing afterwards. */
+interface Attempt {
+  cancelled: boolean
+  appendStarted: boolean
+}
+
+class TimeoutError extends Error {}
 
 /** A first-in first-out list whose removal from the front does not move the rest. */
 class Fifo {
@@ -243,6 +251,12 @@ export class DiagnosticsLogger {
   private lastOrphanMs = 0
   /** an asynchronous write is running; a new flush waits for it instead of piling up behind it */
   private draining = false
+  /** operations the file system has not answered (given up after the timeout, still pending) */
+  private hungOps = 0
+  /** the last write may have reached the file although it was reported as failed */
+  private maybeDuplicate = false
+  private pruning = false
+  private pruneDone: Promise<void> = Promise.resolve()
   /** a write is already queued behind the previous one but has not started yet */
   private writeQueued = false
   private drainAgain = false
@@ -263,7 +277,7 @@ export class DiagnosticsLogger {
     this.maxQueue = options.maxQueue ?? 10_000
     this.chunkBytes = options.chunkBytes ?? 128 * 1024
     this.maxLineChars = options.maxLineChars ?? 16 * 1024
-    this.maxQueueBytes = options.maxQueueBytes ?? 32_000_000
+    this.maxQueueBytes = options.maxQueueBytes ?? 16_000_000
     this.switchAfterFailures = options.switchAfterFailures ?? 3
     this.writeTimeoutMs = options.writeTimeoutMs ?? 30_000
     this.yieldTick = options.yieldTick ?? (() => new Promise((resolve) => setImmediate(resolve)))
@@ -533,8 +547,18 @@ export class DiagnosticsLogger {
     this.infoQ.prepend(byRank[1]!)
     this.urgentQ.prepend(byRank[2]!)
     let dropped = 0
-    while (this.queued > this.maxQueue && (this.debugQ.shift() || this.infoQ.shift())) dropped++
-    while (this.urgentQ.length > this.maxQueue * 4 && this.urgentQ.shift()) dropped++
+    while (
+      (this.queued > this.maxQueue || this.queuedBytes > this.maxQueueBytes) &&
+      (this.debugQ.shift() || this.infoQ.shift())
+    ) {
+      dropped++
+    }
+    while (
+      (this.urgentQ.length > this.maxQueue * 4 || this.queuedBytes > this.maxQueueBytes) &&
+      this.urgentQ.shift()
+    ) {
+      dropped++
+    }
     if (dropped > 0) this.noteDropped(dropped)
   }
 
@@ -574,6 +598,9 @@ export class DiagnosticsLogger {
         this.requeue(rest)
         // try again later, not at the next log call
         this.retryNotBefore = Date.now() + this.retryBackoffMs
+        // a shorter timer set while this write was running must not survive: it would start the
+        // next attempt inside the pause
+        this.clearTimer()
         this.scheduleFlush(this.retryBackoffMs)
         // a file that refuses every write (held open by another program without the right to write)
         // is given up after a few tries: writing goes on in a new file
@@ -596,25 +623,45 @@ export class DiagnosticsLogger {
     this.activeSize = 0
     this.tornTail = false
     this.failedBatches = 0
-    await this.pruneOrphans(2)
+    this.pruneInBackground(this.orphanKeep)
   }
 
-  /** An attempt that does not finish (a dead network drive) is given up, so the writer is not stuck for good. */
-  private withTimeout<T>(work: () => Promise<T>): Promise<T> {
+  /**
+   * An attempt that does not finish (a dead network drive) is given up, so the writer is not stuck
+   * for good. The work cannot be cancelled, but it is told (`attempt.cancelled`) so that it stops
+   * before its next step and changes nothing; and the number of operations the file system still
+   * has not answered is counted, so that a dead drive cannot take every thread of the pool.
+   */
+  private withTimeout<T>(work: (attempt: Attempt) => Promise<T>): Promise<T> {
+    const attempt: Attempt = { cancelled: false, appendStarted: false }
     return new Promise<T>((resolve, reject) => {
-      const timer = setTimeout(
-        () => reject(new Error(`no answer from the file system after ${this.writeTimeoutMs} ms`)),
-        this.writeTimeoutMs,
-      )
+      let settled = false
+      const timer = setTimeout(() => {
+        if (settled) return
+        settled = true
+        attempt.cancelled = true
+        // the write itself may still go through later
+        if (attempt.appendStarted) this.maybeDuplicate = true
+        this.hungOps++
+        reject(new TimeoutError(`no answer from the file system after ${this.writeTimeoutMs} ms`))
+      }, this.writeTimeoutMs)
       timer.unref?.()
-      work().then(
+      work(attempt).then(
         (value) => {
           clearTimeout(timer)
-          resolve(value)
+          if (attempt.cancelled) this.hungOps--
+          else {
+            settled = true
+            resolve(value)
+          }
         },
         (error: unknown) => {
           clearTimeout(timer)
-          reject(error)
+          if (attempt.cancelled) this.hungOps--
+          else {
+            settled = true
+            reject(error)
+          }
         },
       )
     })
@@ -628,34 +675,64 @@ export class DiagnosticsLogger {
     let lastError: unknown
     for (let attempt = 0; attempt <= this.retryDelays.length; attempt++) {
       if (epoch !== this.epoch) return 'superseded' // flushSync owns the in-flight lines now
+      if (this.hungOps >= 2) {
+        // earlier operations are still stuck in the thread pool: start no new ones
+        return {
+          error: new Error(`the file system is not answering (${this.hungOps} operations pending)`),
+        }
+      }
       try {
-        return await this.withTimeout(async () => {
+        return await this.withTimeout(async (job) => {
+          const stale = (): boolean => job.cancelled || epoch !== this.epoch
           await this.ensureDir()
-          await this.pruneOrphansOnce()
+          if (stale()) return 'superseded' as const
+          this.pruneOrphansOnce()
           if (this.activeSize === undefined) this.activeSize = await this.fs.size(this.activePath)
+          if (stale()) return 'superseded' as const
           if (this.activeSize > 0 && this.activeSize + bytes > this.maxBytes) {
-            await this.rotate(epoch)
+            await this.rotate(epoch, job)
           }
-          // flushSync may have written this very batch while the awaits above were pending
-          if (epoch !== this.epoch) return 'superseded'
+          // flushSync may have written this very batch, or this attempt may have been given up,
+          // while the awaits above were pending
+          if (stale()) return 'superseded' as const
           // after a half-written append the file may end in the middle of a line
-          const out = this.tornTail ? `\n${text}` : text
+          let out = this.tornTail ? `\n${text}` : text
+          if (this.maybeDuplicate) {
+            // an earlier attempt may have reached the file after all: say so, so that a reader can
+            // tell a repeated line from a new one
+            out = `${this.markerLine('flush.maybeDuplicate')}\n${out}`
+            this.maybeDuplicate = false
+          }
+          job.appendStarted = true
           await this.fs.appendFile(this.activePath, out)
+          if (job.cancelled) return 'superseded' as const
           this.tornTail = false
           this.activeSize = (this.activeSize ?? 0) + Buffer.byteLength(out, 'utf8')
-          return epoch === this.epoch ? 'ok' : 'superseded'
+          return epoch === this.epoch ? ('ok' as const) : ('superseded' as const)
         })
       } catch (error) {
         lastError = error
         this.tornTail = true
         // the size may be stale after a failure: read it again next time
         this.activeSize = undefined
+        // a drive that does not answer is not asked again at once
+        if (error instanceof TimeoutError) break
         const delay = this.retryDelays[attempt]
         if (delay === undefined) break
         await this.sleep(delay)
       }
     }
     return epoch === this.epoch ? { error: lastError } : 'superseded'
+  }
+
+  private markerLine(ev: string): string {
+    return JSON.stringify({
+      ts: this.now().toISOString(),
+      level: 'warn',
+      cat: 'logger',
+      ev,
+      pid: this.pid,
+    })
   }
 
   private async ensureDir(): Promise<void> {
@@ -680,6 +757,14 @@ export class DiagnosticsLogger {
     return join(this.dir, `${this.name}.${this.lastOrphanMs}.jsonl`)
   }
 
+  /**
+   * How many `name.<ms>.jsonl` files are kept: as many as the numbered chain has older slots, so the
+   * history that survives is the same whether the chain turns or is blocked by a held file.
+   */
+  private get orphanKeep(): number {
+    return Math.max(2, this.files - 1)
+  }
+
   /** Old fallback files are not part of the numbered chain, so they are cleaned up here. */
   private async pruneOrphans(keep: number): Promise<void> {
     let names: string[]
@@ -695,10 +780,30 @@ export class DiagnosticsLogger {
     }
   }
 
-  private async pruneOrphansOnce(): Promise<void> {
+  private pruneOrphansOnce(): void {
     if (this.orphansPruned) return
     this.orphansPruned = true
-    await this.pruneOrphans(1)
+    this.pruneInBackground(this.orphanKeep)
+  }
+
+  /**
+   * Pruning only tidies up: it runs beside the writer and never holds it (listing a folder on a
+   * hanging drive must not stop the log for good), one at a time, and gives up after the timeout.
+   */
+  private pruneInBackground(keep: number): void {
+    if (this.pruning) return
+    this.pruning = true
+    this.pruneDone = this.withTimeout(() => this.pruneOrphans(keep))
+      .catch((error: unknown) => this.report('could not prune old log files', error))
+      .finally(() => {
+        this.pruning = false
+      })
+  }
+
+  /** Resolves when the writing and the tidying that are running now are over. For tests and shutdown. */
+  async settled(): Promise<void> {
+    await this.chain
+    await this.pruneDone
   }
 
   /** A rename that is tried again after short pauses: a scanner may hold the file for a moment. */
@@ -724,8 +829,8 @@ export class DiagnosticsLogger {
    * and the file takes the first slot; if that slot is held by someone else the file stays where it
    * is, as a `name.<ms>.jsonl` file.
    */
-  private async rotate(epoch: number): Promise<void> {
-    if (epoch !== this.epoch) return
+  private async rotate(epoch: number, job: Attempt): Promise<void> {
+    if (epoch !== this.epoch || job.cancelled) return
     const aside = this.orphanPath()
     try {
       await this.renameWithRetry(this.activePath, aside)
@@ -735,7 +840,7 @@ export class DiagnosticsLogger {
       this.activePath = next
       this.activeSize = 0
       this.tornTail = false
-      await this.pruneOrphans(2)
+      this.pruneInBackground(this.orphanKeep)
       return
     }
     this.activeSize = 0
@@ -757,7 +862,7 @@ export class DiagnosticsLogger {
       }
     }
     // the file stays where it is, as a `name.<ms>.jsonl` file
-    await this.pruneOrphans(2)
+    this.pruneInBackground(this.orphanKeep)
   }
 
   private async removeIfExists(path: string): Promise<void> {

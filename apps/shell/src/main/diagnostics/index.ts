@@ -65,7 +65,11 @@ export function initDiagnostics(options: InitOptions): DiagnosticsLogger | undef
   const verbose = env.GENOFFICE_LOG_VERBOSE === '1'
   // `userData` can be on the very drive that fails (a moved profile, a network share), so the
   // report of a logger problem goes to the local application data folder instead
-  configureFallbackReporter({ dir: options.fallbackDir ?? defaultFallbackDir(env) })
+  configureFallbackReporter({
+    dir: options.fallbackDir ?? defaultFallbackDir(env),
+    // if that folder cannot be written either, the system temp folder is the last place
+    altDir: join(tmpdir(), 'GenOffice', 'logs'),
+  })
   const commit = options.commit ?? env.GENOFFICE_COMMIT ?? BUILD_COMMIT
   logger = new DiagnosticsLogger({
     dir: join(options.userDataDir, 'logs'),

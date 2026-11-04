@@ -98,7 +98,7 @@ function keyWords(key: string): string[] {
     .map((w) => (w.length > 3 && w.endsWith('s') && !w.endsWith('ss') ? w.slice(0, -1) : w))
 }
 
-/** Secret words whose value goes whatever its type (a password given as a number too). */
+/** Secret words whose value goes whatever it looks like (a password given as a number too). */
 const STRONG_SECRET_WORDS: ReadonlySet<string> = new Set([
   'secret',
   'password',
@@ -110,8 +110,33 @@ const STRONG_SECRET_WORDS: ReadonlySet<string> = new Set([
   'otp',
   'apikey',
   'hmac',
+  'dsn',
+  'pem',
+  'pfx',
+  'mnemonic',
+  'passkey',
+  'matkhau',
 ])
-/** Words that make a secret only when the value is text (`tokenCount: 12` and `maxTokens: 4096` are counters). */
+/** The same, spelt as one word or written in Vietnamese without spaces. */
+const STRONG_SECRET_COMPACT =
+  /(matkhau|recoverycode|verificationcode|smscode|connectionstring|privatekey|keymaterial|authorizationheader|secretkey|accesskey|clientsecret)/
+/** `pass` alone is a password; `boardingPass` is not. */
+const PASSWORD_PASS_PREFIX: ReadonlySet<string> = new Set([
+  'user',
+  'db',
+  'admin',
+  'wifi',
+  'root',
+  'my',
+  'new',
+  'old',
+  'current',
+  'confirm',
+])
+/**
+ * Words that make a value a secret only if it LOOKS like one (a token is long and has no spaces;
+ * `key: 'F5'`, `authMode: 'oauth'`, `sessionId: <uuid>` and `tokenType: 'Bearer'` are diagnostics).
+ */
 const WEAK_SECRET_WORDS: ReadonlySet<string> = new Set([
   'token',
   'jwt',
@@ -120,6 +145,7 @@ const WEAK_SECRET_WORDS: ReadonlySet<string> = new Set([
   'signature',
   'cookie',
   'credential',
+  'seed',
 ])
 const KEY_QUALIFIERS: ReadonlySet<string> = new Set([
   'access',
@@ -129,6 +155,25 @@ const KEY_QUALIFIERS: ReadonlySet<string> = new Set([
   'encryption',
   'signing',
   'license',
+])
+/** A last word that says the key DESCRIBES a secret (`secretName`, `hmacAlgo`) rather than holding it. */
+const DESCRIPTOR_WORDS: ReadonlySet<string> = new Set([
+  'name',
+  'type',
+  'mode',
+  'status',
+  'algo',
+  'algorithm',
+  'path',
+  'kind',
+  'enabled',
+  'source',
+  'label',
+  'version',
+  'format',
+  'method',
+  'scheme',
+  'provider',
 ])
 /** A secret-looking name with one of these is a size or a limit, not a secret. */
 const MEASURE_WORDS: ReadonlySet<string> = new Set([
@@ -154,94 +199,155 @@ const MEASURE_WORDS: ReadonlySet<string> = new Set([
   'num',
 ])
 
-type SecretKind = 'strong' | 'weak' | undefined
-
-function secretKind(words: string[]): SecretKind {
-  if (words.some((w) => STRONG_SECRET_WORDS.has(w))) return 'strong'
-  const last = words[words.length - 1]
-  if (last === 'pass') return 'strong'
-  if (words.some((w) => WEAK_SECRET_WORDS.has(w))) return 'weak'
-  if (words.includes('session') && words.some((w) => w === 'id' || w === 'token' || w === 'key')) {
-    return 'weak'
-  }
-  // `key` alone at the end, or beside access / secret / api / private (`secretAccessKey`, `apiKey`)
-  if (words.includes('key') && (last === 'key' || words.some((w) => KEY_QUALIFIERS.has(w)))) {
-    return 'weak'
-  }
-  return undefined
-}
-
 /** Whole words that say the value is a personal identification or contact number. */
 const PERSONAL_WORDS: ReadonlySet<string> = new Set([
   'cccd',
   'cmnd',
-  'cmt',
   'cmtnd',
   'ssn',
   'passport',
-  'citizen',
   'citizenship',
   'phone',
   'telephone',
   'tel',
-  'mobile',
   'sdt',
   'stk',
   'mst',
   'bhxh',
   'nid',
+  'dob',
+  'hoten',
+  'fullname',
 ])
-/** Phrases of two words, or parts of one long compact word, that mean the same. */
+/** Phrases of two words that mean the same (the head with any of the tails). */
 const PERSONAL_PAIRS: ReadonlyArray<readonly [string, ReadonlySet<string>]> = [
   ['tax', new Set(['id', 'code', 'number', 'no'])],
-  ['account', new Set(['number', 'no', 'id'])],
+  ['account', new Set(['number', 'no'])],
   ['id', new Set(['card', 'number', 'no'])],
   ['national', new Set(['id', 'number'])],
+  ['citizen', new Set(['id', 'number', 'no', 'card'])],
+  ['mobile', new Set(['number', 'no', 'phone', 'tel'])],
   ['social', new Set(['security'])],
+  ['full', new Set(['name'])],
+  [
+    'address',
+    new Set([
+      'home',
+      'street',
+      'postal',
+      'mailing',
+      'billing',
+      'shipping',
+      'residential',
+      'permanent',
+      'contact',
+    ]),
+  ],
 ]
 /** Long enough to be safe as plain letters inside a compact key (`soDienThoai`, `CCCDNumber`). */
 const PERSONAL_COMPACT =
-  /(cccd|cmnd|cmtnd|passport|dienthoai|socialsecurity|nationalid|phonenumber)/
+  /(cccd|cmnd|cmtnd|passport|dienthoai|socialsecurity|nationalid(?!entifier)|phonenumber|masothue|sotaikhoan|hochieu|ngaysinh|dateofbirth|diachi|hoten)/
 
-function isPersonalKey(key: string, words: string[]): boolean {
-  if (words.some((w) => PERSONAL_WORDS.has(w))) return true
-  for (const [head, tails] of PERSONAL_PAIRS) {
-    if (words.includes(head) && words.some((w) => tails.has(w))) return true
+interface KeyInfo {
+  readonly personal: boolean
+  readonly secret: 'strong' | 'weak' | undefined
+  readonly measure: boolean
+  readonly credentialExact: boolean
+  readonly content: boolean
+  readonly idValue: boolean
+}
+
+function analyzeKey(key: string): KeyInfo {
+  const words = keyWords(key)
+  const compact = normalizeKey(key)
+  const last = words[words.length - 1]
+  const prev = words[words.length - 2]
+
+  let personal = words.some((w) => PERSONAL_WORDS.has(w)) || PERSONAL_COMPACT.test(compact)
+  if (!personal) {
+    for (const [head, tails] of PERSONAL_PAIRS) {
+      if (words.includes(head) && words.some((w) => tails.has(w))) {
+        personal = true
+        break
+      }
+    }
   }
-  return PERSONAL_COMPACT.test(key.toLowerCase().replace(/[^a-z0-9]/g, ''))
+
+  let secret: 'strong' | 'weak' | undefined
+  if (
+    words.some((w) => STRONG_SECRET_WORDS.has(w)) ||
+    STRONG_SECRET_COMPACT.test(compact) ||
+    (last === 'pass' && (words.length === 1 || PASSWORD_PASS_PREFIX.has(prev ?? '')))
+  ) {
+    secret = 'strong'
+  } else if (
+    words.some((w) => WEAK_SECRET_WORDS.has(w)) ||
+    (words.includes('session') && words.some((w) => w === 'id' || w === 'token' || w === 'key')) ||
+    (words.includes('key') && (last === 'key' || words.some((w) => KEY_QUALIFIERS.has(w))))
+  ) {
+    secret = 'weak'
+  }
+  // `secretName`, `hmacAlgo`, `passwordPath` describe a secret: their value is judged by its look
+  if (secret === 'strong' && last !== undefined && DESCRIPTOR_WORDS.has(last)) secret = 'weak'
+
+  return {
+    personal,
+    secret,
+    measure: words.some((w) => MEASURE_WORDS.has(w)),
+    credentialExact: CREDENTIAL_KEYS.has(compact),
+    content: CONTENT_KEYS.has(compact),
+    idValue: ID_VALUE_KEYS.has(compact) || last === 'id',
+  }
 }
 
-/** True when no string occurs anywhere in `value` (numbers and flags only: a usage record, say). */
-function holdsNoText(value: unknown, depth = 0): boolean {
-  if (typeof value === 'string') return false
-  if (value === null || typeof value !== 'object') return true
-  if (depth > 3) return false
-  const items = Array.isArray(value) ? value : Object.values(value as object)
-  return items.slice(0, MAX_KEYS).every((v) => holdsNoText(v, depth + 1))
+const KEY_CACHE_LIMIT = 1000
+const keyCache = new Map<string, KeyInfo>()
+
+/** Key names repeat on every line, so what is worked out for a name is kept. */
+function keyInfo(key: string): KeyInfo {
+  let info = keyCache.get(key)
+  if (!info) {
+    if (keyCache.size >= KEY_CACHE_LIMIT) keyCache.clear()
+    info = analyzeKey(key)
+    keyCache.set(key, info)
+  }
+  return info
 }
 
-type KeyKind = 'credential' | 'personal' | 'content' | undefined
+const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
+
+/** A string under a weak secret name: only a value that looks like a secret is masked. */
+function looksSecret(value: string): boolean {
+  if (UUID.test(value)) return false // an identifier, useful to match against other logs
+  // a short word or a dotted name without digits: a mode, a status, a message key (`menu.file`)
+  if (/^[A-Za-z][A-Za-z_.:-]{0,39}$/.test(value)) return false
+  if (/[=;]/.test(value) && value.length >= 8) return true // a cookie, a key=value pair
+  return value.length >= 8 && !/\s/.test(value)
+}
+
+type KeyKind = 'credential' | 'personal' | 'content' | 'weak' | undefined
 
 function keyKind(key: string, value: unknown): KeyKind {
   if (value === null || value === undefined || typeof value === 'boolean') return undefined
-  const words = keyWords(key)
-  if (isPersonalKey(key, words)) return 'personal'
-  const compact = normalizeKey(key)
-  if (CREDENTIAL_KEYS.has(compact)) return typeof value === 'number' ? undefined : 'credential'
-  const secret = secretKind(words)
-  if (secret === 'strong') {
+  const info = keyInfo(key)
+  if (info.personal) {
+    // `phoneCount: 3` counts phone numbers, it is not one
+    if (typeof value === 'number' && info.measure) return undefined
+    return 'personal'
+  }
+  if (info.credentialExact) return typeof value === 'number' ? undefined : 'credential'
+  if (info.secret === 'strong') {
     // `passwordLength: 12` is a measure; `password: 12345678` is a password
-    if (typeof value === 'number' && words.some((w) => MEASURE_WORDS.has(w))) return undefined
+    if (typeof value === 'number' && info.measure) return undefined
     return 'credential'
   }
-  if (secret === 'weak') {
+  if (info.secret === 'weak') {
     if (typeof value === 'number' || typeof value === 'bigint') return undefined
-    // `tokens: { input: 5, output: 7 }` is a count
-    return holdsNoText(value) ? undefined : 'credential'
+    return 'weak'
   }
   // a number is not content (`input: 12`)
   if (typeof value === 'number') return undefined
-  if (CONTENT_KEYS.has(compact)) return 'content'
+  if (info.content) return 'content'
   return undefined
 }
 
@@ -266,10 +372,7 @@ const ID_VALUE_KEYS: ReadonlySet<string> = new Set([
 ])
 
 function isIdValueKey(key: string | undefined): boolean {
-  if (!key) return false
-  const words = keyWords(key)
-  const last = words[words.length - 1]
-  return ID_VALUE_KEYS.has(normalizeKey(key)) || last === 'id'
+  return key !== undefined && keyInfo(key).idValue
 }
 
 /** `{ redacted: true, len, hash }` for a sensitive value: it can be compared, never read. */
@@ -301,6 +404,10 @@ export function redactString(input: string): string {
   // "Basic settings" is prose; real Basic credentials are base64 (digits, '=', '+', '/' or long)
   s = s.replace(/\bBasic\s+([A-Za-z0-9+/]{8,}={0,2})/gi, (m, token: string) =>
     /[\d=+/]/.test(token) || token.length >= 16 ? 'Basic [redacted]' : m,
+  )
+  s = s.replace(
+    /-----BEGIN [A-Z ]{0,40}KEY-----[\s\S]*?(?:-----END [A-Z ]{0,40}KEY-----|$)/g,
+    '[pem]',
   )
   s = s.replace(/\beyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}/g, '[jwt]')
   s = s.replace(/\bsk-[A-Za-z0-9_-]{16,}/g, '[key]')
@@ -411,7 +518,7 @@ const IDENTIFIER = /^[\w.:-]{1,32}$/
 
 /**
  * A plain-data copy of `value` that is safe to write: bounded, with sensitive fields replaced.
- * `inContent` is set below a content key (`messages`, `args`, …): there the numbers and flags are
+ * `mode` is `content` below a content key (`messages`, `args`, …): there the numbers and flags are
  * kept, a short identifier is kept only under a key that names one (`role`, `type`, `…Id`), and any
  * other text becomes `{ len, hash }`.
  */
@@ -419,12 +526,15 @@ export function redactValue(
   value: unknown,
   options: RedactOptions = {},
   depth = 0,
-  inContent = false,
+  mode: 'plain' | 'content' | 'weak' = 'plain',
   keyHint?: string,
 ): unknown {
   if (value === null || value === undefined) return value
   if (typeof value === 'string') {
-    if (!inContent) return cleanString(value, options)
+    if (mode === 'plain') return cleanString(value, options)
+    if (mode === 'weak') {
+      return looksSecret(value) ? placeholder(value) : cleanString(value, options)
+    }
     if (IDENTIFIER.test(value) && isIdValueKey(keyHint)) return cleanString(value, options)
     return options.verbose ? cleanString(value, options, MAX_VERBOSE_STRING) : placeholder(value)
   }
@@ -443,7 +553,7 @@ export function redactValue(
   if (Array.isArray(value)) {
     const items = value
       .slice(0, MAX_ARRAY)
-      .map((v) => redactValue(v, options, depth + 1, inContent, undefined))
+      .map((v) => redactValue(v, options, depth + 1, mode, undefined))
     return value.length > MAX_ARRAY ? [...items, `…(${value.length} items)`] : items
   }
   if (typeof value === 'object') {
@@ -459,16 +569,18 @@ export function redactValue(
       const kind = keyKind(rawKey, inner)
       if (kind === 'credential' || kind === 'personal') {
         out[key] = placeholder(inner)
+      } else if (kind === 'weak') {
+        out[key] = redactValue(inner, options, depth + 1, 'weak', rawKey)
       } else if (kind === 'content') {
         if (typeof inner === 'string') {
           out[key] = options.verbose
             ? cleanString(inner, options, MAX_VERBOSE_STRING)
             : placeholder(inner)
         } else {
-          out[key] = redactValue(inner, options, depth + 1, true, rawKey)
+          out[key] = redactValue(inner, options, depth + 1, 'content', rawKey)
         }
       } else {
-        out[key] = redactValue(inner, options, depth + 1, inContent, rawKey)
+        out[key] = redactValue(inner, options, depth + 1, mode, rawKey)
       }
     }
     return out

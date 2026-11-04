@@ -404,4 +404,153 @@ describe('diagnostics redaction', () => {
     expect(performance.now() - started).toBeLessThan(20)
     expect(String(described.message).length).toBeLessThan(600)
   })
+
+  it('keeps diagnostics that only look like secrets by name (judged by value)', () => {
+    const out = redactValue({
+      key: 'F5',
+      primaryKey: 'id',
+      cacheKey: 'doc:12',
+      sortKey: 'name',
+      i18nKey: 'menu.file',
+      idempotencyKey: '3f2b8c1e-0a4d-4f6e-9b7a-1c2d3e4f5a6b',
+      authMode: 'oauth',
+      authStatus: 'ok',
+      tokenType: 'Bearer',
+      hmacAlgo: 'sha256',
+      secretName: 'db_password',
+      cookieName: 'sid',
+      credentialsPath: 'config',
+      signatureCount: 'three',
+      sessionId: '3f2b8c1e-0a4d-4f6e-9b7a-1c2d3e4f5a6b',
+      conversationId: '3f2b8c1e-0a4d-4f6e-9b7a-1c2d3e4f5a6b',
+      keys: ['a', 'b'],
+    }) as Record<string, any>
+    for (const [key, value] of Object.entries(out)) {
+      expect(typeof value === 'object' && value !== null && 'redacted' in value, key).toBe(false)
+    }
+  })
+
+  it('still masks the value when it looks like a secret under a weak name', () => {
+    const secret = 'sk_live_abcdef1234567890'
+    const out = JSON.stringify(
+      redactValue({
+        key: secret,
+        cacheKey: secret,
+        authMode: secret,
+        tokenType: secret,
+        sessionId: 'abcdefghijklmnopqrstuvwxyz0123456789',
+        cookie_header_value: 'a=b; session=zzzzzzzz',
+        cookieName: 'a=b; c=zzzzzzzz',
+        keys: [secret],
+      }),
+    )
+    expect(out).not.toContain(secret)
+    expect(out).not.toContain('abcdefghijklmnopqrstuvwxyz0123456789')
+    expect(out).not.toContain('zzzzzzzz')
+  })
+
+  it('masks Vietnamese and uncommon secret and personal names', () => {
+    const out = JSON.stringify(
+      redactValue({
+        matKhau: 'abc-1234',
+        mat_khau: 'abc-1234',
+        MatKhau: 'abc-1234',
+        maSoThue: '0101234567',
+        masothue: '0101234567',
+        soTaiKhoan: '0123456789',
+        sotaikhoan: '0123456789',
+        soHoChieu: 'B1234567',
+        recoveryCode: 'abcd-efgh',
+        verificationCode: '123456',
+        smsCode: '123456',
+        mnemonic: 'word word word',
+        connectionString: 'Server=x;Password=y',
+        dsn: 'postgres://u:p@h/db',
+        passkey: 'abc',
+        privatekey: 'abc',
+        keyMaterial: 'abc',
+        authorizationHeader: 'Bearer abcdefgh',
+        fullName: 'Nguyen Van An',
+        hoTen: 'Nguyen Van An',
+        ngaySinh: '01/02/1990',
+        dob: '1990-02-01',
+        homeAddress: '12 Le Loi',
+        diaChi: '12 Le Loi',
+      }),
+    )
+    for (const value of [
+      'abc-1234',
+      '0101234567',
+      '0123456789',
+      'B1234567',
+      'abcd-efgh',
+      '123456',
+      'word word',
+      'Server=',
+      'postgres',
+      'Nguyen Van An',
+      '1990',
+      '12 Le Loi',
+      'abcdefgh',
+    ]) {
+      expect(out).not.toContain(value)
+    }
+  })
+
+  it('masks a PEM block inside text', () => {
+    const pem =
+      '-----BEGIN PRIVATE KEY-----\nMIIEvQIBADANBgkqhkiG9w0BAQEFAASC\n-----END PRIVATE KEY-----'
+    const out = redactString(`failed to load ${pem} from disk`)
+    expect(out).not.toContain('MIIEvQ')
+    expect(out).toContain('[pem]')
+    expect(out).toContain('from disk')
+  })
+
+  it('keeps counters and other words that merely share letters with personal names', () => {
+    const out = redactValue({
+      phoneCount: 3,
+      cccdCount: 2,
+      mstCount: 1,
+      stkCount: 1,
+      telephoneCount: 4,
+      idCardCount: 5,
+      accountId: 123456789012,
+      mobile: 'ios',
+      mobileApp: 'ios',
+      cmt: 'comment text',
+      citizen: 'vn',
+      boardingPass: 'gate 4',
+      nationalIdentifier: 'x',
+      ipAddress: '10.0.0.1',
+    }) as Record<string, any>
+    for (const key of [
+      'phoneCount',
+      'cccdCount',
+      'mstCount',
+      'stkCount',
+      'telephoneCount',
+      'idCardCount',
+    ]) {
+      expect(typeof out[key]).toBe('number')
+    }
+    expect(out.accountId).toBe(123456789012)
+    expect(out.mobile).toBe('ios')
+    expect(out.mobileApp).toBe('ios')
+    expect(out.cmt).toBe('comment text')
+    expect(out.citizen).toBe('vn')
+    expect(out.boardingPass).toBe('gate 4')
+    expect(out.nationalIdentifier).toBe('x')
+    expect(out.ipAddress).toBe('10.0.0.1')
+  })
+
+  it('judges a key name once: 10,000 lines of 25 keys stay cheap', () => {
+    const line = Object.fromEntries(
+      Array.from({ length: 25 }, (_, i) => [`field${i}`, i % 2 ? i : `value ${i}`]),
+    )
+    redactValue(line) // warm up
+    const started = performance.now()
+    for (let i = 0; i < 10_000; i++) redactValue(line)
+    // about 25 keys a line; the old per-key word splitting cost ~110 microseconds a line more
+    expect(performance.now() - started).toBeLessThan(3_000)
+  })
 })
