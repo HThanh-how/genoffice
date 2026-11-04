@@ -515,7 +515,13 @@ import {
 } from './window-bounds'
 import { installShellCloseGuard, promptDirtyTabs } from './window-close-guard'
 import { quitCoordinator } from './quit-coordinator'
-import { hideWindowsForQuit, runQuitSequence, type QuitStep } from './quit-sequence'
+import {
+  RelaunchRequests,
+  describeWindows,
+  hideWindowsForQuit,
+  runQuitSequence,
+  type QuitStep,
+} from './quit-sequence'
 import {
   activateDetached,
   closeDetachedWithoutPrompt,
@@ -8837,7 +8843,7 @@ app.on('second-instance', (_event, argv, _cwd, additionalData) => {
   if (appShuttingDown) {
     // Closing (the windows are already hidden): do not bring a window back to a process that is
     // shutting its databases. Start the app again, with what was asked for, once this one is over.
-    relaunchAfterQuit = argv.slice(1)
+    relaunchRequests.add(argv)
     diag.info('quit', 'relaunch-requested')
     return
   }
@@ -9361,8 +9367,14 @@ app.on('before-quit', (event) => {
     // The quit is decided: take the windows off the screen now. What follows (closing large
     // databases) can keep the main thread busy for seconds, and a window that is still shown while
     // that happens is labelled "Not Responding" by Windows.
-    const hidden = hideWindowsForQuit(BrowserWindow.getAllWindows())
-    diag.info('quit', 'confirmed', { windowsHidden: hidden })
+    quitConfirmedAt = performance.now()
+    const before = describeWindows(BrowserWindow.getAllWindows())
+    hideWindowsForQuit(BrowserWindow.getAllWindows())
+    diag.info('quit', 'confirmed', {
+      windows: before.count,
+      visibleBefore: before.visible,
+      visibleAfter: describeWindows(BrowserWindow.getAllWindows()).visible,
+    })
     markSheetsShuttingDown()
     stopSheetsSidecar()
     stopMcpSync()
@@ -9386,7 +9398,9 @@ app.on('before-quit', (event) => {
 
 let appShutdownState: 'idle' | 'shutting-down' | 'done' = 'idle'
 /** the app was started again while it was closing: it is started once more when it has closed */
-let relaunchAfterQuit: string[] | null = null
+const relaunchRequests = new RelaunchRequests()
+/** when the quit was confirmed (the time between that and 'will-quit' is the windows closing) */
+let quitConfirmedAt: number | null = null
 /** the size of a database's write-ahead log, which decides how long closing it takes (0 if there is none) */
 function walBytes(dbPath: string): number {
   try {
@@ -9403,8 +9417,17 @@ app.on('will-quit', (event) => {
   appShutdownState = 'shutting-down'
 
   appShuttingDown = true
-  // (also when the windows were closed without going through the confirmed quit above)
+  // Chromium takes a window off the screen as soon as it is closed, so by now there may be none left:
+  // this is for a quit that did not pass through the confirmation above. Log what is left, and how long
+  // the windows took to go since the quit was confirmed, to tell a stall BEFORE they vanish from one after.
+  const windowsNow = describeWindows(BrowserWindow.getAllWindows())
   hideWindowsForQuit(BrowserWindow.getAllWindows())
+  diag.info('quit', 'will-quit', {
+    windows: windowsNow.count,
+    visible: windowsNow.visible,
+    msSinceConfirmed:
+      quitConfirmedAt === null ? undefined : Math.round(performance.now() - quitConfirmedAt),
+  })
 
   const memoryDbPath =
     documentMemory?.dbPath ?? join(resolveDbDir(app.getPath('userData')), 'document-memory.db')
@@ -9412,6 +9435,7 @@ app.on('will-quit', (event) => {
   const steps: QuitStep[] = [
     {
       name: 'stop-background',
+      essential: true,
       run: () => {
         markSheetsShuttingDown()
         stopSheetsSidecar()
@@ -9430,23 +9454,13 @@ app.on('will-quit', (event) => {
           fileIndex: walBytes(indexDbPath),
         }),
     },
-    { name: 'folder-scan-close', run: () => folderScan?.close() },
-    { name: 'known-sources-close', run: () => knownSources?.close() },
-    { name: 'file-indexer-stop', run: () => fileIndexer?.stop() },
-    { name: 'file-search-close', run: () => fileSearch?.close() },
-    { name: 'file-index-store-close', run: () => fileIndexStore?.close() },
-    {
-      name: 'watchers-close',
-      run: () => {
-        stopAuthWatch?.()
-        for (const watcher of folderWatchers.values()) watcher.close()
-        controlServer?.close()
-        // a second instance that lost the lock quits too; it must not delete the running editor's list
-        if (ownsOpenDocumentsRegistry) clearOpenDocuments(OPEN_DOCUMENTS_PATH())
-      },
-    },
+    { name: 'folder-scan-close', essential: true, run: () => folderScan?.close() },
+    { name: 'known-sources-close', essential: true, run: () => knownSources?.close() },
+    { name: 'file-indexer-stop', essential: true, run: () => fileIndexer?.stop() },
+    { name: 'file-search-close', essential: true, run: () => fileSearch?.close() },
     {
       name: 'document-memory-close',
+      essential: true,
       run: async () => {
         if (!documentMemory) return
         let deadlineTimer: NodeJS.Timeout | null = null
@@ -9475,18 +9489,33 @@ app.on('will-quit', (event) => {
         }
       },
     },
+    // the largest databases last: the index of documents first, so that a long close of the file index cannot keep it from closing
+    { name: 'file-index-store-close', essential: true, run: () => fileIndexStore?.close() },
+    {
+      name: 'watchers-close',
+      essential: true,
+      run: () => {
+        stopAuthWatch?.()
+        for (const watcher of folderWatchers.values()) watcher.close()
+        controlServer?.close()
+        // a second instance that lost the lock quits too; it must not delete the running editor's list
+        if (ownsOpenDocumentsRegistry) clearOpenDocuments(OPEN_DOCUMENTS_PATH())
+      },
+    },
   ]
 
   void runQuitSequence(steps, {
     log: diag,
     forceExit: () => {
       flushDiagnosticsSync()
+      // (app.exit ends the process at once, so a start requested meanwhile has to be made here)
+      if (relaunchRequests.isRequested) app.relaunch({ args: relaunchRequests.toArgs() })
       app.exit(0)
     },
   }).finally(() => {
     appShutdownState = 'done'
     // the app was started again during the clean-up: start it again now that this one is over
-    if (relaunchAfterQuit) app.relaunch({ args: relaunchAfterQuit })
+    if (relaunchRequests.isRequested) app.relaunch({ args: relaunchRequests.toArgs() })
     app.quit()
   })
 })

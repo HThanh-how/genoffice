@@ -126,7 +126,8 @@ function appendRunFailure(entry: AiRunFailure): void {
 const webSearchAborts = createSearchAbortRegistry()
 
 export function registerAiIpc(): void {
-  app.once('before-quit', shutdownCodexAppServers)
+  // at 'will-quit': 'before-quit' also fires when the user cancels the save prompt
+  app.once('will-quit', shutdownCodexAppServers)
   // Node fetch (undici) direct connections get reset under VPN/tun setups; retry over Chromium's stack
   setRescueFetch((url, init) => net.fetch(url, init))
   setAiUserAgent(`GenOffice/${app.getVersion()}`)

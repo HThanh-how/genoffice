@@ -30,6 +30,12 @@ export interface QuitStep {
   /** a fixed name, written to the log */
   readonly name: string
   readonly run: () => void | Promise<void>
+  /**
+   * Closing a database, saving a list: skipping it leaves work for the next start. An essential step
+   * is never skipped because the deadline has passed, and the process is not ended while one runs
+   * (until `hardDeadlineMs`).
+   */
+  readonly essential?: boolean
 }
 
 export interface QuitLog {
@@ -41,8 +47,10 @@ export interface QuitSequenceDeps {
   readonly log: QuitLog
   /** ends the process now (writes the log first) */
   readonly forceExit: () => void
-  /** the whole clean-up may take this long (default 25 s) */
+  /** the clean-up should take no longer than this (default 25 s): optional steps after it are skipped */
   readonly deadlineMs?: number
+  /** the process is ended after this long even in the middle of an essential step (default 60 s) */
+  readonly hardDeadlineMs?: number
   readonly now?: () => number
   readonly setTimeout?: typeof setTimeout
   readonly clearTimeout?: typeof clearTimeout
@@ -69,23 +77,36 @@ export async function runQuitSequence(
   const setTimer = deps.setTimeout ?? setTimeout
   const clearTimer = deps.clearTimeout ?? clearTimeout
   const deadlineMs = deps.deadlineMs ?? 25_000
+  const hardDeadlineMs = Math.max(deadlineMs, deps.hardDeadlineMs ?? 60_000)
+  let essentialRunning = false
   const started = now()
   const skipped: string[] = []
   const failed: string[] = []
 
-  const timer = setTimer(() => {
-    deps.log.warn('quit', 'deadline', { ms: Math.round(now() - started) })
+  // (a timer only fires while a step is waiting: it cannot run inside one long synchronous call)
+  const onDeadline = (): void => {
+    const elapsed = now() - started
+    if (essentialRunning && elapsed < hardDeadlineMs) {
+      // an essential step is on its way: let it finish rather than leave its work for the next start
+      deps.log.warn('quit', 'deadline.waiting', { ms: Math.round(elapsed) })
+      timer = setTimer(onDeadline, hardDeadlineMs - elapsed)
+      ;(timer as { unref?: () => void }).unref?.()
+      return
+    }
+    deps.log.warn('quit', 'deadline', { ms: Math.round(elapsed), essentialRunning })
     deps.forceExit()
-  }, deadlineMs)
+  }
+  let timer = setTimer(onDeadline, deadlineMs)
   ;(timer as { unref?: () => void }).unref?.()
 
   try {
     for (const step of steps) {
-      if (now() - started >= deadlineMs) {
+      if (!step.essential && now() - started >= deadlineMs) {
         skipped.push(step.name)
         continue
       }
       const stepStarted = now()
+      essentialRunning = step.essential === true
       try {
         await step.run()
         deps.log.info('quit', 'step', { name: step.name, ms: Math.round(now() - stepStarted) })
@@ -99,10 +120,54 @@ export async function runQuitSequence(
       }
     }
   } finally {
+    essentialRunning = false
     clearTimer(timer)
   }
   const totalMs = Math.round(now() - started)
   if (skipped.length > 0) deps.log.warn('quit', 'skipped', { names: skipped })
   deps.log.info('quit', 'done', { ms: totalMs })
   return { totalMs, skipped, failed }
+}
+
+/** How many windows there are and how many of them can be seen: for the log, to tell where a slow quit stalls. */
+export function describeWindows(windows: readonly (QuitWindow & { isVisible?: () => boolean })[]): {
+  count: number
+  visible: number
+} {
+  let count = 0
+  let visible = 0
+  for (const win of windows) {
+    try {
+      if (win.isDestroyed()) continue
+      count++
+      if (win.isVisible?.()) visible++
+    } catch {
+      // going away
+    }
+  }
+  return { count, visible }
+}
+
+/**
+ * The arguments of the copies of the app that were started while this one was closing, kept so that the
+ * app can be started again when it has closed: every file the user asked to open, once. The program and
+ * its first argument slot are not kept (the new process has its own).
+ */
+export class RelaunchRequests {
+  private readonly args = new Set<string>()
+  private requested = false
+
+  /** `argv` is the command line of the second copy, program first. */
+  add(argv: readonly string[]): void {
+    this.requested = true
+    for (const arg of argv.slice(1)) this.args.add(arg)
+  }
+
+  get isRequested(): boolean {
+    return this.requested
+  }
+
+  toArgs(): string[] {
+    return [...this.args]
+  }
 }

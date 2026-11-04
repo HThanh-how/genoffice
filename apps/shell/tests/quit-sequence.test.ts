@@ -1,7 +1,13 @@
 import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
-import { hideWindowsForQuit, runQuitSequence, type QuitStep } from '../src/main/quit-sequence'
+import {
+  RelaunchRequests,
+  describeWindows,
+  hideWindowsForQuit,
+  runQuitSequence,
+  type QuitStep,
+} from '../src/main/quit-sequence'
 
 function logSink() {
   const entries: Array<{ level: string; ev: string; data: any }> = []
@@ -163,11 +169,145 @@ describe('how the quit is wired', () => {
     expect(block).not.toContain("app.once('before-quit'")
   })
 
-  it('starts the app again after the clean-up instead of reviving a window while it closes', () => {
+  it('no helper is shut down at the first before-quit (it also fires when the save prompt is cancelled)', () => {
+    for (const [file, marker] of [
+      [join(root, 'sheets', 'src', 'main', 'sheets-main.ts'), 'shutdownCodexAppServers)'],
+      [join(root, 'slides', 'src', 'main', 'ai-ipc.ts'), 'shutdownCodexAppServers)'],
+      [join(__dirname, '..', 'src', 'main', 'fork', 'clipboard-history-ipc.ts'), 'store.dispose()'],
+    ] as const) {
+      const source = readFileSync(file, 'utf8')
+      const at = source.indexOf(marker)
+      expect(at, file).toBeGreaterThan(-1)
+      const line = source.slice(source.lastIndexOf('\n', at) + 1, at + marker.length)
+      expect(line, file).toContain("app.once('will-quit'")
+    }
+  })
+
+  it('keeps the request to start again out of reach of a window being revived, and makes it on both ways out', () => {
     const handler = index.slice(index.indexOf("app.on('second-instance'"))
     const body = handler.slice(0, handler.indexOf('openLaunchPaths(paths)'))
     expect(body).toContain('appShuttingDown')
-    expect(body).toContain('relaunchAfterQuit')
-    expect(index).toContain('app.relaunch({ args: relaunchAfterQuit })')
+    expect(body).toContain('relaunchRequests.add(argv)')
+    // the normal end of the clean-up and the forced one both start the app again
+    expect(index.match(/app\.relaunch\(\{ args: relaunchRequests\.toArgs\(\) \}\)/g)).toHaveLength(
+      2,
+    )
+  })
+
+  it('marks the databases and lists as essential steps, and the document index closes before the file index', () => {
+    const steps = index.slice(
+      index.indexOf('const steps: QuitStep[]'),
+      index.indexOf('void runQuitSequence('),
+    )
+    for (const name of [
+      'folder-scan-close',
+      'known-sources-close',
+      'document-memory-close',
+      'file-index-store-close',
+    ]) {
+      const at = steps.indexOf(`'${name}'`)
+      expect(at, name).toBeGreaterThan(-1)
+      expect(steps.slice(at, at + 80), name).toContain('essential: true')
+    }
+    expect(steps.indexOf("'document-memory-close'")).toBeLessThan(
+      steps.indexOf("'file-index-store-close'"),
+    )
+  })
+})
+
+describe('essential steps', () => {
+  it('are not skipped when the deadline has passed, optional ones are', async () => {
+    const { log } = logSink()
+    let t = 0
+    const ran: string[] = []
+    const result = await runQuitSequence(
+      [
+        { name: 'slow', essential: true, run: () => void (ran.push('slow'), (t += 30_000)) },
+        { name: 'database', essential: true, run: () => void ran.push('database') },
+        { name: 'tidy', run: () => void ran.push('tidy') },
+      ],
+      { log, forceExit: () => undefined, now: () => t, deadlineMs: 25_000 },
+    )
+    expect(ran).toEqual(['slow', 'database'])
+    expect(result.skipped).toEqual(['tidy'])
+  })
+
+  it('hold the process back at the first deadline and let go at the hard one', async () => {
+    const { entries, log } = logSink()
+    let exited = 0
+    let t = 0
+    const timers: Array<{ fn: () => void; ms: number }> = []
+    void runQuitSequence(
+      [{ name: 'closing', essential: true, run: () => new Promise<void>(() => undefined) }],
+      {
+        log,
+        forceExit: () => void exited++,
+        now: () => t,
+        setTimeout: ((fn: () => void, ms: number) => (
+          timers.push({ fn, ms }),
+          timers.length
+        )) as any,
+        clearTimeout: (() => undefined) as any,
+        deadlineMs: 25_000,
+        hardDeadlineMs: 60_000,
+      },
+    )
+    await Promise.resolve()
+    t = 25_000
+    timers[0]!.fn() // the first deadline: a database is closing, so the process is let alone
+    expect(exited).toBe(0)
+    expect(timers[1]!.ms).toBe(35_000)
+    t = 60_000
+    timers[1]!.fn() // the hard one
+    expect(exited).toBe(1)
+    expect(entries.map((e) => e.ev)).toEqual(['deadline.waiting', 'deadline'])
+  })
+
+  it('end the process at the first deadline when only an optional step is waiting', async () => {
+    const { log } = logSink()
+    let exited = 0
+    const timers: Array<() => void> = []
+    void runQuitSequence([{ name: 'tidy', run: () => new Promise<void>(() => undefined) }], {
+      log,
+      forceExit: () => void exited++,
+      setTimeout: ((fn: () => void) => (timers.push(fn), 1)) as any,
+      clearTimeout: (() => undefined) as any,
+    })
+    await Promise.resolve()
+    timers[0]!()
+    expect(exited).toBe(1)
+  })
+})
+
+describe('starting the app again after a quit', () => {
+  it('keeps every file asked for, once, from every second copy', () => {
+    const requests = new RelaunchRequests()
+    expect(requests.isRequested).toBe(false)
+    requests.add(['GenOffice.exe', 'C:\\docs\\a.docx'])
+    requests.add(['GenOffice.exe', 'C:\\docs\\b.xlsx', 'C:\\docs\\a.docx'])
+    expect(requests.isRequested).toBe(true)
+    expect(requests.toArgs()).toEqual(['C:\\docs\\a.docx', 'C:\\docs\\b.xlsx'])
+  })
+
+  it('a copy started without arguments still asks for a start', () => {
+    const requests = new RelaunchRequests()
+    requests.add(['GenOffice.exe'])
+    expect(requests.isRequested).toBe(true)
+    expect(requests.toArgs()).toEqual([])
+  })
+})
+
+describe('describing the windows for the log', () => {
+  it('counts the windows that exist and those that can be seen', () => {
+    const win = (visible: boolean, destroyed = false) => ({
+      isDestroyed: () => destroyed,
+      hide: () => undefined,
+      isVisible: () => visible,
+    })
+    expect(describeWindows([win(true), win(false), win(true, true)])).toEqual({
+      count: 2,
+      visible: 1,
+    })
+    expect(describeWindows([])).toEqual({ count: 0, visible: 0 })
   })
 })
