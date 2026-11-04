@@ -243,6 +243,22 @@ describe('Word files with text and pictures', () => {
   })
 })
 
+describe('a file with more pictures than are read', () => {
+  it('reads the first 50 and says that the rest of the file is not in the index', async () => {
+    const pictures = Array.from({ length: 60 }, (_x, i) => ({
+      file: `p${i + 1}.png`,
+      bytes: Buffer.alloc(20_000, i),
+    }))
+    const result = await extractDocument(await docx('album.docx', pictures))
+    expect(result.scan?.totalPages).toBe(50)
+    expect(result).toMatchObject({ truncated: true, truncatedReason: 'content-limit' })
+    // and it does not say that it is all the file has
+    expect(result.error).toBe(
+      'No readable text; the first 50 pictures in this file have not been read',
+    )
+  })
+})
+
 describe('what a file shows and nobody reads', () => {
   it('says so, instead of calling the file blank, when its only pictures are of a kind that cannot be read', async () => {
     const zip = new JSZip()

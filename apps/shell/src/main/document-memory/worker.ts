@@ -197,6 +197,7 @@ export async function extractDocumentSliced(
   // many large pictures would hold: with more, it is a document with illustrations and not OCR work.
   let officePictures = 0
   let officeUnreadable = 0
+  let officeMore = false
   if (mayHoldPictures(path)) {
     const real = realOfficeText(text, path)
     if (real.trim().length < OFFICE_TEXT_CEILING) {
@@ -206,6 +207,7 @@ export async function extractDocumentSliced(
         const needed = Math.max(OFFICE_TEXT_ENOUGH_CHARS, OFFICE_CHARS_PER_PICTURE * found.large)
         if (found.names.length > 0 && real.trim().length < needed) {
           officePictures = found.names.length
+          officeMore = found.more
           text = real
         }
       }
@@ -232,6 +234,11 @@ export async function extractDocumentSliced(
   let chunks = base.chunks
   let truncated = base.truncated || pagesLeftOut || contentTruncated
   let truncatedReason: TruncatedReason | undefined
+  if (officeMore) {
+    // more pictures than the 50 that are read: the rest of the file is not in the index
+    truncated = true
+    truncatedReason = 'content-limit'
+  }
   if (contentTruncated) {
     truncatedReason = 'content-limit'
   } else if (base.truncated) {
@@ -293,7 +300,7 @@ export async function extractDocumentSliced(
             : isPdf
               ? 'No readable text; scanned documents need OCR'
               : officePictures > 0
-                ? `No readable text; the ${officePictures} ${officePictures === 1 ? 'picture in this file has' : 'pictures in this file have'} not been read`
+                ? `No readable text; the ${officeMore ? 'first ' : ''}${officePictures} ${officePictures === 1 ? 'picture in this file has' : 'pictures in this file have'} not been read`
                 : officeUnreadable > 0
                   ? `No readable text; the ${officeUnreadable} ${officeUnreadable === 1 ? 'picture in this file cannot' : 'pictures in this file cannot'} be read (a vector drawing, or bigger than 30 MB)`
                   : 'No readable text in this file; there is nothing to search',

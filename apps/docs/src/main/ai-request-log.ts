@@ -58,7 +58,8 @@ export class AiRequestLog {
   private readonly startedAt: number
   private lastContentAt: number
   private lastWireAt: number
-  private silentLogged = 0
+  /** when `request.silent` was last written, for the spacing of the warnings while the wire is silent */
+  private lastSilentAt: number | undefined
   private quietAt = SILENT_STEP_MS
   private firstTextMs: number | undefined
   private deltas = 0
@@ -117,11 +118,13 @@ export class AiRequestLog {
         provider: this.info.provider,
       }
       if (silentWireMs >= SILENT_STEP_MS) {
-        if (silentContentMs < SILENT_STEP_MS * (this.silentLogged + 1)) return
-        this.silentLogged++
+        // (one warning for every 30 s of silence of the wire; counting from the content clock would warn at every
+        // check once a heartbeat that went on for a long time has stopped)
+        if (this.lastSilentAt !== undefined && at - this.lastSilentAt < SILENT_STEP_MS) return
+        this.lastSilentAt = at
         this.deps.sink.warn('ai', 'request.silent', data)
       } else if (silentContentMs >= this.quietAt) {
-        this.quietAt *= 2
+        while (this.quietAt <= silentContentMs) this.quietAt *= 2
         this.deps.sink.info('ai', 'request.quiet', data)
       }
     })
@@ -130,12 +133,13 @@ export class AiRequestLog {
   /** Something arrived on the wire (a network chunk, a heartbeat) that is not yet an answer. */
   wire(): void {
     this.lastWireAt = this.now()
+    this.lastSilentAt = undefined
   }
 
   /** The model produced something: text, reasoning, a tool call. */
   content(): void {
     this.lastWireAt = this.lastContentAt = this.now()
-    this.silentLogged = 0
+    this.lastSilentAt = undefined
     this.quietAt = SILENT_STEP_MS
   }
 

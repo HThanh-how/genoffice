@@ -173,6 +173,8 @@ export interface OfficePictures {
   readonly large: number
   /** pictures the document shows that are left out because they are too large or of a kind nobody here reads */
   readonly unreadable: number
+  /** the document shows more pictures than `MAX_OFFICE_IMAGES`: the later ones are not listed */
+  readonly more: boolean
   /** the bytes of one of them */
   read(name: string): Promise<Uint8Array>
 }
@@ -226,6 +228,7 @@ export async function loadOfficePictures(bytes: Uint8Array): Promise<OfficePictu
   }
   const names: string[] = []
   let large = 0
+  let more = false
   const seen = new Set<string>()
   for (const name of found) {
     const entry = zip.file(name)
@@ -237,7 +240,10 @@ export async function loadOfficePictures(bytes: Uint8Array): Promise<OfficePictu
       continue
     }
     if (declared !== undefined && declared < MIN_SIGNIFICANT_IMAGE_BYTES) continue
-    if (names.length >= MAX_OFFICE_IMAGES) break
+    if (names.length >= MAX_OFFICE_IMAGES) {
+      more = true
+      break
+    }
     names.push(name)
     if (declared === undefined || declared >= LARGE_PICTURE_BYTES) large++
   }
@@ -245,6 +251,7 @@ export async function loadOfficePictures(bytes: Uint8Array): Promise<OfficePictu
     names,
     large,
     unreadable,
+    more,
     read: async (name) => {
       const entry = zip.file(name)
       if (!entry || !names.includes(name)) throw new Error('No such picture in this file')
@@ -265,7 +272,17 @@ const PLACEHOLDER =
 export function realOfficeText(text: string, path: string): string {
   const structured = /\.(?:pptx|xlsx|xlsm)$/i.test(path)
   return text
-    .split('\n')
-    .filter((line) => !PLACEHOLDER.test(line) && !(structured && /^#{1,2} .{0,80}$/.test(line)))
-    .join('\n')
+    .split('\n\n')
+    .map((block) =>
+      block
+        .split('\n')
+        .filter((line, index) => {
+          if (PLACEHOLDER.test(line)) return false
+          // the heading of a section is its first line: "## Slide 3", "# Sheet1" (a line of the same look
+          // that a person wrote in the middle of a cell or a slide is a word of the document)
+          return !(structured && index === 0 && /^#{1,2} .{0,80}$/.test(line))
+        })
+        .join('\n'),
+    )
+    .join('\n\n')
 }

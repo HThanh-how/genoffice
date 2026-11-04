@@ -172,7 +172,12 @@ export class LocalOcrRunner {
       ...(d.totalRamMB ? { totalRamMB: d.totalRamMB } : {}),
       ...(d.pdfPageLimit ? { pdfPageLimit: d.pdfPageLimit } : {}),
       // the slow pass over the later pages waits for the charger (the quick pass follows the gate)
-      onBattery: () => (d.onBattery ? d.onBattery() : currentIndexingPolicy()?.onBattery === true),
+      onBattery: () => {
+        if (d.onBattery) return d.onBattery()
+        // (no policy published yet: not known to be on the charger)
+        const policy = currentIndexingPolicy()
+        return policy ? policy.onBattery : true
+      },
       ...(d.log ? { log: d.log } : {}),
     })
   }

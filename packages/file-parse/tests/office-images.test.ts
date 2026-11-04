@@ -192,6 +192,27 @@ describe('loadOfficePictures', () => {
     expect((await loadOfficePictures(bytes)).names).toEqual([])
   })
 
+  it('says that there were more pictures than it lists', async () => {
+    const total = MAX_OFFICE_IMAGES + 3
+    const files: Record<string, number | string> = {
+      'word/document.xml': `<w:document>${Array.from({ length: total }, (_x, i) => `<a:blip r:embed="rId${i + 1}"/>`).join('')}</w:document>`,
+      'word/_rels/document.xml.rels': rel(
+        Array.from({ length: total }, (_x, i): [string, string] => [
+          `rId${i + 1}`,
+          `media/i${i + 1}.png`,
+        ]),
+      ),
+    }
+    for (let i = 1; i <= total; i++) files[`word/media/i${i}.png`] = BIG
+    const pictures = await loadOfficePictures(await pack(files))
+    expect(pictures.names).toHaveLength(MAX_OFFICE_IMAGES)
+    expect(pictures.more).toBe(true)
+    expect(
+      (await loadOfficePictures(await pack({ ...files, 'word/document.xml': '<w:document/>' })))
+        .more,
+    ).toBe(false)
+  })
+
   it('lists at most MAX_OFFICE_IMAGES, and nothing for a file with no picture', async () => {
     const total = MAX_OFFICE_IMAGES + 20
     const many: Record<string, number | string> = {
@@ -319,6 +340,13 @@ describe('realOfficeText', () => {
     expect(
       realOfficeText('# Sheet1\n[image-only sheet: 1 image, no cell data]', 'a.xlsx').trim(),
     ).toBe('')
+  })
+
+  it('leaves only the first line of a section for a heading: the same look in the middle of a cell is a word', () => {
+    expect(realOfficeText('# Sheet1\nA1\n## Tong cong\n42', 'a.xlsx')).toBe('A1\n## Tong cong\n42')
+    expect(realOfficeText('## Slide 1\nTitle\n\n## Slide 2\nOther', 'd.pptx')).toBe(
+      'Title\n\nOther',
+    )
   })
 
   it('keeps the words of the document, and a heading in a Word file', () => {

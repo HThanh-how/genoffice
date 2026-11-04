@@ -629,13 +629,19 @@ export interface RedactOptions {
   readonly hashPaths?: boolean
 }
 
-const WINDOWS_PATH = /[A-Za-z]:\\[^\s"'<>|*?]+/g
+const WINDOWS_PATH = /(?<![A-Za-z\d])[A-Za-z]:[\\/][^\s"'<>|*?]+/g
+const FILE_URL_ANY = /file:\/\/[^\s"'<>|*?]+/gi
 const POSIX_PATH = /(?<![\w:/])\/(?:Users|home|var|tmp|opt|mnt|Volumes)\/[^\s"'<>|*?]+/g
 
 function hashPathsIn(s: string): string {
   const swap = (m: string): string => `[path:${shortHash(m)}]`
-  // a file name may hold spaces: take the paths of files of a known kind whole first
+  // a file name may hold spaces: take the paths of files of a known kind whole first (and the name of a
+  // Windows user, which may hold spaces too, is made one word so that the generic pattern below takes it whole)
   return s
+    .replace(WINDOWS_USER_WORDS, '$1user')
+    .replace(WINDOWS_USER, '$1user')
+    .replace(FILE_URL, swap)
+    .replace(FILE_URL_ANY, swap)
     .replace(WINDOWS_FILE, swap)
     .replace(POSIX_FILE, swap)
     .replace(WINDOWS_PATH, swap)
@@ -647,23 +653,33 @@ const DOC_EXT =
 // (every repeat below has a bound: a long run of separators must not make the match slow)
 const NAME = String.raw`[^\\/:*?"<>|\r\n]`
 const END = String.raw`\.(${DOC_EXT})(?![\p{L}\d])`
+// a character of a folder name: one that does not begin the name of a file, so that two files in one line are two paths
+const DIR_CHAR = String.raw`(?:(?!\.(?:${DOC_EXT})(?![\p{L}\d]))${NAME})`
 /** `C:\Users\Ann\Hồ sơ\CCCD An.pdf` or `C:/Users/…`: the drive (or share) and a file of a known kind, spaces allowed in the name. */
 const WINDOWS_FILE = new RegExp(
-  String.raw`(?<![\p{L}\d])([A-Za-z]:[\\/]|\\\\[^\\\s"'<>|*?]+\\)(?:${NAME}{1,120}[\\/]){0,40}${NAME}{0,120}?${END}`,
+  String.raw`(?<![\p{L}\d])([A-Za-z]:[\\/]|\\\\[^\\\s"'<>|*?]+\\)(?:${DIR_CHAR}{1,120}[\\/]){0,40}${NAME}{0,120}?${END}`,
   'giu',
 )
 /** the same without its start, as it is left when a log line was cut in the middle of a path: `rs\bob\Documents\Ho khau.pdf` */
 const WINDOWS_FRAGMENT = new RegExp(
-  String.raw`(?<![\p{L}\d\\/:])[^\\/:*?"<>|\s]{1,60}\\(?:${NAME}{1,120}\\){0,40}${NAME}{0,120}?${END}`,
+  String.raw`(?<![\p{L}\d\\/:])[^\\/:*?"<>|\s]{1,60}\\(?:${DIR_CHAR}{1,120}\\){0,40}${NAME}{0,120}?${END}`,
   'giu',
 )
+/** a file URL, whose name may be written with or without percent signs */
+const FILE_URL = new RegExp(String.raw`file://[^"'<>|*?\r\n]{0,200}?${END}`, 'giu')
 const POSIX_FILE = new RegExp(
   String.raw`(?<![\w:/.])/(?:[^/\r\n"'<>|*?:]{1,120}/){1,40}[^/\r\n"'<>|*?:]{0,120}?${END}`,
   'giu',
 )
-// (the name of a Windows user may hold spaces: `C:\Users\Nguyen Van A`; on the others it stops at a space)
-const WINDOWS_USER = /([A-Za-z]:[\\/]Users[\\/])[^\\/"'<>|*?:\r\n]+/gi
-const POSIX_USER = /(?<![\w:/])(\/(?:Users|home)\/)[^/\s"'<>|*?:]+/g
+// (the name of a Windows user may hold spaces, `C:\Users\Nguyen Van A\…`: it ends at the next separator when
+// there is one, and at a space when there is not, `C:\Users\bob logged in`; on the others it stops at a space)
+const WINDOWS_USER =
+  /([A-Za-z]:[\\/]Users[\\/])(?:[^\\/"'<>|*?:\r\n]+(?=[\\/])|[^\\/\s"'<>|*?:]+)/gi
+// ... and a home folder with nothing after it, named in capitals as a person is: `C:\Users\Nguyen Van A` at the end of
+// a line or of a quotation (no `i` flag: `C:\Users\bob logged in` is a user and some words)
+const WINDOWS_USER_WORDS =
+  /([A-Za-z]:[\\/]Users[\\/])[A-ZÀ-Ỹ][^\\/\s"'<>|*?:]*(?:[ \t]+[A-ZÀ-Ỹ][^\\/\s"'<>|*?:]*){1,3}(?=$|["'\r\n])/gm
+const POSIX_USER = /(?:(?<![\w:/])|(?<=file:\/\/))(\/(?:Users|home)\/)[^/\s"'<>|*?:]+/g
 
 /**
  * A log is often shared to find a fault, and a path names the person (`C:\Users\<name>`) and the
@@ -680,6 +696,8 @@ export function scrubPaths(input: string): string {
     })
     .replace(WINDOWS_FRAGMENT, (_m, ext: string) => `…\\<file>.${ext.toLowerCase()}`)
     .replace(POSIX_FILE, (_m, ext: string) => `/…/<file>.${ext.toLowerCase()}`)
+    .replace(FILE_URL, (_m, ext: string) => `file:///…/<file>.${ext.toLowerCase()}`)
+    .replace(WINDOWS_USER_WORDS, '$1<user>')
     .replace(WINDOWS_USER, '$1<user>')
     .replace(POSIX_USER, '$1<user>')
 }

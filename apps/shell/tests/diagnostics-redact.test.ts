@@ -1157,3 +1157,57 @@ describe('paths that are cut, written with slashes or under a user name with spa
     }
   })
 })
+
+describe('the second round of paths', () => {
+  const scrub = (s: string): string => scrubPaths(s)
+  const hashed = (s: string): string =>
+    String(describeError(new Error(s), { hashPaths: true }).message)
+
+  it('takes a file URL, with its name written with percent signs or with spaces', () => {
+    expect(scrub('open file:///home/bob/Ho%20khau.pdf failed')).toBe(
+      'open file:///…/<file>.pdf failed',
+    )
+    expect(scrub('file:///Users/bob/x.pdf')).toBe('file:///…/<file>.pdf')
+    expect(scrub('file://server/share/Ho khau.pdf')).toBe('file:///…/<file>.pdf')
+    expect(scrub('file:///C:/Users/bob/z.js')).toBe('file:///C:/Users/<user>/z.js')
+    expect(scrub('file:///home/bob/app/run.js')).toBe('file:///home/<user>/app/run.js')
+  })
+
+  it('keeps the words after the name of a Windows user that has no folder after it', () => {
+    expect(scrub('C:\\Users\\bob and then failed')).toBe('C:\\Users\\<user> and then failed')
+    expect(scrub('cwd=C:\\Users\\bob logged in')).toBe('cwd=C:\\Users\\<user> logged in')
+    expect(scrub('C:\\Users\\Nguyen Van A\\AppData\\x')).toBe('C:\\Users\\<user>\\AppData\\x')
+  })
+
+  it('makes two paths of one line two paths', () => {
+    expect(scrub('Documents\\a.pdf and Pictures\\b.png')).toBe('…\\<file>.pdf and …\\<file>.png')
+    expect(scrub('C:\\x\\a b.pdf then D:\\y\\c.docx')).toBe(
+      'C:\\…\\<file>.pdf then D:\\…\\<file>.docx',
+    )
+  })
+
+  it('hashes, for the export, paths with a user name that has spaces, slashes and file URLs', () => {
+    expect(hashed('C:\\Users\\Nguyen Van A\\proj\\x.js failed')).toMatch(
+      /^\[path:[0-9a-f]+\] failed$/,
+    )
+    expect(hashed('file:///C:/Users/bob/z.js')).toMatch(/^\[path:[0-9a-f]+\]$/)
+    expect(hashed('C:/Users/bob/z.js')).toMatch(/^\[path:[0-9a-f]+\]$/)
+    expect(hashed('file:///home/bob/Ho%20khau.pdf')).toMatch(/^\[path:[0-9a-f]+\]$/)
+    const text = hashed('C:\\Users\\Nguyen Van A\\proj\\x.js')
+    expect(text).not.toContain('Van A')
+    expect(text).not.toContain('Nguyen')
+  })
+
+  it('hashes a file URL whose user name holds spaces', () => {
+    const text = hashed('file:///C:/Users/Nguyen Van A/z.js')
+    expect(text).not.toContain('Van A')
+    expect(text).toMatch(/\[path:[0-9a-f]+\]/)
+  })
+
+  it('takes a home folder named as a person at the end of a line or a quotation, but not a user and some words', () => {
+    expect(scrub('home=C:\\Users\\Nguyen Van A')).toBe('home=C:\\Users\\<user>')
+    expect(scrub('"C:\\Users\\Nguyễn Văn A" not found')).toBe('"C:\\Users\\<user>" not found')
+    expect(scrub('cwd=C:\\Users\\bob logged in')).toBe('cwd=C:\\Users\\<user> logged in')
+    expect(hashed('home=C:\\Users\\Nguyen Van A')).not.toContain('Van A')
+  })
+})
