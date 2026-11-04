@@ -19,7 +19,8 @@
     "./custom-models": "./src/custom-models.ts",
     "./provider-models": "./src/provider-models.ts",
     "./trace": "./src/trace.ts",
-    "./agy-resident": "./src/agy-resident.ts"
+    "./agy-resident": "./src/agy-resident.ts",
+    "./diag-hook": "./src/diag-hook.ts"
   },
   "scripts": {
     "typecheck": "tsc --noEmit",

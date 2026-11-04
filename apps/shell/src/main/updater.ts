@@ -1,3 +1,4 @@
+import { diagHook } from '@genoffice/ai-provider/diag-hook'
 import { showAppMessageBox } from './app-message-box'
 import { existsSync, readFileSync } from 'node:fs'
 import path from 'node:path'
@@ -528,6 +529,10 @@ let quietCheck = false
 
 function log(...args: unknown[]): void {
   console.log('[updater]', ...args)
+  // and into the diagnostic log (a packaged app has no console): what the updater said, so that a
+  // failed check or download has its reason on record
+  const detail = args.map((arg) => (arg instanceof Error ? arg.message : String(arg))).join(' ')
+  diagHook[/fail|error/i.test(detail) ? 'warn' : 'info']('updater', 'log', { detail })
 }
 
 function uiStrings(): UpdateUiStrings {
@@ -803,6 +808,8 @@ export function initAutoUpdater(
   }
 
   autoUpdater.on('error', (err, context?: string) => {
+    // the error as it is (name, code, message), not only its message
+    diagHook.error('updater', 'error', { phase, context, err })
     log('error:', err?.message ?? err)
     // MacUpdater dispatches the public downloaded event BEFORE Squirrel prepares
     // the ZIP. Its native error forwarding emits only the Error, so preparation
@@ -815,6 +822,7 @@ export function initAutoUpdater(
   })
 
   autoUpdater.on('update-available', (info: UpdateInfo) => {
+    diagHook.info('updater', 'available', { version: info.version, current: app.getVersion() })
     if (!nativeSourceSelected()) return
     if (info.version === dismissedVersion) return
     const sameVersionRecheck = info.version === latestSeenVersion
@@ -854,8 +862,21 @@ export function initAutoUpdater(
     showUpdateWindow(getWindow(), { ...initialState(info.version), phase, percent }, actions)
   })
 
+  let lastLoggedDecile = -1
   autoUpdater.on('download-progress', (progress) => {
     if (!downloadInFlight) return
+    // every tenth of the download, with the speed: a download that crawls or stops shows in the log
+    // (a percent that is missing or NaN, total 0 or a native updater, is not a new tenth every time:
+    // NaN is never equal to itself, and it would write a line for every event)
+    const decile = Number.isFinite(progress.percent) ? Math.floor(progress.percent / 10) : -2
+    if (decile !== lastLoggedDecile) {
+      lastLoggedDecile = decile
+      diagHook.info('updater', 'progress', {
+        percent: Number.isFinite(progress.percent) ? Math.round(progress.percent) : null,
+        bytesPerSecond: Math.round(progress.bytesPerSecond ?? 0),
+        total: progress.total,
+      })
+    }
     setPhase({ phase: 'downloading', percent: progress.percent })
   })
 
@@ -865,6 +886,7 @@ export function initAutoUpdater(
       return
     }
     log('downloaded:', info.version)
+    diagHook.info('updater', 'downloaded', { version: info.version })
     autoUpdater.autoInstallOnAppQuit = true
     downloadInFlight = false
     failedAttempts = 0

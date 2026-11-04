@@ -1,3 +1,5 @@
+import { diagHook } from '@genoffice/ai-provider/diag-hook'
+import { AiRequestLog } from './ai-request-log'
 import { createHash, randomUUID } from 'node:crypto'
 import { handOffBytes } from './byte-handoff'
 import { appendAiDiagnostic } from './ai-diagnostics'
@@ -4630,6 +4632,11 @@ export function registerAiIpc(): void {
       lastPing = now
       send({ requestId, type: 'ping' })
     }
+    // The life of this request in the diagnostic log (numbers and fixed words only, never the text)
+    const reqLog = new AiRequestLog(
+      { reqId: requestId, provider, model: config.model, messages, tools, maxTokens },
+      { sink: diagHook },
+    )
     const trace = startAiTrace({
       requestId,
       sessionId: request.sessionId,
@@ -4649,18 +4656,25 @@ export function registerAiIpc(): void {
         sessionScope: String(event.sender.id),
         signal: controller.signal,
         onDelta: (text) => {
+          reqLog.text()
           trace?.onDelta(text)
           send({ requestId, type: 'delta', text })
         },
         onReasoningDelta: (text) => {
+          reqLog.content()
           trace?.onReasoningDelta(text)
           send({ requestId, type: 'reasoning', text })
         },
         onToolCall: (toolCall) => {
+          reqLog.toolCall()
           trace?.onToolCall(toolCall)
           send({ requestId, type: 'tool-call', toolCall })
         },
-        onActivity: ping,
+        onActivity: () => {
+          // (a heartbeat is not an answer: it only moves the wire clock, not the silence one)
+          reqLog.wire()
+          ping()
+        },
         onDiagnostic: (record) => appendAiDiagnostic(userDataPath('ai-diagnostics.jsonl'), record),
         onStopReason: (reason) => {
           stopReason = reason
@@ -4672,14 +4686,17 @@ export function registerAiIpc(): void {
         },
       })
       trace?.finish()
+      reqLog.end(stopReason)
       send({ requestId, type: 'done', stopReason })
     } catch (err) {
       trace?.finish(
         controller.signal.aborted ? 'aborted' : err instanceof Error ? err.message : String(err),
       )
       if (controller.signal.aborted) {
+        reqLog.aborted()
         send({ requestId, type: 'done' })
       } else {
+        reqLog.failed(err)
         // an expired/revoked key drops to signed-out so the inline sign-in button shows
         noteGskCallFailure(gskKey, err)
         send({
@@ -4690,6 +4707,7 @@ export function registerAiIpc(): void {
         })
       }
     } finally {
+      reqLog.dispose()
       unwatchSender()
       activeAiStreams.delete(requestId)
     }

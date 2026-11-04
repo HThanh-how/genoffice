@@ -1,5 +1,10 @@
 import { describe, expect, it, vi } from 'vitest'
-import { describeError, redactString, redactValue } from '../src/main/diagnostics/redact'
+import {
+  describeError,
+  redactString,
+  redactValue,
+  scrubPaths,
+} from '../src/main/diagnostics/redact'
 
 describe('diagnostics redaction', () => {
   it.each([
@@ -962,5 +967,193 @@ describe('diagnostics redaction', () => {
     expect(out.auth.requestId).toMatchObject({ redacted: true })
     expect(out.sessionId.id).toBe(uuid)
     expect(out.traceId).toBe(uuid)
+  })
+
+  it('a name for a setting protects a short value or a number, not a long value under it', () => {
+    for (const text of [
+      'user id:42',
+      'user step:2',
+      'user mode:v2',
+      'user status:ok3',
+      'user count:12345',
+      'user total:100000',
+      'user version:v2024',
+      'user key:abc12',
+    ]) {
+      expect(redactString(text), text).toBe(text)
+    }
+    for (const [text, secret] of [
+      ['user key:AbCd1234Ef', 'AbCd1234Ef'],
+      ['login time:Pw9876xyz', 'Pw9876xyz'],
+      ['user type:secret123', 'secret123'],
+      ['login session:s3cr3tvalue', 's3cr3tvalue'],
+      ['user session:abcdef012345', 'abcdef012345'],
+      ['user id:7f3a9c12', '7f3a9c12'],
+      ['user id:Hunter2024', 'Hunter2024'],
+      ['login level:Hunter2024', 'Hunter2024'],
+      ['user view:Hunter22', 'Hunter22'],
+      ['user mode:abc12345678', 'abc12345678'],
+    ] as const) {
+      expect(redactString(text), text).not.toContain(secret)
+    }
+  })
+
+  it('masks base64 and long mixed-case tokens after auth, even without digits', () => {
+    for (const [text, secret] of [
+      ['auth=dXNlcjpwYXNz', 'dXNlcjpwYXNz'],
+      ['auth=AbCdEfGhIjKlMnOpQrStUvWxYz', 'AbCdEfGhIjKlMnOpQrStUvWxYz'],
+      ['auth: abc+def/ghi=', 'abc+def/ghi='],
+    ] as const) {
+      expect(redactString(text), text).not.toContain(secret)
+    }
+  })
+
+  it('leaves, knowingly, what is too short or too plain to tell from a state', () => {
+    // a decision, not an oversight: short values after auth are states (auth=ok, auth: none), and a
+    // password of seven characters or less with no colon after "auth" is not told from them
+    for (const text of ['auth=hunter2', 'auth: failed', 'auth: expired']) {
+      expect(redactString(text), text).toBe(text)
+    }
+  })
+})
+
+describe('paths in the log name neither the person nor the paper', () => {
+  const scrub = (s: string): string => String(describeError(new Error(s)).message)
+
+  it('leaves out the file name and the user name, and keeps the drive and the folders of the app', () => {
+    expect(
+      scrub('open failed: C:\\Users\\Nguyen Van A\\Documents\\CCCD Nguyen Van A.pdf: EBUSY'),
+    ).toBe('open failed: C:\\…\\<file>.pdf: EBUSY')
+    expect(scrub('ENOENT D:\\Hồ sơ\\Hộ khẩu 2024.docx')).toBe('ENOENT D:\\…\\<file>.docx')
+    expect(scrub('C:\\Users\\Admin\\AppData\\Local\\GenOffice\\logs\\genoffice.jsonl')).toBe(
+      'C:\\Users\\<user>\\AppData\\Local\\GenOffice\\logs\\genoffice.jsonl',
+    )
+    expect(scrub('\\\\nas01\\share\\passport.JPG could not be read')).toContain('<file>.jpg')
+    expect(scrub('\\\\nas01\\share\\passport.JPG')).not.toContain('passport')
+    expect(scrub('/Users/bob/Library/Application Support/GenOffice/x.log')).toBe(
+      '/Users/<user>/Library/Application Support/GenOffice/x.log',
+    )
+    expect(scrub('cannot read /home/bob/Tài liệu/sổ hộ khẩu.pdf')).toBe('cannot read /…/<file>.pdf')
+  })
+
+  it('leaves URLs, plain words and file names without a folder alone', () => {
+    for (const same of [
+      'GET https://example.com/a/b/report.pdf 404',
+      'agy ENOENT',
+      'report.pdf',
+      'version 1.2.3 of /usr/bin/node',
+      'a.b\\c.d',
+    ]) {
+      expect(scrub(same)).toBe(same)
+    }
+  })
+
+  it('is not slow on a long string that is full of drive letters', () => {
+    const started = Date.now()
+    scrub('C:\\a '.repeat(2000))
+    scrub('/a/'.repeat(2000))
+    expect(Date.now() - started).toBeLessThan(2000)
+  })
+
+  it('does not apply when the export hashes the paths instead', () => {
+    const out = describeError(new Error('C:\\Users\\Ann\\x\\Ho khau.pdf'), { hashPaths: true })
+    expect(String(out.message)).toMatch(/^\[path:[0-9a-f]+\]$/)
+  })
+})
+
+describe('an identifier under a name that the credential rules watch', () => {
+  it.each([
+    'user id:550e8400-e29b-41d4-a716-446655440000',
+    'user id: 550e8400-e29b-41d4-a716-446655440000 failed',
+    'login session:123e4567-e89b-12d3-a456-426614174000',
+  ])('keeps a UUID whole: %s', (input) => {
+    expect(redactString(input)).toBe(input)
+  })
+
+  it('still hides a password that is written the same way', () => {
+    expect(redactString('user bob:s3cretpw1')).toBe('user [redacted]')
+    // (a UUID written as the password of a name that is not a diagnostic word is cut as before)
+    expect(redactString('user bob:550e8400-e29b-41d4-a716-446655440000')).not.toContain('550e8400')
+  })
+})
+
+describe('the reason a sign-in failed', () => {
+  it.each([
+    'auth: SessionExpired',
+    'auth: NotAuthenticated',
+    'auth: TokenRefreshFailed',
+    'auth=MissingCredentials',
+    'auth: signin',
+    'auth: ok=true',
+  ])('is kept: %s', (input) => {
+    expect(redactString(input)).toBe(input)
+  })
+
+  it.each([
+    'auth: dXNlcjpwYXNzd29yZA==',
+    'auth: SessionExpired1234',
+    'auth: bob:hunter2pw',
+    'auth=Abcdefgh1234',
+  ])('a value that looks like a credential is still hidden: %s', (input) => {
+    expect(redactString(input)).toContain('[redacted]')
+  })
+})
+
+describe('a text that is made to be slow is not', () => {
+  const within = (ms: number, fn: () => void): void => {
+    const started = performance.now()
+    fn()
+    expect(performance.now() - started).toBeLessThan(ms)
+  }
+
+  it('words of a sign-in state that can be written together in several ways', () => {
+    within(100, () => redactString(`auth=${'signin'.repeat(200)}!`))
+    within(100, () => redactString(`auth: ${'SignUp'.repeat(24)}x`))
+    within(100, () => redactString(`auth=${'signin'.repeat(27)}!`))
+    expect(redactString('auth: signin')).toBe('auth: signin')
+    expect(redactString('auth: SignOut')).toBe('auth: SignOut')
+  })
+
+  it('paths: long runs of separators, drive letters and spaces', () => {
+    within(300, () => scrubPaths(' /a'.repeat(1400)))
+    within(300, () => scrubPaths('/a'.repeat(2000)))
+    within(300, () => scrubPaths('a\\b '.repeat(1000)))
+    within(300, () => scrubPaths('C:\\a '.repeat(800)))
+    within(300, () => scrubPaths('x/'.repeat(2000) + '.pdf'))
+  })
+})
+
+describe('paths that are cut, written with slashes or under a user name with spaces', () => {
+  const scrub = (s: string): string => scrubPaths(s)
+
+  it('takes the name out of a path that a cut left without its start', () => {
+    expect(scrub('rs\\bob\\Documents\\Ho khau cua Nguyen Van A.pdf: EBUSY')).toBe(
+      '…\\<file>.pdf: EBUSY',
+    )
+    expect(scrub('failed: C:\\Users\\bob\\x\\a b.pdf\nthen rs\\bob\\y\\c d.docx')).toBe(
+      'failed: C:\\…\\<file>.pdf\nthen …\\<file>.docx',
+    )
+  })
+
+  it('knows a Windows path written with slashes, and a file URL', () => {
+    expect(scrub('open C:/Users/bob/Documents/CCCD An.pdf failed')).toBe(
+      'open C:\\…\\<file>.pdf failed',
+    )
+    expect(scrub('file:///C:/Users/bob/Documents/passport.jpg')).toBe('file:///C:\\…\\<file>.jpg')
+    expect(scrub('C:/Users/bob/AppData/Local/GenOffice/logs/a.log')).toBe(
+      'C:/Users/<user>/AppData/Local/GenOffice/logs/a.log',
+    )
+  })
+
+  it('takes the whole name of a Windows user that holds spaces', () => {
+    expect(scrub('C:\\Users\\Nguyen Van A\\AppData\\Local\\GenOffice\\logs')).toBe(
+      'C:\\Users\\<user>\\AppData\\Local\\GenOffice\\logs',
+    )
+  })
+
+  it('does not touch what is not a path', () => {
+    for (const same of ['a\\b', 'x y\\z', 'https://example.com/a/b.pdf', 'v1.2/3', 'ok.pdf']) {
+      expect(scrub(same)).toBe(same)
+    }
   })
 })

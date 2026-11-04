@@ -96,3 +96,67 @@ it('reports network failure without presenting an update or claiming the app is 
   expect(mocks.dialog.mock.calls[0][0].type).toBe('warning')
   expect(mocks.show).not.toHaveBeenCalled()
 })
+
+async function captureDiag() {
+  const { setDiagSink } = await import('@genoffice/ai-provider/diag-hook')
+  const lines: Array<{ level: string; ev: string; data: any }> = []
+  setDiagSink({
+    info: (_c, ev, data) => void lines.push({ level: 'info', ev, data }),
+    warn: (_c, ev, data) => void lines.push({ level: 'warn', ev, data }),
+    error: (_c, ev, data) => void lines.push({ level: 'error', ev, data }),
+  })
+  return { lines, stop: () => setDiagSink(undefined) }
+}
+
+it('writes the real cause of a failed check, which the dialog replaces by a general sentence', async () => {
+  const diag = await captureDiag()
+  try {
+    mocks.fetch.mockRejectedValue(new Error('getaddrinfo ENOTFOUND api.github.com'))
+    const { checkForkUpdates } = await import('../src/main/fork-updater')
+    await checkForkUpdates({ kind: 'github', value: 'HThanh-how/genoffice' }, 'stable', () => null)
+    const fetchFailed = diag.lines.find((l) => l.ev === 'fork.check-fetch-failed')!
+    expect(fetchFailed.level).toBe('warn')
+    expect(String(fetchFailed.data.err)).toContain('ENOTFOUND')
+    expect(diag.lines.find((l) => l.ev === 'fork.check-failed')!.data).toMatchObject({
+      background: false,
+      code: 'NETWORK_ERROR',
+    })
+  } finally {
+    diag.stop()
+  }
+})
+
+it('writes a failed background check too, though it shows nothing', async () => {
+  const diag = await captureDiag()
+  try {
+    mocks.fetch.mockResolvedValue(new Response('not json', { status: 500 }))
+    const { checkForkUpdates } = await import('../src/main/fork-updater')
+    await checkForkUpdates(
+      { kind: 'github', value: 'HThanh-how/genoffice' },
+      'stable',
+      () => null,
+      { background: true },
+    )
+    expect(mocks.dialog).not.toHaveBeenCalled()
+    expect(diag.lines.find((l) => l.ev === 'fork.check-failed')!.data).toMatchObject({
+      background: true,
+      code: 'NETWORK_ERROR',
+    })
+  } finally {
+    diag.stop()
+  }
+})
+
+it('writes why a download failed (checksum mismatch) and still shows the error phase', async () => {
+  const diag = await captureDiag()
+  try {
+    const actions = await showUpdate('a'.repeat(64))
+    actions.onDownload()
+    await vi.waitFor(() => expect(mocks.push).toHaveBeenCalledWith({ phase: 'error' }))
+    const failed = diag.lines.find((l) => l.ev === 'fork.download-failed')!
+    expect(failed.data.version).toBe('0.11.2')
+    expect(String(failed.data.err)).toContain('checksum')
+  } finally {
+    diag.stop()
+  }
+})

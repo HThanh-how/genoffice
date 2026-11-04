@@ -255,3 +255,40 @@ export async function existingPaths(
   )
   return paths.filter((_path, index) => found[index])
 }
+
+/**
+ * The end of the process, once. The clean-up that finishes and the watchdog that gives up can both
+ * get here, one after the other (the watchdog waits a moment for the checks of the files asked for,
+ * and the clean-up can finish in that moment): whichever comes first starts the app again if that was
+ * asked, and the other does nothing, so the app is not started twice. `exit` runs even if starting
+ * the app again throws.
+ */
+export class ProcessEnd {
+  private ended = false
+
+  constructor(
+    private readonly requests: RelaunchRequests,
+    private readonly actions: {
+      relaunch(args: string[]): void
+      quit(): void
+      exit(): void
+    },
+  ) {}
+
+  get isEnded(): boolean {
+    return this.ended
+  }
+
+  end(how: 'quit' | 'exit'): void {
+    if (this.ended) return
+    this.ended = true
+    try {
+      if (this.requests.isRequested) this.actions.relaunch(this.requests.toArgs())
+    } catch {
+      // not starting again must not keep the process from ending
+    } finally {
+      if (how === 'exit') this.actions.exit()
+      else this.actions.quit()
+    }
+  }
+}

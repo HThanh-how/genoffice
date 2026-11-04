@@ -126,6 +126,29 @@ describe('applying an update by a restart', () => {
     expect(quit).not.toHaveBeenCalled()
   })
 
+  it('writes why the installer could not be started', async () => {
+    const { setDiagSink } = await import('@genoffice/ai-provider/diag-hook')
+    const lines: Array<{ ev: string; data: any }> = []
+    setDiagSink({
+      info: () => undefined,
+      warn: (_c, ev, data) => void lines.push({ ev, data }),
+      error: () => undefined,
+    })
+    try {
+      const { installAndRestart } = await import('../src/main/fork-updater')
+      await installAndRestart('C:\\u\\x.exe', {
+        platform: 'win32',
+        spawnInstaller: fakeSpawn('error').run,
+        quit: vi.fn(),
+      })
+      expect(lines).toHaveLength(1)
+      expect(lines[0]).toMatchObject({ ev: 'fork.installer-start-failed' })
+      expect(String(lines[0]!.data.err)).toContain('EPERM')
+    } finally {
+      setDiagSink(undefined)
+    }
+  })
+
   it('is for Windows only', async () => {
     const { installAndRestart } = await import('../src/main/fork-updater')
     const spawned = fakeSpawn('spawn')

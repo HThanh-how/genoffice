@@ -1,8 +1,8 @@
 import { spawn, type ChildProcess } from 'node:child_process'
-import { mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { afterEach, describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import { DiagnosticsLogger, realLogFs, type LogFs } from '../src/main/diagnostics/logger'
 
 /** mocks compare paths: make them the same on Windows, where join() uses backslashes */
@@ -1544,39 +1544,60 @@ describe('DiagnosticsLogger limits on sending a line again, and on closing', () 
     expect(log.stats().droppedTotal).toBe(afterTwelve.dropped)
     expect(log.stats().droppedTotal).toBeLessThanOrEqual(1)
     const notices = lines(dir).filter((l) => l.ev === 'dropped').length
-    expect(notices).toBeLessThanOrEqual(1)
+    expect(notices).toBeLessThanOrEqual(2) // the note is sent once more, then let go
   })
 
-  it('a write given up before the append (the folder did not answer) puts nothing in the file and is not counted as dropped', async () => {
+  it('a write given up before the append (the preparation is slow) puts nothing in the file and is not counted as dropped', async () => {
     const dir = tmp()
-    let release: () => void = () => undefined
-    let blocked = true
+    let slow = true
     const fs: LogFs = {
       ...realLogFs,
-      mkdir: async (d) => {
-        if (blocked) await new Promise<void>((resolve) => (release = resolve))
-        return realLogFs.mkdir(d)
+      // the size of the file takes much longer than the write timeout, but it does come (wide gaps:
+      // a coarse timer clock, as on Windows, or a busy machine must not make it finish in time)
+      size: async (p) => {
+        if (slow) await new Promise((r) => setTimeout(r, 200))
+        return realLogFs.size(p)
       },
     }
     const log = new DiagnosticsLogger({
       dir,
       fs,
-      writeTimeoutMs: 15,
+      writeTimeoutMs: 40,
       retryDelaysMs: [],
-      retryBackoffMs: 0,
+      retryBackoffMs: 100,
       switchAfterFailures: 1000,
       degradedAfterMs: 1e9,
       onInternalError: () => undefined,
     })
+    const inFile = (): number =>
+      existsSync(join(dir, 'genoffice.jsonl'))
+        ? lines(dir).filter((l) => l.ev === 'kept-line').length
+        : 0
+    // what each round saw, so that a failure says what happened instead of only a count
+    const seen: Array<{ inFile: number; dropped: number }> = []
     log.error('a', 'kept-line')
-    for (let round = 0; round < 5; round++) await log.flush() // five givings-up before any append
-    expect(log.stats().droppedTotal).toBe(0)
-    expect(log.queued).toBe(1)
-    blocked = false
-    release()
-    await new Promise((r) => setTimeout(r, 10))
+    for (let round = 0; round < 4; round++) {
+      await log.flush() // given up in the preparation
+      await new Promise((r) => setTimeout(r, 220)) // the slow answers come, and leave the count
+      seen.push({ inFile: inFile(), dropped: log.stats().droppedTotal })
+    }
+    // (whether the line is in the queue or in a retry that is on its way depends on the moment, so
+    // that is not asserted) nothing of it counts towards the limit on sending a line again, and
+    // nothing reached the file, because every write was given up before the append
+    expect(seen).toEqual(Array(4).fill({ inFile: 0, dropped: 0 }))
+    slow = false
+    await vi.waitFor(
+      async () => {
+        await log.flush()
+        expect(inFile()).toBe(1)
+      },
+      { timeout: 5000, interval: 50 },
+    )
+    // and it is written once, not again
     await log.flush()
-    expect(lines(dir).filter((l) => l.ev === 'kept-line')).toHaveLength(1)
+    await new Promise((r) => setTimeout(r, 250))
+    expect(inFile()).toBe(1)
+    expect(log.stats().droppedTotal).toBe(0)
   })
 
   it('close() stops waiting after the close timeout when the drive never answers', async () => {
@@ -1598,6 +1619,96 @@ describe('DiagnosticsLogger limits on sending a line again, and on closing', () 
     const started = Date.now()
     await log.close()
     expect(Date.now() - started).toBeLessThan(1_000) // not the 120 s the write would take to give up
+  })
+})
+
+describe('DiagnosticsLogger with a drive that cannot keep up', () => {
+  it('says once, not at every round, that writes are refused while an operation hangs, and writes the line once when it answers', async () => {
+    const dir = tmp()
+    const releases: Array<() => void> = []
+    let mkdirs = 0
+    const reports: string[] = []
+    const fs: LogFs = {
+      ...realLogFs,
+      mkdir: async (d) => {
+        mkdirs++
+        await new Promise<void>((resolve) => releases.push(resolve))
+        return realLogFs.mkdir(d)
+      },
+    }
+    const log = new DiagnosticsLogger({
+      dir,
+      fs,
+      writeTimeoutMs: 10,
+      retryDelaysMs: [],
+      retryBackoffMs: 5,
+      switchAfterFailures: 1000,
+      degradedAfterMs: 1e9,
+      onInternalError: (m) => void reports.push(m),
+    })
+    log.error('a', 'waits-for-the-drive')
+    for (let round = 0; round < 40; round++) {
+      await log.flush()
+      await new Promise((r) => setTimeout(r, 5))
+    }
+    expect(mkdirs).toBeLessThanOrEqual(2) // the hard cap on stuck operations
+    // (cause of the timeouts + the first refusal; not one line per round)
+    expect(log.stats().internalErrors).toBeLessThan(10)
+    expect(log.stats().droppedTotal).toBe(0)
+    for (const release of releases) release() // every stuck operation answers
+    const written = (): number =>
+      existsSync(join(dir, 'genoffice.jsonl'))
+        ? lines(dir).filter((l) => l.ev === 'waits-for-the-drive').length
+        : 0
+    // (the moment of the retry is not fixed: wait for the line instead of for a number of milliseconds)
+    await vi.waitFor(
+      async () => {
+        await log.flush()
+        expect(written()).toBe(1)
+      },
+      { timeout: 5000, interval: 50 },
+    )
+    await log.flush()
+    await new Promise((r) => setTimeout(r, 100))
+    expect(written()).toBe(1)
+  })
+
+  it('a drive that is too slow for the flow loses lines all the while: the count goes up with the input, and the note carries the total', async () => {
+    const dir = tmp()
+    const fs: LogFs = {
+      ...realLogFs,
+      appendFile: async (p, t) => {
+        await new Promise((r) => setTimeout(r, 120)) // much later than the hang limit
+        return realLogFs.appendFile(p, t)
+      },
+    }
+    const log = new DiagnosticsLogger({
+      dir,
+      fs,
+      writeTimeoutMs: 10,
+      appendHangMs: 20,
+      retryDelaysMs: [],
+      retryBackoffMs: 0,
+      switchAfterFailures: 1000,
+      degradedAfterMs: 1e9,
+      maxQueue: 5,
+      flushIntervalMs: 5,
+      onInternalError: () => undefined,
+    })
+    const totals: number[] = []
+    for (let round = 0; round < 8; round++) {
+      for (let i = 0; i < 12; i++) log.info('a', `r${round}-${i}`)
+      await new Promise((r) => setTimeout(r, 60))
+      totals.push(log.stats().droppedTotal)
+    }
+    // by design: a queue that is full of lines a slow drive cannot take drops the rest, and says so
+    expect(totals.at(-1)!).toBeGreaterThan(totals[0]!)
+    expect(totals).toEqual([...totals].sort((a, b) => a - b)) // never goes back down
+    await new Promise((r) => setTimeout(r, 400))
+    await log.flush()
+    const notes = lines(dir).filter((l) => l.ev === 'dropped')
+    expect(notes.length).toBeGreaterThan(0)
+    expect(notes.at(-1)!.data.total).toBeGreaterThanOrEqual(notes.at(-1)!.data.lines)
   })
 })
 

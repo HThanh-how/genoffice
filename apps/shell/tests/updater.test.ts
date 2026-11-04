@@ -406,6 +406,34 @@ describe('initAutoUpdater', () => {
     expect(pushUpdateState).toHaveBeenCalledWith({ phase: 'downloaded', percent: 100 })
   })
 
+  it('writes the download progress by tenths, and not a line for every event when the percent is not a number', async () => {
+    const { setDiagSink } = await import('@genoffice/ai-provider/diag-hook')
+    const lines: Array<{ ev: string; data: any }> = []
+    setDiagSink({
+      info: (_c, ev, data) => void lines.push({ ev, data }),
+      warn: () => undefined,
+      error: () => undefined,
+    })
+    try {
+      const { initAutoUpdater } = await loadUpdater()
+      initAutoUpdater(() => null)
+      updaterState.listeners.get('update-available')!({ version: '0.2.0' })
+      lastShownActions().onDownload()
+      const progress = updaterState.listeners.get('download-progress')!
+      for (let i = 0; i < 100; i++) progress({ percent: Number.NaN, total: 0 })
+      for (let i = 0; i < 50; i++) progress({ total: 0 })
+      expect(lines.filter((l) => l.ev === 'progress')).toHaveLength(1)
+      expect(lines.find((l) => l.ev === 'progress')!.data.percent).toBeNull()
+      lines.length = 0
+      for (let percent = 1; percent <= 100; percent++) progress({ percent, total: 10 })
+      // 11 tenths (0..10), however many events there are
+      expect(lines.filter((l) => l.ev === 'progress').length).toBeLessThanOrEqual(11)
+      expect(lines.filter((l) => l.ev === 'progress').length).toBeGreaterThanOrEqual(10)
+    } finally {
+      setDiagSink(undefined)
+    }
+  })
+
   it('surfaces a failed download as the error phase', async () => {
     downloadUpdate.mockImplementation(() => Promise.reject(new Error('offline')))
     const { initAutoUpdater } = await loadUpdater()

@@ -1,3 +1,4 @@
+import { observeChild } from './diag-hook'
 import { spawn } from 'node:child_process'
 import { tmpdir } from 'node:os'
 import { killProcessTree, resolveAgyCliPath } from './agy-cli'
@@ -45,6 +46,7 @@ const realDeps: AgyUsageDeps = {
         stdio: ['ignore', 'pipe', 'pipe'],
         detached: process.platform !== 'win32',
       })
+      observeChild(child, 'agy-usage')
       let out = ''
       let settled = false
       const finish = (action: () => void) => {

@@ -1,5 +1,6 @@
 import { appendFileSync, mkdirSync, renameSync, statSync } from 'node:fs'
 import { join } from 'node:path'
+import { diagHook } from '@genoffice/ai-provider/diag-hook'
 
 export const BOOTSTRAP_LOG_FILE = 'document-memory.log'
 const MAX_LOG_BYTES = 512 * 1024
@@ -9,7 +10,13 @@ const MAX_LOG_BYTES = 512 * 1024
  * `console.*` output is not kept anywhere in a packaged app, so a failed migration used to leave no trace. Never throws;
  * callers pass aggregate text only (no document names or content).
  */
-export function appendBootstrapLog(dir: string, level: 'info' | 'warn' | 'error', message: string): void {
+export function appendBootstrapLog(
+  dir: string,
+  level: 'info' | 'warn' | 'error',
+  message: string,
+): void {
+  // the same line goes to the diagnostic log, beside what the app was doing at that moment
+  diagHook[level]('docmem', 'bootstrap', { detail: message })
   try {
     mkdirSync(dir, { recursive: true })
     const file = join(dir, BOOTSTRAP_LOG_FILE)

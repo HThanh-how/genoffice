@@ -1,3 +1,4 @@
+import { observeChild } from './diag-hook'
 import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process'
 import { createHash, randomUUID } from 'node:crypto'
 import { access, mkdtemp, readdir, rm, stat, writeFile } from 'node:fs/promises'
@@ -381,6 +382,7 @@ class CodexAppServerClient {
       stdio: ['pipe', 'pipe', 'pipe'],
       windowsHide: true,
     })
+    observeChild(this.child, 'codex-app-server')
     attachBoundedRpcStdout(
       this.child,
       (line) => this.onLine(line),
