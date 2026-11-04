@@ -107,6 +107,26 @@ describe('AiRequestLog', () => {
     log.dispose()
   })
 
+  it('warns once for every 30 s of silence of the wire, also after a long heartbeat that stopped', () => {
+    const { lines, sink } = make()
+    const log = start(sink)
+    for (let s = 5; s <= 600; s += 5) {
+      vi.advanceTimersByTime(5_000)
+      log.wire() // a heartbeat for ten minutes ...
+    }
+    const before = silent(lines).length
+    vi.advanceTimersByTime(120_000) // ... and then nothing
+    const warned = silent(lines).slice(before)
+    // not at every check of 15 s: the first one at 30 s of silence, then one for every 30 s
+    expect(warned.length).toBeGreaterThanOrEqual(3)
+    expect(warned.length).toBeLessThanOrEqual(5)
+    for (let i = 1; i < warned.length; i++)
+      expect(
+        warned[i]!.data.silentWireMs - warned[i - 1]!.data.silentWireMs,
+      ).toBeGreaterThanOrEqual(30_000)
+    log.dispose()
+  })
+
   it('is quiet while content keeps arriving, and starts counting again after it', () => {
     const { lines, sink } = make()
     const log = start(sink)
