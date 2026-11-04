@@ -62,8 +62,17 @@ export interface StorageBootstrapOptions {
   logDir?: string
 }
 
+/** Name markers of a database migration, staging or relocation that did not finish. */
+const MIGRATION_TEMP_MARKERS = ['.tmp', '.migrating', '.moving']
+
 /**
  * Detects any leftover or unexpected temporary files associated with migration or cutover.
+ *
+ * Only files named after the database itself count: `document-memory.db.migrating`,
+ * `document-memory.db.v3.tmp`, `document-memory.db.v3.tmp.db` and their `-wal` / `-shm` files. The
+ * temp file of an atomic write of another setting that happens to sit in the same folder
+ * (`document-memory-folders.json.tmp`, `document-memory.migration-state.json.tmp`, …) is not a
+ * migration artifact; treating it as one switched the whole document memory off for good.
  */
 export function findUnexpectedTempArtifacts(
   dbDir: string,
@@ -71,13 +80,14 @@ export function findUnexpectedTempArtifacts(
 ): string[] {
   if (!existsSync(dbDir)) return []
   const found: string[] = []
-  const prefix = dbBase.replace(/\.db$/, '')
+  // the database's own name: `document-memory.db…`, never `document-memory-…` or `document-memory.…json`
+  const prefix = dbBase
 
   try {
     const entries = readdirSync(dbDir)
     for (const name of entries) {
       if (!name.startsWith(prefix)) continue
-      if (name.includes('.tmp') || name.includes('.migrating') || name.includes('.moving')) {
+      if (MIGRATION_TEMP_MARKERS.some((marker) => name.includes(marker))) {
         found.push(join(dbDir, name))
       }
     }
@@ -88,6 +98,7 @@ export function findUnexpectedTempArtifacts(
       join(dbDir, `${dbBase}.v3.tmp.db`),
       join(dbDir, `${dbBase}.tmp`),
       join(dbDir, `${dbBase}.migrating`),
+      join(dbDir, `${dbBase}.moving`),
     ]
     for (const candidate of directCandidates) {
       if (existsSync(candidate)) found.push(candidate)
