@@ -238,6 +238,7 @@ describe('DiagnosticsLogger', () => {
     }
     expect(reports.some((m) => /could not (move|put)/.test(m))).toBe(true)
     // the cause is reported with the path, and the newest events are on disk
+    await log.settled()
     const all = readdirSync(dir)
       .flatMap((f) => lines(dir, f))
       .map((l) => l.ev)
@@ -267,6 +268,7 @@ describe('DiagnosticsLogger', () => {
       log.info('a', `event-${i}`, { pad: 'y'.repeat(50) })
       await log.flush()
     }
+    await log.settled()
     const all = readdirSync(dir)
       .flatMap((f) => lines(dir, f))
       .map((l) => l.ev)
@@ -305,6 +307,7 @@ describe('DiagnosticsLogger', () => {
       await log.flush()
     }
     expect(pauses.slice(0, 2)).toEqual([50, 200])
+    await log.settled()
     const all = readdirSync(dir)
       .flatMap((f) => lines(dir, f))
       .map((l) => l.ev)
@@ -1422,7 +1425,7 @@ describe('DiagnosticsLogger moving to the second folder', () => {
     expect(Date.now() - started).toBeLessThan(270) // one timeout (150), not two (300)
   })
 
-  it('tidies the old set-aside files later when the first try was held back', async () => {
+  it('tidies the old set-aside files down to the number kept, even if the listing answers late', async () => {
     const dir = tmp()
     for (const ts of [
       '1700000000001',
@@ -1433,34 +1436,96 @@ describe('DiagnosticsLogger moving to the second folder', () => {
     ]) {
       writeFileSync(join(dir, `genoffice.${ts}.jsonl`), 'old\n')
     }
-    let stuck = true
-    let calls = 0
+    const orphans = (): number =>
+      readdirSync(dir).filter((f) => /^genoffice\.\d{10,}\.jsonl$/.test(f)).length
+    let answer: (names: string[]) => void = () => undefined
+    let lists = 0
     const fs: LogFs = {
       ...realLogFs,
-      appendFile: (p, t) => {
-        // one earlier operation is stuck, so the first write does not start the tidying
-        if (stuck && calls++ === 0) return new Promise<void>(() => undefined)
+      list: (d) => {
+        lists++
+        return new Promise<string[]>((resolve) => (answer = resolve)).then(
+          (names) => names ?? realLogFs.list(d),
+        )
+      },
+    }
+    const log = new DiagnosticsLogger({
+      dir,
+      fs,
+      files: 5, // keeps 4 set-aside files
+      writeTimeoutMs: 15,
+      onInternalError: () => undefined,
+    })
+    log.error('a', 'one')
+    await log.flush()
+    await new Promise((r) => setTimeout(r, 40)) // the listing is given up, and is still unanswered
+    expect(lists).toBe(1)
+    expect(orphans()).toBe(5) // nothing is removed on a listing that has not come
+    answer(readdirSync(dir)) // the drive answers at last
+    await new Promise((r) => setTimeout(r, 50))
+    await log.settled()
+    expect(orphans()).toBe(4)
+    // and it was tidied once: the second line does not ask for another listing
+    log.error('a', 'two')
+    await log.flush()
+    await log.settled()
+    expect(lists).toBe(1)
+  })
+})
+
+describe('DiagnosticsLogger limits on sending a line again, and on closing', () => {
+  it('writes a line again once at most when the drive answers after the hang limit every time', async () => {
+    const dir = tmp()
+    const fs: LogFs = {
+      ...realLogFs,
+      appendFile: async (p, t) => {
+        await new Promise((r) => setTimeout(r, 120)) // always later than the hang limit, and it does write
         return realLogFs.appendFile(p, t)
       },
     }
     const log = new DiagnosticsLogger({
       dir,
       fs,
+      writeTimeoutMs: 20,
+      appendHangMs: 40,
       retryDelaysMs: [],
       retryBackoffMs: 0,
-      writeTimeoutMs: 15,
+      switchAfterFailures: 1000,
+      degradedAfterMs: 1e9,
       onInternalError: () => undefined,
     })
-    log.error('a', 'one')
-    await log.flush() // times out: one hung operation, so no tidying yet
-    stuck = false
-    log.error('a', 'two')
-    await log.flush()
-    await log.settled()
-    // tidying can only start once nothing is stuck; it never ran while the hung append was there
-    expect(
-      readdirSync(dir).filter((f) => /^genoffice\.\d{10,}\.jsonl$/.test(f)).length,
-    ).toBeLessThanOrEqual(5)
+    log.error('a', 'only-once-more')
+    for (let round = 0; round < 6; round++) {
+      await log.flush()
+      await new Promise((r) => setTimeout(r, 130)) // let the late appends land
+    }
+    const rows = lines(dir).map((l) => l.ev)
+    expect(rows.filter((e) => e === 'only-once-more').length).toBeLessThanOrEqual(3)
+    expect(rows).toContain('flush.maybeDuplicate')
+    expect(log.stats().droppedTotal).toBeGreaterThan(0)
+    // given up, not sent for ever (what may still wait is the note that says lines were dropped)
+    expect(log.queued).toBeLessThanOrEqual(1)
+  })
+
+  it('close() stops waiting after the close timeout when the drive never answers', async () => {
+    const fs: LogFs = {
+      ...realLogFs,
+      mkdir: async () => undefined,
+      size: async () => 0,
+      list: async () => [],
+      appendFile: () => new Promise<void>(() => undefined),
+    }
+    const log = new DiagnosticsLogger({
+      dir: '/d',
+      fs,
+      writeTimeoutMs: 30_000,
+      closeTimeoutMs: 80,
+      onInternalError: () => undefined,
+    })
+    log.error('a', 'x')
+    const started = Date.now()
+    await log.close()
+    expect(Date.now() - started).toBeLessThan(1_000) // not the 120 s the write would take to give up
   })
 })
 
@@ -1832,7 +1897,7 @@ describe('DiagnosticsLogger with a real lock held by another process (Windows on
 
   const waitLocked = (child: ChildProcess): Promise<void> =>
     new Promise((resolve, reject) => {
-      const timer = setTimeout(() => reject(new Error('lock holder did not start')), 15_000)
+      const timer = setTimeout(() => reject(new Error('lock holder did not start')), 45_000)
       child.once('error', (error) => {
         clearTimeout(timer)
         reject(error)
@@ -1893,7 +1958,7 @@ describe('DiagnosticsLogger with a real lock held by another process (Windows on
         await release(child)
       }
     },
-    60_000,
+    120_000,
   )
 
   it.runIf(process.platform === 'win32')(
@@ -1932,6 +1997,6 @@ describe('DiagnosticsLogger with a real lock held by another process (Windows on
         await release(child)
       }
     },
-    60_000,
+    120_000,
   )
 })

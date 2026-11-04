@@ -206,4 +206,66 @@ describe('the rotating log file', () => {
     write('line')
     expect(reports).toEqual(['could not write /x/y.log'])
   })
+
+  it('tries the rename again after short pauses when Windows refuses it for a moment', () => {
+    const pauses: number[] = []
+    const renames: string[] = []
+    let calls = 0
+    const write = rotatingFileWriter(
+      '/logs/a.log',
+      {
+        append: () => undefined,
+        size: () => 5000,
+        rename: (from, to) => {
+          renames.push(`${from}>${to}`)
+          if (++calls <= 2)
+            throw Object.assign(new Error('busy'), { code: calls === 1 ? 'EPERM' : 'EBUSY' })
+        },
+      },
+      100,
+      { report: () => undefined, pause: (ms) => void pauses.push(ms) },
+    )
+    write('line')
+    expect(calls).toBe(3)
+    expect(pauses).toEqual([15, 40])
+  })
+
+  it('gives up the rename after the pauses and falls back to emptying the file', () => {
+    const pauses: number[] = []
+    const truncates: string[] = []
+    const write = rotatingFileWriter(
+      '/logs/a.log',
+      {
+        append: () => undefined,
+        size: () => 5000,
+        rename: () => {
+          throw Object.assign(new Error('locked'), { code: 'EPERM' })
+        },
+        truncate: (p) => void truncates.push(p),
+      },
+      100,
+      { report: () => undefined, pause: (ms) => void pauses.push(ms) },
+    )
+    write('line')
+    expect(pauses).toEqual([15, 40, 90])
+    expect(truncates).toEqual(['/logs/a.log'])
+  })
+
+  it('does not wait for an error that waiting cannot cure', () => {
+    const pauses: number[] = []
+    const write = rotatingFileWriter(
+      '/logs/a.log',
+      {
+        append: () => undefined,
+        size: () => 5000,
+        rename: () => {
+          throw Object.assign(new Error('gone'), { code: 'ENOENT' })
+        },
+      },
+      100,
+      { report: () => undefined, pause: (ms) => void pauses.push(ms) },
+    )
+    write('line')
+    expect(pauses).toEqual([])
+  })
 })

@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 import { describeError, redactString, redactValue } from '../src/main/diagnostics/redact'
 
 describe('diagnostics redaction', () => {
@@ -813,23 +813,34 @@ describe('diagnostics redaction', () => {
   })
 
   it('past the text budget a string is only measured, never read', () => {
-    const big = Array.from({ length: 100 }, (_, i) => ({
-      [`k${i}`]: 'x'.repeat(4000),
-    }))
+    // 20 lists of 20 strings of 4,000 characters: 1.6 million characters, far past the 200,000 allowed
+    const lists: Record<string, string[]> = {}
+    for (let i = 0; i < 20; i++) {
+      lists[`list${i}`] = Array.from(
+        { length: 20 },
+        (_, j) => `text-${i}-${j} ${'x'.repeat(3_990)}`,
+      )
+    }
     const started = performance.now()
-    const out = JSON.stringify(redactValue({ list: big, password: 'hunter2hunter2' }))
+    const out = redactValue({ ...lists, password: 'hunter2hunter2' }) as Record<string, any>
     expect(performance.now() - started).toBeLessThan(2_000)
-    expect(out).not.toContain('hunter2hunter2')
-    // the later strings were not read: they are lengths
-    expect(out).toContain('"redacted":true')
+    // the first strings are read (and clipped), the later ones are only lengths
+    expect(typeof out.list0[0]).toBe('string')
+    expect(out.list19[19]).toMatchObject({ redacted: true, len: expect.any(Number) })
+    expect(JSON.stringify(out).length).toBeLessThan(400_000)
+    // and a secret that comes after all of them is masked all the same
+    expect(JSON.stringify(out)).not.toContain('hunter2hunter2')
   })
 
   it('does not build a list of entries for a huge object', () => {
     const huge: Record<string, number> = {}
     for (let i = 0; i < 300_000; i++) huge[`k${i}`] = i
-    const started = performance.now()
+    const entries = vi.spyOn(Object, 'entries')
     const out = redactValue(huge) as Record<string, unknown>
-    expect(performance.now() - started).toBeLessThan(500)
+    // (the object is walked key by key and cut; turning it into a list of 300,000 entries first
+    // would have been Object.entries(huge))
+    expect(entries.mock.calls.some(([value]) => value === huge)).toBe(false)
+    entries.mockRestore()
     expect(Object.keys(out).length).toBeLessThanOrEqual(42)
   })
 
@@ -851,5 +862,20 @@ describe('diagnostics redaction', () => {
     expect(parsed.accessToken[0].a).toMatchObject({ redacted: true })
     expect(parsed.sessionId.id).toBe(uuid)
     expect(parsed.requestIds[0]).toBe(uuid)
+  })
+
+  it('removes a user name and password written as name:value after auth, login or user', () => {
+    for (const [text, secret] of [
+      ['auth:admin:hunter22', 'hunter22'],
+      ['auth: admin:hunter22 failed', 'hunter22'],
+      ['login admin:pass123 ok', 'pass123'],
+      ['user bob:s3cret rejected', 's3cret'],
+      ['credentials svc:Pw9876x', 'Pw9876x'],
+    ] as const) {
+      expect(redactString(text), text).not.toContain(secret)
+    }
+    // ordinary prose with a colon is left alone
+    expect(redactString('login page: loaded in 12 ms')).toBe('login page: loaded in 12 ms')
+    expect(redactString('user interface: ready')).toBe('user interface: ready')
   })
 })

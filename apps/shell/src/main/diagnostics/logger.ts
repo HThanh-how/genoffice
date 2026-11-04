@@ -65,6 +65,8 @@ export interface LoggerOptions {
   readonly switchAfterFailures?: number
   /** one attempt to write (including its preparation) is given up after this long (default 30 s) */
   readonly writeTimeoutMs?: number
+  /** close() waits no longer than this for the last writes (default 5 s) */
+  readonly closeTimeoutMs?: number
   /** an append that has been handed to the file system is given up only after this long (default 4x the above) */
   readonly appendHangMs?: number
   /** a second folder, on another drive, to move to when the first has not answered for `degradedAfterMs` */
@@ -115,6 +117,8 @@ interface Entry {
   readonly seq: number
   readonly rank: number
   readonly line: string
+  /** how many times the write of this line was given up while it may have reached the file */
+  tries?: number
 }
 
 /** One try at writing: set to cancelled when it is given up, so that it changes nothing afterwards. */
@@ -196,6 +200,9 @@ function mergeBySeq(lists: Entry[][]): Entry[] {
   }
 }
 
+/** a line whose write was given up this many times is not sent again */
+const MAX_GIVEN_UP_TRIES = 2
+
 const sleepUnref = (ms: number): Promise<void> =>
   new Promise((resolve) => {
     setTimeout(resolve, ms).unref?.()
@@ -231,6 +238,7 @@ export class DiagnosticsLogger {
   private readonly maxQueueBytes: number
   private readonly switchAfterFailures: number
   private readonly writeTimeoutMs: number
+  private readonly closeTimeoutMs: number
   private readonly appendHangMs: number
   private readonly degradedAfterMs: number
   private readonly yieldTick: () => Promise<void>
@@ -300,6 +308,7 @@ export class DiagnosticsLogger {
     this.maxQueueBytes = options.maxQueueBytes ?? 16_000_000
     this.switchAfterFailures = options.switchAfterFailures ?? 3
     this.writeTimeoutMs = options.writeTimeoutMs ?? 30_000
+    this.closeTimeoutMs = options.closeTimeoutMs ?? 5_000
     // (never shorter than the write timeout: the hang limit starts counting after it)
     this.appendHangMs = Math.max(
       options.appendHangMs ?? this.writeTimeoutMs * 4,
@@ -620,11 +629,21 @@ export class DiagnosticsLogger {
       if (outcome === 'superseded') return true
       if (outcome !== 'ok') {
         this.inflight = undefined
-        const rest = entries.slice(inflight.from)
+        let rest = entries.slice(inflight.from)
         this.report(
           `could not write ${this.activePath}; ${rest.length > 0 ? 'the lines are' : 'nothing'} kept for the next flush`,
           outcome.error,
         )
+        if (outcome.error instanceof TimeoutError) {
+          // A write that was given up after it had been handed over may still land, and a drive that
+          // answers after the hang limit every time would write each batch once per round for ever.
+          // A line is written again once at most; after that the line is counted as dropped.
+          const before = rest.length
+          rest = rest.filter(
+            (entry) => (entry.tries = (entry.tries ?? 0) + 1) <= MAX_GIVEN_UP_TRIES,
+          )
+          if (rest.length < before) this.noteDropped(before - rest.length)
+        }
         this.requeue(rest)
         // try again later, not at the next log call
         this.retryNotBefore = Date.now() + this.retryBackoffMs
@@ -1067,11 +1086,20 @@ export class DiagnosticsLogger {
 
   /** Writes what is queued and stops accepting lines. */
   async close(): Promise<void> {
-    // lines that arrive while the last write runs are written too
-    // (but a drive that does not answer is not asked three times: stop when a pass wrote nothing)
+    // lines that arrive while the last write runs are written too, but the wait is bounded: a drive
+    // that does not answer must not keep the caller for as long as the writes take to give up
+    const deadline = Date.now() + this.closeTimeoutMs
     let before = Infinity
     for (let pass = 0; pass < 3; pass++) {
-      await this.flush()
+      const left = deadline - Date.now()
+      if (left <= 0) break
+      let timer: NodeJS.Timeout | undefined
+      const limit = new Promise<void>((resolve) => {
+        timer = setTimeout(resolve, left)
+        timer.unref?.()
+      })
+      await Promise.race([this.flush(), limit])
+      if (timer) clearTimeout(timer)
       // nothing more to write, no progress, or the drive is not answering: do not wait again
       if (this.queued === 0 || this.queued >= before) break
       if (this.hungCount() > 0 || this.retryNotBefore > Date.now()) break

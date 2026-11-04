@@ -3,6 +3,7 @@ import { cpuUsage, memoryUsage } from 'node:process'
 import { appendFileSync, existsSync, mkdirSync, renameSync, statSync, writeFileSync } from 'node:fs'
 import { dirname } from 'node:path'
 import { getSqliteTimingSummary } from '../document-memory/sqlite-timing'
+import { log as diag } from '../diagnostics'
 import { rotatingFileWriter } from './renderer-diagnostics'
 import { operationsSince } from '../trace-op'
 
@@ -230,16 +231,22 @@ export function startLoopWatchdog(options: LoopWatchdogOptions): () => void {
 /** The production wiring: stalls go to a rotated local file (default 1 MB, one previous generation kept). Off with GENOFFICE_NO_LAG_LOG=1. */
 export function startLoopWatchdogToFile(logPath: string): (() => void) | null {
   if (process.env.GENOFFICE_NO_LAG_LOG === '1') return null
+  const toFile = rotatingFileWriter(logPath, {
+    append: (path, text) => {
+      mkdirSync(dirname(path), { recursive: true })
+      appendFileSync(path, text)
+    },
+    size: (path) => (existsSync(path) ? statSync(path).size : 0),
+    rename: (from, to) => renameSync(from, to),
+    truncate: (path) => writeFileSync(path, ''),
+  })
   return startLoopWatchdog({
-    write: rotatingFileWriter(logPath, {
-      append: (path, text) => {
-        mkdirSync(dirname(path), { recursive: true })
-        appendFileSync(path, text)
-      },
-      size: (path) => (existsSync(path) ? statSync(path).size : 0),
-      rename: (from, to) => renameSync(from, to),
-      truncate: (path) => writeFileSync(path, ''),
-    }),
+    write: (line) => {
+      toFile(line)
+      // ... and into the diagnostic log, so that a stall can be read beside what the app was doing
+      // (the line holds function names and file positions, no content)
+      diag.warn('loop', 'stall', { detail: line })
+    },
     profile: process.env.GENOFFICE_NO_LAG_PROFILE !== '1',
   })
 }

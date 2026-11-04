@@ -511,6 +511,12 @@ export function redactString(input: string): string {
     /([A-Za-z0-9_-]{0,32}?(?:api[_-]?key|secret[_-]?(?:access[_-]?)?key|token|secret|(?:access|signing|encryption|private)[_-]?key))(["']?\s*[:=]\s*["']?)(?!\[redacted\])[^\s"',;&]{4,}/gi,
     '$1$2[redacted]',
   )
+  // `auth: user:password` and `login admin:pass123`: the value of these may hold a colon
+  s = s.replace(/(\bauth)(["']?\s*[:=]\s*["']?)(?!\[redacted\])[^\s"',;&]{4,}/gi, '$1$2[redacted]')
+  s = s.replace(
+    /(\b(?:login|user|username|credentials?)\s+)[A-Za-z][\w.-]*:[A-Za-z]*\d[A-Za-z0-9]*\b/gi,
+    '$1[redacted]',
+  )
   // URL query strings: names stay, values go
   s = s.replace(/([?&][^=&\s#"']{1,40}=)[^&\s#"']+/g, '$1[q]')
   // Identifiers that are meant to be matched against other logs are set aside once the credential rules have run on them

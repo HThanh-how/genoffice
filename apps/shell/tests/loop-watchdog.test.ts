@@ -1,3 +1,5 @@
+import { readFileSync } from 'node:fs'
+import { join } from 'node:path'
 import { describe, expect, it, vi } from 'vitest'
 import {
   startLoopWatchdog,
@@ -125,5 +127,17 @@ describe('startLoopWatchdog', () => {
     expect(lines.some((l) => l.kind === 'main-thread-stall')).toBe(true)
     stop()
     vi.useRealTimers()
+  })
+})
+
+describe('the production wiring', () => {
+  it('writes each stall to the diagnostic log as well as to main-lag.log', () => {
+    const source = readFileSync(
+      join(__dirname, '..', 'src', 'main', 'fork', 'loop-watchdog.ts'),
+      'utf8',
+    )
+    const wiring = source.slice(source.indexOf('export function startLoopWatchdogToFile'))
+    expect(wiring).toContain('toFile(line)')
+    expect(wiring).toContain("diag.warn('loop', 'stall', { detail: line })")
   })
 })
