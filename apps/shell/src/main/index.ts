@@ -515,6 +515,7 @@ import {
 } from './window-bounds'
 import { installShellCloseGuard, promptDirtyTabs } from './window-close-guard'
 import { quitCoordinator } from './quit-coordinator'
+import { hideWindowsForQuit, runQuitSequence, type QuitStep } from './quit-sequence'
 import {
   activateDetached,
   closeDetachedWithoutPrompt,
@@ -8833,6 +8834,13 @@ app.on('open-file', (event, filePath) => {
 })
 
 app.on('second-instance', (_event, argv, _cwd, additionalData) => {
+  if (appShuttingDown) {
+    // Closing (the windows are already hidden): do not bring a window back to a process that is
+    // shutting its databases. Start the app again, with what was asked for, once this one is over.
+    relaunchAfterQuit = argv.slice(1)
+    diag.info('quit', 'relaunch-requested')
+    return
+  }
   const paths = collectLaunchPaths(withoutFolderScanArgs(argv), additionalData)
   const folders = parseFolderScanArgv(argv, additionalData)
   revealShellWindow()
@@ -9350,6 +9358,11 @@ app.on('window-all-closed', () => {
 app.on('before-quit', (event) => {
   if (quitCoordinator.isConfirmed()) {
     appShuttingDown = true
+    // The quit is decided: take the windows off the screen now. What follows (closing large
+    // databases) can keep the main thread busy for seconds, and a window that is still shown while
+    // that happens is labelled "Not Responding" by Windows.
+    const hidden = hideWindowsForQuit(BrowserWindow.getAllWindows())
+    diag.info('quit', 'confirmed', { windowsHidden: hidden })
     markSheetsShuttingDown()
     stopSheetsSidecar()
     stopMcpSync()
@@ -9372,6 +9385,16 @@ app.on('before-quit', (event) => {
 })
 
 let appShutdownState: 'idle' | 'shutting-down' | 'done' = 'idle'
+/** the app was started again while it was closing: it is started once more when it has closed */
+let relaunchAfterQuit: string[] | null = null
+/** the size of a database's write-ahead log, which decides how long closing it takes (0 if there is none) */
+function walBytes(dbPath: string): number {
+  try {
+    return statSync(`${dbPath}-wal`).size
+  } catch {
+    return 0
+  }
+}
 // after every window has closed, so the shell window's own 'closed' republish cannot revive the file
 app.on('will-quit', (event) => {
   if (appShutdownState === 'done') return
@@ -9380,50 +9403,90 @@ app.on('will-quit', (event) => {
   appShutdownState = 'shutting-down'
 
   appShuttingDown = true
-  markSheetsShuttingDown()
-  stopSheetsSidecar()
-  stopMcpSync()
+  // (also when the windows were closed without going through the confirmed quit above)
+  hideWindowsForQuit(BrowserWindow.getAllWindows())
 
-  disposeDocumentIndexIpc?.()
-  disposeDocumentIndexIpc = null
-  folderScanReadyListeners.clear()
-  folderScan?.close()
-  knownSources?.close()
-  fileIndexer?.stop()
-  fileSearch?.close()
-  fileIndexStore?.close()
-  stopAuthWatch?.()
-  for (const watcher of folderWatchers.values()) watcher.close()
-  controlServer?.close()
-  // a second instance that lost the lock quits too; it must not delete the running editor's list
-  if (ownsOpenDocumentsRegistry) clearOpenDocuments(OPEN_DOCUMENTS_PATH())
+  const memoryDbPath =
+    documentMemory?.dbPath ?? join(resolveDbDir(app.getPath('userData')), 'document-memory.db')
+  const indexDbPath = join(app.getPath('userData'), 'file-index.db')
+  const steps: QuitStep[] = [
+    {
+      name: 'stop-background',
+      run: () => {
+        markSheetsShuttingDown()
+        stopSheetsSidecar()
+        stopMcpSync()
+        disposeDocumentIndexIpc?.()
+        disposeDocumentIndexIpc = null
+        folderScanReadyListeners.clear()
+      },
+    },
+    // (sizes only: they say how long the closing below will take, and help to find out why the logs grow)
+    {
+      name: 'wal-sizes',
+      run: () =>
+        void diag.info('quit', 'wal', {
+          documentMemory: walBytes(memoryDbPath),
+          fileIndex: walBytes(indexDbPath),
+        }),
+    },
+    { name: 'folder-scan-close', run: () => folderScan?.close() },
+    { name: 'known-sources-close', run: () => knownSources?.close() },
+    { name: 'file-indexer-stop', run: () => fileIndexer?.stop() },
+    { name: 'file-search-close', run: () => fileSearch?.close() },
+    { name: 'file-index-store-close', run: () => fileIndexStore?.close() },
+    {
+      name: 'watchers-close',
+      run: () => {
+        stopAuthWatch?.()
+        for (const watcher of folderWatchers.values()) watcher.close()
+        controlServer?.close()
+        // a second instance that lost the lock quits too; it must not delete the running editor's list
+        if (ownsOpenDocumentsRegistry) clearOpenDocuments(OPEN_DOCUMENTS_PATH())
+      },
+    },
+    {
+      name: 'document-memory-close',
+      run: async () => {
+        if (!documentMemory) return
+        let deadlineTimer: NodeJS.Timeout | null = null
+        const timeoutPromise = new Promise<'timeout'>((resolve) => {
+          deadlineTimer = setTimeout(() => resolve('timeout'), 15_000)
+          deadlineTimer.unref?.()
+        })
+        try {
+          const outcome = await Promise.race([
+            documentMemory
+              .closeAsync((name, ms) => diag.info('quit', 'document-memory', { name, ms }))
+              .then(() => 'closed' as const),
+            timeoutPromise,
+          ])
+          if (outcome === 'timeout') {
+            diag.warn('quit', 'document-memory.timeout', { ms: 15_000 })
+            console.warn(
+              '[app-shutdown] Document memory closeAsync exceeded 15s deadline; forcing process teardown',
+            )
+          }
+        } catch (err) {
+          console.error('[app-shutdown] Error during document memory closeAsync:', err)
+          throw err
+        } finally {
+          if (deadlineTimer) clearTimeout(deadlineTimer)
+        }
+      },
+    },
+  ]
 
-  const memoryClosePromise = (async () => {
-    if (!documentMemory) return
-    let deadlineTimer: NodeJS.Timeout | null = null
-    const timeoutPromise = new Promise<'timeout'>((resolve) => {
-      deadlineTimer = setTimeout(() => resolve('timeout'), 15_000)
-      deadlineTimer.unref?.()
-    })
-    try {
-      const outcome = await Promise.race([
-        documentMemory.closeAsync().then(() => 'closed' as const),
-        timeoutPromise,
-      ])
-      if (outcome === 'timeout') {
-        console.warn(
-          '[app-shutdown] Document memory closeAsync exceeded 15s deadline; forcing process teardown',
-        )
-      }
-    } catch (err) {
-      console.error('[app-shutdown] Error during document memory closeAsync:', err)
-    } finally {
-      if (deadlineTimer) clearTimeout(deadlineTimer)
-    }
-  })()
-
-  void memoryClosePromise.finally(() => {
+  void runQuitSequence(steps, {
+    log: diag,
+    forceExit: () => {
+      flushDiagnosticsSync()
+      app.exit(0)
+    },
+  }).finally(() => {
     appShutdownState = 'done'
+    // the app was started again during the clean-up: start it again now that this one is over
+    if (relaunchAfterQuit) app.relaunch({ args: relaunchAfterQuit })
     app.quit()
   })
 })

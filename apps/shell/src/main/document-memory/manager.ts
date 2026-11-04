@@ -336,7 +336,7 @@ export class DocumentMemoryManager {
     if (needing.length > 0) { await this.migrateLegacyDocument(needing[0]!); this.scheduleMigrationStep(500) }
   }
   close(): void { void this.closeAsync() }
-  closeAsync(): Promise<void> {
+  closeAsync(onStep?: (name: string, ms: number) => void): Promise<void> {
     if (this.shutdownPromise) return this.shutdownPromise
     if (!this.stopped) {
       this.stopped = true; this.heldRoots.dispose(); this.stopFolderPauseWatch(); this.sourceRecovery.dispose(); this.stopJunkPurge?.(); this.statusAgg?.close(); this.stopPolicyWatch(); this.epoch++
@@ -345,7 +345,7 @@ export class DocumentMemoryManager {
       this.queue.length = 0; this.queued.clear(); this.gate.clear(); this.urgent.clear(); this.deferred.clear()
     }
     return (this.shutdownPromise = (async () => {
-      try { await this.localOcrWiring?.dispose().catch(() => undefined); await this.host.terminate() } finally { this.store.close() }
+      let t = performance.now(); const lap = (n: string): void => { onStep?.(n, Math.round(performance.now() - t)); t = performance.now() }; try { await this.localOcrWiring?.dispose().catch(() => undefined); lap('ocr-dispose'); await this.host.terminate(); lap('worker-terminate') } finally { this.store.close(); lap('store-close') }
     })())
   }
   private readonly heldRoots = new HeldRootPaths((paths) => { if (!this.stopped && this.enabled) for (const p of paths) try { this.enqueue(p) } catch {} }); private readonly stopFolderPauseWatch = folderPauses.subscribe(() => this.drain()); private enqueue(path: string, prioritize = false, bytes?: number): void {
