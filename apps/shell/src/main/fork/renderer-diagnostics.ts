@@ -1,4 +1,5 @@
 import type { WebContents } from 'electron'
+import { reportDiagnosticsProblem } from '../diagnostics/fallback-report'
 
 /**
  * A small record of what each tab's page did while it loaded, for the day a tab shows up white and
@@ -90,15 +91,46 @@ export function rotatingFileWriter(
     append(path: string, text: string): void
     size(path: string): number
     rename(from: string, to: string): void
+    /** last resort when the file cannot be moved aside: empty it so it cannot grow without bound */
+    truncate?(path: string): void
   },
   maxBytes = 1024 * 1024,
+  options: {
+    report?: (message: string, error: unknown) => void
+    now?: () => number
+    retryRotateMs?: number
+  } = {},
 ): DiagnosticsWrite {
+  const report = options.report ?? reportDiagnosticsProblem
+  const now = options.now ?? Date.now
+  const retryRotateMs = options.retryRotateMs ?? 60_000
+  let nextRotateAt = 0
   return (line) => {
+    // Rotation and appending are separate steps: a rotation that fails (a locked file on Windows,
+    // for instance) must not stop the line from being written, or the log goes silent for good.
     try {
-      if (deps.size(path) > maxBytes) deps.rename(path, `${path}.1`)
+      if (now() >= nextRotateAt && deps.size(path) > maxBytes) {
+        try {
+          deps.rename(path, `${path}.1`)
+        } catch (error) {
+          nextRotateAt = now() + retryRotateMs
+          report(`could not rotate ${path}`, error)
+          try {
+            deps.truncate?.(path)
+          } catch (truncateError) {
+            report(`could not truncate ${path}`, truncateError)
+          }
+        }
+      }
+    } catch (error) {
+      nextRotateAt = now() + retryRotateMs
+      report(`could not check the size of ${path}`, error)
+    }
+    try {
       deps.append(path, `${line}\n`)
-    } catch {
-      // a diagnostic record must never get in the way of opening a document
+    } catch (error) {
+      // a diagnostic record must never get in the way of opening a document, but say that it failed
+      report(`could not write ${path}`, error)
     }
   }
 }

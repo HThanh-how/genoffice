@@ -1,6 +1,6 @@
 import { Session } from 'node:inspector'
 import { cpuUsage, memoryUsage } from 'node:process'
-import { appendFileSync, existsSync, mkdirSync, renameSync, statSync } from 'node:fs'
+import { appendFileSync, existsSync, mkdirSync, renameSync, statSync, writeFileSync } from 'node:fs'
 import { dirname } from 'node:path'
 import { getSqliteTimingSummary } from '../document-memory/sqlite-timing'
 import { rotatingFileWriter } from './renderer-diagnostics'
@@ -238,6 +238,7 @@ export function startLoopWatchdogToFile(logPath: string): (() => void) | null {
       },
       size: (path) => (existsSync(path) ? statSync(path).size : 0),
       rename: (from, to) => renameSync(from, to),
+      truncate: (path) => writeFileSync(path, ''),
     }),
     profile: process.env.GENOFFICE_NO_LAG_PROFILE !== '1',
   })

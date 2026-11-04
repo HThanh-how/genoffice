@@ -1,0 +1,287 @@
+import { mkdtempSync, readFileSync, rmSync, writeFileSync, existsSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+import { afterEach, describe, expect, it } from 'vitest'
+import {
+  FALLBACK_FILE,
+  FallbackReporter,
+  type FallbackFs,
+} from '../src/main/diagnostics/fallback-report'
+
+/** the mocks compare paths: make them the same on Windows, where join() uses backslashes */
+const norm = (path: string): string => path.split('\\').join('/')
+
+const dirs: string[] = []
+afterEach(() => {
+  for (const d of dirs.splice(0)) rmSync(d, { recursive: true, force: true })
+})
+const tmp = (): string => {
+  const d = mkdtempSync(join(tmpdir(), 'diag-fb-'))
+  dirs.push(d)
+  return d
+}
+const text = (dir: string): string => readFileSync(join(dir, FALLBACK_FILE), 'utf8')
+
+describe('the fallback channel for logger problems', () => {
+  it('writes the cause (code and message) to a plain file next to the logs', async () => {
+    const dir = tmp()
+    const r = new FallbackReporter({ dir, echo: false })
+    r.report(
+      'could not rotate C:\\logs\\a.jsonl',
+      Object.assign(new Error('busy'), { code: 'EBUSY' }),
+    )
+    await r.idle()
+    expect(text(dir)).toContain('could not rotate')
+    expect(text(dir)).toContain('code=EBUSY')
+    expect(text(dir)).toContain('busy')
+  })
+
+  it('writes at most one line per interval and counts what it skipped', async () => {
+    const dir = tmp()
+    let now = 1_000_000
+    const r = new FallbackReporter({ dir, echo: false, now: () => now })
+    for (let i = 0; i < 50; i++) r.report(`problem ${i}`)
+    now += 11_000
+    r.report('later')
+    await r.idle()
+    const lines = text(dir).trim().split('\n')
+    expect(lines).toHaveLength(2)
+    expect(lines[1]).toContain('(+49 skipped)')
+    expect(r.stats()).toMatchObject({ total: 51, written: 2, suppressed: 49 })
+  })
+
+  it('keeps the rate limit when the fallback file itself cannot be written', async () => {
+    let attempts = 0
+    const fs: FallbackFs = {
+      size: async () => 0,
+      mkdir: async () => undefined,
+      append: async () => {
+        attempts++
+        throw new Error('drive is gone')
+      },
+      move: async () => undefined,
+    }
+    let now = 0
+    const r = new FallbackReporter({ dir: '/x', echo: false, fs, now: () => now })
+    for (let i = 0; i < 100; i++) r.report(`problem ${i}`)
+    await r.idle()
+    expect(attempts).toBe(1)
+    expect(r.stats().failed).toBe(1)
+    now += 10_001
+    r.report('later')
+    await r.idle()
+    expect(attempts).toBe(2)
+  })
+
+  it('does not block: report returns before any file work is done', () => {
+    let touched = 0
+    const fs: FallbackFs = {
+      size: async () => {
+        touched++
+        return 0
+      },
+      mkdir: async () => void touched++,
+      append: async () => void touched++,
+      move: async () => void touched++,
+    }
+    const r = new FallbackReporter({ dir: '/x', echo: false, fs })
+    r.report('problem')
+    expect(touched).toBe(0)
+  })
+
+  it('stops growing at the size cap', async () => {
+    const dir = tmp()
+    let now = 0
+    const r = new FallbackReporter({ dir, echo: false, now: () => now, maxBytes: 200 })
+    for (let i = 0; i < 20; i++) {
+      now += 20_000
+      r.report(`a fairly long problem description number ${i}`)
+      await r.idle()
+    }
+    expect(readFileSync(join(dir, FALLBACK_FILE)).length).toBeLessThan(400)
+  })
+
+  it('moves a file that is already full at the start of the run to .old, so it can speak again', async () => {
+    const dir = tmp()
+    writeFileSync(join(dir, FALLBACK_FILE), 'x'.repeat(300))
+    const r = new FallbackReporter({ dir, echo: false, maxBytes: 200 })
+    r.report('new run problem')
+    await r.idle()
+    expect(text(dir)).toContain('new run problem')
+    expect(existsSync(join(dir, `${FALLBACK_FILE}.old`))).toBe(true)
+  })
+
+  it('never throws, even when the console and the folder are unusable', () => {
+    const r = new FallbackReporter({
+      dir: '/x',
+      fs: {
+        size: async () => {
+          throw new Error('x')
+        },
+        mkdir: async () => undefined,
+        append: async () => undefined,
+        move: async () => undefined,
+      },
+    })
+    const original = console.error
+    console.error = () => {
+      throw new Error('no console')
+    }
+    try {
+      expect(() => r.report('problem')).not.toThrow()
+    } finally {
+      console.error = original
+    }
+  })
+
+  it('does not write secrets that ended up in an error message', async () => {
+    const dir = tmp()
+    const r = new FallbackReporter({ dir, echo: false })
+    r.report('failed', new Error('Bearer abcdefghijklmnop1234'))
+    await r.idle()
+    expect(text(dir)).not.toContain('abcdefghijklmnop1234')
+  })
+
+  it('falls back to the other folder when the first cannot be written, and stays there', async () => {
+    const written: string[] = []
+    const fs: FallbackFs = {
+      size: async () => 0,
+      mkdir: async (dir) => {
+        if (dir === '/primary') throw new Error('read-only')
+      },
+      append: async (path) => void written.push(path),
+      move: async () => undefined,
+    }
+    let now = 0
+    const r = new FallbackReporter({
+      dir: '/primary',
+      altDir: '/alt',
+      echo: false,
+      fs,
+      now: () => now,
+    })
+    r.report('one')
+    await r.idle()
+    now += 20_000
+    r.report('two')
+    await r.idle()
+    expect(written).toHaveLength(2)
+    expect(written.every((p) => p.replace(/\\/g, '/').startsWith('/alt/'))).toBe(true)
+    expect(r.path.replace(/\\/g, '/')).toContain('/alt/')
+  })
+
+  it('gives up a hanging drive after the timeout instead of holding the next lines for ever', async () => {
+    const fs: FallbackFs = {
+      size: () => new Promise<number>(() => undefined),
+      mkdir: async () => undefined,
+      append: async () => undefined,
+      move: async () => undefined,
+    }
+    let now = 0
+    const r = new FallbackReporter({ dir: '/x', echo: false, fs, fsTimeoutMs: 30, now: () => now })
+    r.report('one')
+    await r.idle()
+    expect(r.stats().failed).toBe(1)
+    now += 20_000
+    r.report('two')
+    await r.idle() // the chain is not stuck behind the first
+    expect(r.stats().failed).toBe(2)
+  })
+
+  it('a hanging first folder and a good second one: the line is written there and the choice sticks', async () => {
+    const written: string[] = []
+    const fs: FallbackFs = {
+      size: (path) =>
+        norm(path).startsWith('/primary')
+          ? new Promise<number>(() => undefined)
+          : Promise.resolve(0),
+      mkdir: async () => undefined,
+      append: async (path) => void written.push(path),
+      move: async () => undefined,
+    }
+    let now = 0
+    const r = new FallbackReporter({
+      dir: '/primary',
+      altDir: '/alt',
+      echo: false,
+      fs,
+      fsTimeoutMs: 40,
+      now: () => now,
+    })
+    r.report('one')
+    await r.idle()
+    expect(written).toHaveLength(1)
+    expect(written[0]!.replace(/\\/g, '/')).toContain('/alt/')
+    expect(r.path.replace(/\\/g, '/')).toContain('/alt/')
+    expect(r.stats().written).toBe(1)
+    // the next line goes straight there, without waiting for the first folder again
+    now += 20_000
+    const started = Date.now()
+    r.report('two')
+    await r.idle()
+    expect(Date.now() - started).toBeLessThan(30)
+    expect(written).toHaveLength(2)
+  })
+
+  it('a late answer of the abandoned folder starts no write and does not disturb the counts', async () => {
+    let release: (n: number) => void = () => undefined
+    const written: string[] = []
+    const fs: FallbackFs = {
+      size: (path) =>
+        norm(path).startsWith('/primary')
+          ? new Promise<number>((resolve) => (release = resolve))
+          : Promise.resolve(0),
+      mkdir: async () => undefined,
+      append: async (path) => void written.push(norm(path)),
+      move: async () => undefined,
+    }
+    let now = 0
+    const r = new FallbackReporter({
+      dir: '/primary',
+      altDir: '/alt',
+      echo: false,
+      fs,
+      fsTimeoutMs: 20,
+      now: () => now,
+    })
+    r.report('one')
+    await r.idle()
+    release(0) // the primary answers, much too late
+    await new Promise((resolve) => setTimeout(resolve, 20))
+    now += 20_000
+    r.report('two')
+    await r.idle()
+    // nothing was written to the abandoned folder, and each line once
+    expect(written.filter((p) => p.startsWith('/primary/'))).toHaveLength(0)
+    expect(written.filter((p) => p.startsWith('/alt/'))).toHaveLength(2)
+    expect(r.stats().written).toBe(2)
+  })
+
+  it('does not open more than two operations on a drive that never answers, whatever the number of reports', async () => {
+    let started = 0
+    const fs: FallbackFs = {
+      size: () => {
+        started++
+        return new Promise<number>(() => undefined)
+      },
+      mkdir: async () => undefined,
+      append: async () => undefined,
+      move: async () => undefined,
+    }
+    let now = 0
+    const r = new FallbackReporter({
+      dir: '/dead',
+      altDir: '/dead2',
+      echo: false,
+      fs,
+      fsTimeoutMs: 5,
+      now: () => now,
+    })
+    for (let i = 0; i < 10; i++) {
+      now += 20_000
+      r.report(`problem ${i}`)
+      await r.idle()
+    }
+    expect(started).toBe(2)
+  })
+})
