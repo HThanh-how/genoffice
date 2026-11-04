@@ -1,3 +1,4 @@
+import { diagHook, observeChild } from './diag-hook'
 import { spawn } from 'node:child_process'
 import type { ChildProcessWithoutNullStreams } from 'node:child_process'
 import { randomUUID } from 'node:crypto'
@@ -882,6 +883,8 @@ function abortError(): Error {
 const requestLimiter = createAgyLimiter(AGY_MAX_CONCURRENCY)
 
 export interface AgyRunOptions {
+  /** ties the lines of this run in the diagnostic log to the request that started it */
+  reqId?: string | undefined
   cliPath?: string | undefined
   model: string
   conversationId?: string | undefined
@@ -1001,6 +1004,7 @@ export async function runAgy(
     })
     return await new Promise<AgyRunResult>((resolve, reject) => {
       const child = deps.spawn(cliPath, args, { cwd: stagingDir!, env: { ...deps.env } })
+      observeChild(child, 'agy-run', options.reqId)
       let settled = false
       let text = ''
       let lastStep = -1
@@ -1100,8 +1104,15 @@ export async function runAgy(
             reject(withTimeline(agyTruncatedError(partial, code)))
             return
           }
+          const ran = {
+            reqId: options.reqId,
+            code,
+            ms: Date.now() - startedAt,
+            steps: trace.length,
+          }
           // exit code 3 = the model or agent failed (possibly after streaming part of an answer)
           if (resultSeen?.ok && code !== 3) {
+            diagHook.info('ai', 'agy.run', { ...ran, truncated })
             // some turns carry the text only in the final result
             const full = text || resultSeen.response
             if (!text && resultSeen.response) options.onText?.(resultSeen.response)
@@ -1115,14 +1126,22 @@ export async function runAgy(
             })
             return
           }
-          reject(
-            classifyAgyFailure({
-              resultError: resultSeen?.error,
-              stderr,
-              exitCode: code,
-              partialText: partial,
-            }),
-          )
+          const failure = classifyAgyFailure({
+            resultError: resultSeen?.error,
+            stderr,
+            exitCode: code,
+            partialText: partial,
+          })
+          // What the CLI said at the end, so a failure the classifier files under "other" can be read
+          // later: the tail of its error and of stderr, cut short (the log redacts what looks like a secret).
+          diagHook.warn('ai', 'agy.failed', {
+            ...ran,
+            partialChars: partial.length,
+            resultError: (resultSeen?.error ?? '').slice(-200),
+            stderrTail: stderr.slice(-300),
+            failure: failure.message.slice(0, 120),
+          })
+          reject(failure)
         }),
       )
       child.stdin.end(buildAgyStdin(options.prompt))
@@ -1464,6 +1483,7 @@ async function streamAgyTurn(
         onFirstText: () => say({ phase: 'writing' }),
         cliPath,
         model,
+        ...(cb.requestId ? { reqId: cb.requestId } : {}),
         ...(conversationId ? { conversationId } : {}),
         prompt: prompt.prompt,
         files: prompt.files,
@@ -1855,6 +1875,7 @@ const realModelsDeps: AgyModelsDeps = {
         windowsHide: true,
         stdio: ['ignore', 'pipe', 'pipe'],
       })
+      observeChild(child, 'agy-models')
       let out = ''
       let err = ''
       child.stdout.on('data', (c: Buffer) => {

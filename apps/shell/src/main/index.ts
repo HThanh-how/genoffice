@@ -230,6 +230,7 @@ import {
   syncCloudProjects,
 } from './cloud-projects'
 import { handleDroppedFiles } from './dropped-files'
+import { setDiagSink } from '@genoffice/ai-provider/diag-hook'
 import { collectLaunchPaths, isOpenableLaunchPath } from './launch-paths'
 import { parseFolderScanArgv, withoutFolderScanArgs } from './folder-scan-argv'
 import { FolderScanManager } from './document-memory/folder-scan'
@@ -9033,6 +9034,8 @@ async function startShell(): Promise<void> {
   startLoopWatchdogToFile(join(userDataDir, 'logs', 'main-lag.log')) // local log, only written when the main thread stalls > 200 ms
   initDiagnostics({ userDataDir, version: app.getVersion() })
   diag.info('app', 'start', startupInfo(app, { packaged: app.isPackaged }))
+  // code that has no logger of its own (the AI provider, the updater) writes through this one
+  setDiagSink(diag)
   installLifecycleLogging({
     app,
     sink: diag,

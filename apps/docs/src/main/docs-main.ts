@@ -1,3 +1,4 @@
+import { diagHook } from '@genoffice/ai-provider/diag-hook'
 import { createHash, randomUUID } from 'node:crypto'
 import { handOffBytes } from './byte-handoff'
 import { appendAiDiagnostic } from './ai-diagnostics'
@@ -4630,6 +4631,43 @@ export function registerAiIpc(): void {
       lastPing = now
       send({ requestId, type: 'ping' })
     }
+    // The life of this request in the diagnostic log (numbers and fixed words only, never the text):
+    // when it started, when the first answer text came, how long it was silent, how it ended.
+    const startedAt = Date.now()
+    let firstDeltaMs: number | undefined
+    let deltas = 0
+    let toolCalls = 0
+    let lastSignalAt = startedAt
+    let silentLogged = 0
+    const heard = (): void => {
+      lastSignalAt = Date.now()
+      silentLogged = 0
+    }
+    diagHook.info('ai', 'request.start', {
+      reqId: requestId,
+      provider,
+      model: config.model,
+      messages: messages.length,
+      chars: messages.reduce(
+        (sum, m) => sum + ('text' in m && typeof m.text === 'string' ? m.text.length : 0),
+        0,
+      ),
+      tools: tools.length,
+      maxTokens,
+    })
+    const silenceTimer = setInterval(() => {
+      const silentMs = Date.now() - lastSignalAt
+      if (silentMs < 30_000 * (silentLogged + 1)) return
+      silentLogged++
+      diagHook.warn('ai', 'request.silent', {
+        reqId: requestId,
+        silentMs,
+        ms: Date.now() - startedAt,
+        stage: firstDeltaMs === undefined ? 'before-first-text' : 'streaming',
+        provider,
+      })
+    }, 15_000)
+    silenceTimer.unref?.()
     const trace = startAiTrace({
       requestId,
       sessionId: request.sessionId,
@@ -4649,18 +4687,30 @@ export function registerAiIpc(): void {
         sessionScope: String(event.sender.id),
         signal: controller.signal,
         onDelta: (text) => {
+          heard()
+          deltas++
+          if (firstDeltaMs === undefined) {
+            firstDeltaMs = Date.now() - startedAt
+            diagHook.info('ai', 'request.first-text', { reqId: requestId, ms: firstDeltaMs })
+          }
           trace?.onDelta(text)
           send({ requestId, type: 'delta', text })
         },
         onReasoningDelta: (text) => {
+          heard()
           trace?.onReasoningDelta(text)
           send({ requestId, type: 'reasoning', text })
         },
         onToolCall: (toolCall) => {
+          heard()
+          toolCalls++
           trace?.onToolCall(toolCall)
           send({ requestId, type: 'tool-call', toolCall })
         },
-        onActivity: ping,
+        onActivity: () => {
+          heard()
+          ping()
+        },
         onDiagnostic: (record) => appendAiDiagnostic(userDataPath('ai-diagnostics.jsonl'), record),
         onStopReason: (reason) => {
           stopReason = reason
@@ -4672,14 +4722,34 @@ export function registerAiIpc(): void {
         },
       })
       trace?.finish()
+      diagHook.info('ai', 'request.end', {
+        reqId: requestId,
+        ms: Date.now() - startedAt,
+        firstTextMs: firstDeltaMs,
+        deltas,
+        toolCalls,
+        stopReason,
+      })
       send({ requestId, type: 'done', stopReason })
     } catch (err) {
       trace?.finish(
         controller.signal.aborted ? 'aborted' : err instanceof Error ? err.message : String(err),
       )
       if (controller.signal.aborted) {
+        diagHook.info('ai', 'request.aborted', {
+          reqId: requestId,
+          ms: Date.now() - startedAt,
+          firstTextMs: firstDeltaMs,
+        })
         send({ requestId, type: 'done' })
       } else {
+        diagHook.error('ai', 'request.failed', {
+          reqId: requestId,
+          ms: Date.now() - startedAt,
+          firstTextMs: firstDeltaMs,
+          provider,
+          err,
+        })
         // an expired/revoked key drops to signed-out so the inline sign-in button shows
         noteGskCallFailure(gskKey, err)
         send({
@@ -4690,6 +4760,7 @@ export function registerAiIpc(): void {
         })
       }
     } finally {
+      clearInterval(silenceTimer)
       unwatchSender()
       activeAiStreams.delete(requestId)
     }

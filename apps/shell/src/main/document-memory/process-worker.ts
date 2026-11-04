@@ -1,4 +1,5 @@
 import { spawn } from 'node:child_process'
+import { observeChild } from '@genoffice/ai-provider/diag-hook'
 import { EventEmitter } from 'node:events'
 import { constants, setPriority } from 'node:os'
 import type { Worker } from 'node:worker_threads'
@@ -38,6 +39,7 @@ export function createIndexProcess(
     windowsHide: true,
     serialization: 'advanced',
   })
+  observeChild(child, 'index-worker')
   let detachPolicy: (() => void) | null = null
   child.on('spawn', () => {
     try {

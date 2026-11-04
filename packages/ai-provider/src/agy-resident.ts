@@ -1,3 +1,4 @@
+import { observeChild } from './diag-hook'
 import type { ChildProcessWithoutNullStreams } from 'node:child_process'
 import { createHash, randomUUID } from 'node:crypto'
 import { posix, win32 } from 'node:path'
@@ -807,6 +808,7 @@ class AgyResidentManager {
       cwd: stagingDir,
       env: { ...deps.env },
     })
+    observeChild(child, 'agy-resident')
 
     const worker: ResidentWorker = {
       id,
