@@ -471,6 +471,51 @@ describe('LocalOcrJob on scanned PDFs (real SQLite, real PDFium render, engine d
       expect(store.searchLexical('0433 Viettel').length).toBeGreaterThan(0)
     })
 
+    it('follows the scan info the indexer records (pages that have a text layer are never read)', async () => {
+      const path = invoicePdf('mixed book.pdf', 12)
+      enrollEmpty(path)
+      const engine = new ScriptedEngine(['good'])
+      const job = makeJob(engine, { light: 2, maxPages: 9 })
+      await job.runOnce()
+      await reindexNow(path)
+      // what the index worker writes after each extraction (pages 3 and 4 hold their own text)
+      const file = stat(path)
+      store.ocr.saveScanInfo(path, file, {
+        totalPages: 12,
+        scannedPages: [1, 2, 5, 6, 7, 8, 9, 10, 11, 12],
+      })
+      await job.runOnce()
+      await reindexNow(path)
+      store.ocr.saveScanInfo(path, file, {
+        totalPages: 12,
+        scannedPages: [1, 2, 5, 6, 7, 8, 9, 10, 11, 12],
+      })
+      await job.runOnce()
+      // the limit of 9 counts the pages that need OCR: the first nine of them, none of 3 and 4
+      expect(present(path)).toEqual([1, 2, 5, 6, 7, 8, 9, 10, 11])
+      expect(engine.calls).toBe(9)
+      await reindexNow(path)
+      const done = await job.runOnce()
+      expect(done).toMatchObject({ files: 0, pages: 0 })
+    })
+
+    it('reads a scan whose scan info lists every page, up to the limit', async () => {
+      const path = invoicePdf('book.pdf', 12)
+      enrollEmpty(path)
+      const engine = new ScriptedEngine(['good'])
+      const job = makeJob(engine, { light: 2, maxPages: 7 })
+      await job.runOnce()
+      await reindexNow(path)
+      store.ocr.saveScanInfo(path, stat(path), {
+        totalPages: 12,
+        scannedPages: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12],
+      })
+      await job.runOnce()
+      expect(present(path)).toEqual([1, 2, 3, 4, 5, 6, 7])
+      await reindexNow(path)
+      expect(await job.runOnce()).toMatchObject({ pages: 0 })
+    })
+
     it('does not run a slow pass when the limit is not above the quick pass', async () => {
       const path = invoicePdf('off.pdf', 6)
       enrollEmpty(path)
