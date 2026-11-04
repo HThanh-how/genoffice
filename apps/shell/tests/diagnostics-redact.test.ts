@@ -738,4 +738,98 @@ describe('diagnostics redaction', () => {
     expect(redactString(`rev=${sha}`)).toBe(`rev=${sha}`)
     expect(redactString(`digest ${sha}`)).not.toContain(sha)
   })
+
+  it('removes a token that is a UUID, or starts with one, whatever surrounds it', () => {
+    const uuid = '3f2b8c1a-9d4e-4a7b-8c21-0123456789ab'
+    for (const text of [
+      `Bearer ${uuid}`,
+      `sk-${uuid}`,
+      `token=${uuid}.TAIL9876`,
+      `token=${uuid}:TAIL9876`,
+      `secret=${uuid}/x9KqTAIL`,
+    ]) {
+      const out = redactString(text)
+      expect(out, text).not.toContain('0123456789ab')
+      expect(out, text).not.toContain('TAIL')
+      expect(out, text).not.toContain('x9Kq')
+    }
+  })
+
+  it('masks a UUID under a key that names a credential, keeps it under an identifier key', () => {
+    const uuid = '3f2b8c1a-9d4e-4a7b-8c21-0123456789ab'
+    const out = redactValue({
+      token: uuid,
+      accessToken: uuid,
+      refreshToken: uuid,
+      authToken: uuid,
+      sessionToken: uuid,
+      csrfToken: uuid,
+      licenseKey: uuid,
+      auth: uuid,
+      jwt: uuid,
+      signature: uuid,
+      sessionId: uuid,
+      requestId: uuid,
+      traceId: uuid,
+      idempotencyKey: uuid,
+      ids: { sessionIds: [uuid] },
+    }) as Record<string, any>
+    for (const key of [
+      'token',
+      'accessToken',
+      'refreshToken',
+      'authToken',
+      'sessionToken',
+      'csrfToken',
+      'licenseKey',
+      'auth',
+      'jwt',
+      'signature',
+    ]) {
+      expect(out[key], key).toMatchObject({ redacted: true })
+    }
+    for (const key of ['sessionId', 'requestId', 'traceId', 'idempotencyKey'])
+      expect(out[key], key).toBe(uuid)
+    expect(out.ids.sessionIds).toEqual([uuid])
+  })
+
+  it('catches the shorter random-looking parts (6 or more characters) and more free-text names', () => {
+    const out = JSON.stringify(
+      redactValue({ auth: 'admin:pass123', token: 'abc1234.def5678', key: 'abc1234+def5678' }),
+    )
+    for (const secret of ['pass123', 'abc1234', 'def5678']) expect(out).not.toContain(secret)
+    for (const [text, secret] of [
+      ['dbpass=hunter2', 'hunter2'],
+      ['mypw=bob', 'bob'],
+      ['cvv=123', '123'],
+      ['cvc: 123', '123'],
+      ['securityAnswer=blue', 'blue'],
+      ['iban: GB82WEST12345698765432', 'GB82WEST'],
+      ['call 028 3822 1234 now', '3822'],
+      ['call +84 28 3822 1234 now', '3822'],
+    ] as const) {
+      expect(redactString(text), text).not.toContain(secret)
+    }
+  })
+
+  it('past the text budget a string is only measured, never read', () => {
+    const big = Array.from({ length: 100 }, (_, i) => ({
+      [`k${i}`]: 'x'.repeat(4000),
+    }))
+    const started = performance.now()
+    const out = JSON.stringify(redactValue({ list: big, password: 'hunter2hunter2' }))
+    expect(performance.now() - started).toBeLessThan(2_000)
+    expect(out).not.toContain('hunter2hunter2')
+    // the later strings were not read: they are lengths
+    expect(out).toContain('"redacted":true')
+  })
+
+  it('does not build a list of entries for a huge object', () => {
+    const huge: Record<string, number> = {}
+    for (let i = 0; i < 300_000; i++) huge[`k${i}`] = i
+    const started = performance.now()
+    const out = redactValue(huge) as Record<string, unknown>
+    expect(performance.now() - started).toBeLessThan(500)
+    expect(Object.keys(out).length).toBeLessThanOrEqual(42)
+  })
 })

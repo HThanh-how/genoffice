@@ -25,6 +25,8 @@ const MAX_KEYS = 40
 const MAX_STACK_LINES = 12
 /** the most values one call looks at: a huge tree must not hold the main thread */
 const MAX_NODES = 2000
+/** ... and of text: the patterns cost time in proportion to what they read */
+const MAX_CHARS = 200_000
 /** shorter values are not hashed at all: a hash of a PIN or an ID number can be reversed by trying them all */
 const MIN_HASH_LENGTH = 16
 /** how much of a hex digest / base64 digest stays readable (enough to match a commit or an installer hash) */
@@ -335,16 +337,28 @@ function keyInfo(key: string): KeyInfo {
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
 
+/**
+ * Whether the name says the value is a credential in itself (`token`, `auth`, `apiKey`, `licenseKey`),
+ * as opposed to an identifier that merely has "key" or "session" in its name (`sessionId`, `idempotencyKey`).
+ */
+function namesCredential(key: string): boolean {
+  const words = keyWords(key)
+  if (words.some((w) => WEAK_SECRET_WORDS.has(w) || w === 'license')) return true
+  return words.includes('key') && words.some((w) => KEY_QUALIFIERS.has(w))
+}
+
 /** A string under a weak secret name: only a value that looks like a secret is masked. */
-function looksSecret(value: string): boolean {
-  if (UUID.test(value)) return false // an identifier, useful to match against other logs
+function looksSecret(value: string, key?: string): boolean {
+  // a UUID is an identifier that can be matched against other logs, but under a key that
+  // names a credential (`token`, `auth`, `licenseKey`) it is a secret
+  if (UUID.test(value)) return key !== undefined && namesCredential(key)
   // a short word or a dotted name without digits: a mode, a status, a message key (`menu.file`)
   if (/^[A-Za-z][A-Za-z_.:-]{0,39}$/.test(value)) return false
   // a namespaced name (`doc:12345678`, `menu.file2`, `Ctrl+Shift+P`): short parts joined by . : or +,
-  // none of which looks random (a part of 8 or more characters mixing letters and digits does)
+  // none of which looks random (a part of 6 or more characters mixing letters and digits does)
   if (value.length <= 48 && /^\w{1,16}(?:[.:+]\w{1,16})+$/.test(value)) {
     const parts = value.split(/[.:+]/)
-    if (!parts.some((part) => part.length >= 8 && /\d/.test(part) && /[A-Za-z]/.test(part))) {
+    if (!parts.some((part) => part.length >= 6 && /\d/.test(part) && /[A-Za-z]/.test(part))) {
       return false
     }
   }
@@ -450,15 +464,6 @@ function capInput(input: string): string {
 /** Credentials and personal numbers inside free text. */
 export function redactString(input: string): string {
   let s = capInput(input)
-  // Identifiers that are meant to be matched against other logs are set aside first, so that the
-  // number rules below cannot cut into them (the last group of a UUID is often twelve digits).
-  const held: string[] = []
-  const hold = (text: string): string => `\uE000${held.push(text) - 1}\uE000`
-  s = s.replace(/\b[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b/gi, hold)
-  s = s.replace(
-    /(\b(?:commit|revision|rev)[\s:=#-]{0,4})([0-9a-f]{40})\b/gi,
-    (_m, label: string, sha: string) => label + hold(sha),
-  )
   s = s.replace(/\bBearer\s+[A-Za-z0-9._~+/=-]{8,}/gi, 'Bearer [redacted]')
   // "Basic settings" is prose; real Basic credentials are base64: digits, '=', '+', '/', a long
   // run, or a mix of upper and lower case from 12 characters ("dXNlcjpwYXNz")
@@ -498,16 +503,25 @@ export function redactString(input: string): string {
   s = s.replace(/(\/\/)[^/\s:@]*:[^/\s]*@/g, '$1[redacted]@')
   // passwords may contain spaces: take everything up to a delimiter
   s = s.replace(
-    /([A-Za-z0-9_-]{0,32}?(?:password|passwd|passphrase|pwd)|\bpass)(["']?\s*[:=]\s*["']?)(?!\[redacted\])[^\r\n&;"']{2,}/gi,
+    /([A-Za-z0-9_-]{0,32}?(?:password|passwd|passphrase|pwd|dbpass|pw|cvv2?|cvc2?|securityanswer|iban)|\bpass)(["']?\s*[:=]\s*["']?)(?!\[redacted\])[^\r\n&;"']{2,}/gi,
     '$1$2[redacted]',
   )
   // the other secret names, also after a prefix (`client_secret`, `id_token`, `AWS_SECRET_ACCESS_KEY`)
   s = s.replace(
-    /([A-Za-z0-9_-]{0,32}?(?:api[_-]?key|secret[_-]?(?:access[_-]?)?key|token|secret|(?:access|signing|encryption|private)[_-]?key))(["']?\s*[:=]\s*["']?)(?!\[redacted\])(?:\uE000\d+\uE000|[^\s"',;&]{4,})/gi,
+    /([A-Za-z0-9_-]{0,32}?(?:api[_-]?key|secret[_-]?(?:access[_-]?)?key|token|secret|(?:access|signing|encryption|private)[_-]?key))(["']?\s*[:=]\s*["']?)(?!\[redacted\])[^\s"',;&]{4,}/gi,
     '$1$2[redacted]',
   )
   // URL query strings: names stay, values go
   s = s.replace(/([?&][^=&\s#"']{1,40}=)[^&\s#"']+/g, '$1[q]')
+  // Identifiers that are meant to be matched against other logs are set aside once the credential rules have run on them
+  // (a UUID can be a token), so that the number rules below cannot cut into them (the last group of a UUID is often twelve digits).
+  const held: string[] = []
+  const hold = (text: string): string => `\uE000${held.push(text) - 1}\uE000`
+  s = s.replace(/\b[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b/gi, hold)
+  s = s.replace(
+    /(\b(?:commit|revision|rev)[\s:=#-]{0,4})([0-9a-f]{40})\b/gi,
+    (_m, label: string, sha: string) => label + hold(sha),
+  )
   // digests keep their start, so a commit or an installer hash can still be matched by eye
   s = s.replace(/\b[0-9a-fA-F]{32,}\b/g, (m) => `${m.slice(0, DIGEST_KEEP)}…[hex:${m.length}]`)
   s = s.replace(/\b[A-Za-z0-9+_-]{40,}={0,2}(?![A-Za-z0-9])/g, (m) =>
@@ -516,6 +530,7 @@ export function redactString(input: string): string {
   s = s.replace(/[\w.+-]{1,64}@[\w-]{1,63}(?:\.[\w-]{1,63}){1,8}/g, '[email]')
   // Vietnamese mobile numbers (0912345678, +84 912 345 678) and payment card numbers (Luhn-valid, 15 to 19 digits)
   s = s.replace(/(?<![\d])(?:\+?84|0)[ .-]?(?:3|5|7|8|9)\d(?:[ .-]?\d){7}(?!\d)/g, '[phone]')
+  s = s.replace(/(?<!\d)(?:\+?84[ .-]?|0)2\d{1,2}[ .-]?\d{3,4}[ .-]?\d{4}(?!\d)/g, '[phone]')
   s = s.replace(/(?<!\d)\d(?:[ -]?\d){14,18}(?!\d)/g, (m) =>
     hasCardPrefix(m) && luhnValid(m) ? '[card]' : m,
   )
@@ -610,13 +625,16 @@ export function redactValue(
   depth = 0,
   mode: 'plain' | 'content' | 'weak' = 'plain',
   keyHint?: string,
-  budget: { left: number } = { left: MAX_NODES },
+  budget: { left: number; chars: number } = { left: MAX_NODES, chars: MAX_CHARS },
 ): unknown {
   if (value === null || value === undefined) return value
   if (typeof value === 'string') {
+    // past the text budget a string is only measured, never read (the safe way to run out)
+    budget.chars -= value.length
+    if (budget.chars < 0) return placeholder(value)
     if (mode === 'plain') return cleanString(value, options)
     if (mode === 'weak') {
-      return looksSecret(value) ? placeholder(value) : cleanString(value, options)
+      return looksSecret(value, keyHint) ? placeholder(value) : cleanString(value, options)
     }
     if (IDENTIFIER.test(value) && isIdValueKey(keyHint)) return cleanString(value, options)
     return options.verbose ? cleanString(value, options, MAX_VERBOSE_STRING) : placeholder(value)
@@ -637,18 +655,24 @@ export function redactValue(
     const items = value
       .slice(0, MAX_ARRAY)
       .map((v) =>
-        --budget.left < 0 ? '…' : redactValue(v, options, depth + 1, mode, undefined, budget),
+        --budget.left < 0
+          ? '…'
+          : redactValue(v, options, depth + 1, mode, mode === 'weak' ? keyHint : undefined, budget),
       )
     return value.length > MAX_ARRAY ? [...items, `…(${value.length} items)`] : items
   }
   if (typeof value === 'object') {
     const out: Record<string, unknown> = {}
     let count = 0
-    for (const [rawKey, inner] of Object.entries(value as Record<string, unknown>)) {
+    const source = value as Record<string, unknown>
+    // (for…in: a huge object is not turned into a list of entries before being cut)
+    for (const rawKey in source) {
+      if (!Object.prototype.hasOwnProperty.call(source, rawKey)) continue
       if (count++ >= MAX_KEYS || --budget.left < 0) {
         out['…'] = 'more keys'
         break
       }
+      const inner = source[rawKey]
       // a key can be an e-mail address or a file name too
       const key = cleanString(rawKey, options, MAX_KEY)
       const kind = keyKind(rawKey, inner)

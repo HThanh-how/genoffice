@@ -5,6 +5,9 @@ import { join } from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
 import { DiagnosticsLogger, realLogFs, type LogFs } from '../src/main/diagnostics/logger'
 
+/** mocks compare paths: make them the same on Windows, where join() uses backslashes */
+const norm = (path: string): string => path.split('\\').join('/')
+
 const dirs: string[] = []
 const tmp = (): string => {
   const d = mkdtempSync(join(tmpdir(), 'diag-'))
@@ -1077,18 +1080,18 @@ describe('DiagnosticsLogger when the file system hangs: bounds and recovery', ()
     const fs: LogFs = {
       ...realLogFs,
       appendFile: (p, t) => {
-        if (p.startsWith('/dead')) {
+        if (norm(p).startsWith('/dead')) {
           primaryStarted++
           return new Promise<void>(() => undefined)
         }
         return realLogFs.appendFile(p, t)
       },
       mkdir: async (d) => {
-        if (d.startsWith('/dead')) return
+        if (norm(d).startsWith('/dead')) return
         return realLogFs.mkdir(d)
       },
-      size: async (p) => (p.startsWith('/dead') ? 0 : realLogFs.size(p)),
-      list: async (d) => (d.startsWith('/dead') ? [] : realLogFs.list(d)),
+      size: async (p) => (norm(p).startsWith('/dead') ? 0 : realLogFs.size(p)),
+      list: async (d) => (norm(d).startsWith('/dead') ? [] : realLogFs.list(d)),
     }
     const log = new DiagnosticsLogger({
       dir: '/dead/logs',
@@ -1266,6 +1269,108 @@ describe('DiagnosticsLogger when the file system hangs: bounds and recovery', ()
     const events = lines(dir).map((l) => l.ev)
     expect(events).toContain('keep-me')
     expect(events).toContain('also-me')
+  })
+})
+
+describe('DiagnosticsLogger moving to the second folder', () => {
+  it("makes the second folder even when the first folder's mkdir answers only after the move", async () => {
+    const altRoot = tmp()
+    const altDir = join(altRoot, 'alt')
+    let releaseMkdir: () => void = () => undefined
+    const fs: LogFs = {
+      ...realLogFs,
+      mkdir: async (d) => {
+        if (norm(d).startsWith('/dead')) {
+          await new Promise<void>((resolve) => (releaseMkdir = resolve)) // the dead drive, until later
+          return
+        }
+        return realLogFs.mkdir(d)
+      },
+      size: async (p) => (norm(p).startsWith('/dead') ? 0 : realLogFs.size(p)),
+      list: async (d) => (norm(d).startsWith('/dead') ? [] : realLogFs.list(d)),
+    }
+    const log = new DiagnosticsLogger({
+      dir: '/dead/logs',
+      altDir,
+      fs,
+      retryDelaysMs: [],
+      retryBackoffMs: 0,
+      switchAfterFailures: 1000,
+      writeTimeoutMs: 10,
+      degradedAfterMs: 0,
+      onInternalError: () => undefined,
+    })
+    log.error('a', 'first')
+    await log.flush() // times out in mkdir of the dead folder, then the logger moves
+    releaseMkdir() // the dead drive's mkdir finishes now, after the move
+    await new Promise((r) => setTimeout(r, 10))
+    log.error('a', 'second')
+    await log.flush()
+    const text = readFileSync(join(altDir, 'genoffice.jsonl'), 'utf8')
+    expect(text).toContain('first')
+    expect(text).toContain('second')
+  })
+
+  it('close() does not wait twice on a drive that does not answer', async () => {
+    const fs: LogFs = {
+      ...realLogFs,
+      mkdir: async () => undefined,
+      size: async () => 0,
+      list: async () => [],
+      appendFile: () => new Promise<void>(() => undefined),
+    }
+    const log = new DiagnosticsLogger({
+      dir: '/d',
+      fs,
+      retryDelaysMs: [],
+      writeTimeoutMs: 60,
+      onInternalError: () => undefined,
+    })
+    log.error('a', 'x')
+    const started = Date.now()
+    await log.close()
+    expect(Date.now() - started).toBeLessThan(110) // one timeout, not two
+  })
+
+  it('tidies the old set-aside files later when the first try was held back', async () => {
+    const dir = tmp()
+    for (const ts of [
+      '1700000000001',
+      '1700000000002',
+      '1700000000003',
+      '1700000000004',
+      '1700000000005',
+    ]) {
+      writeFileSync(join(dir, `genoffice.${ts}.jsonl`), 'old\n')
+    }
+    let stuck = true
+    let calls = 0
+    const fs: LogFs = {
+      ...realLogFs,
+      appendFile: (p, t) => {
+        // one earlier operation is stuck, so the first write does not start the tidying
+        if (stuck && calls++ === 0) return new Promise<void>(() => undefined)
+        return realLogFs.appendFile(p, t)
+      },
+    }
+    const log = new DiagnosticsLogger({
+      dir,
+      fs,
+      retryDelaysMs: [],
+      retryBackoffMs: 0,
+      writeTimeoutMs: 15,
+      onInternalError: () => undefined,
+    })
+    log.error('a', 'one')
+    await log.flush() // times out: one hung operation, so no tidying yet
+    stuck = false
+    log.error('a', 'two')
+    await log.flush()
+    await log.settled()
+    // tidying can only start once nothing is stuck; it never ran while the hung append was there
+    expect(
+      readdirSync(dir).filter((f) => /^genoffice\.\d{10,}\.jsonl$/.test(f)).length,
+    ).toBeLessThanOrEqual(5)
   })
 })
 

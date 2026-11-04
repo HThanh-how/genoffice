@@ -811,8 +811,10 @@ export class DiagnosticsLogger {
 
   private async ensureDir(): Promise<void> {
     if (this.dirReady) return
-    await this.fs.mkdir(this.dir)
-    this.dirReady = true
+    const dir = this.dir
+    await this.fs.mkdir(dir)
+    // the logger may have moved to another folder while this was waiting: that one still needs its own
+    if (this.dir === dir) this.dirReady = true
   }
 
   private rotated(index: number): string {
@@ -1034,7 +1036,9 @@ export class DiagnosticsLogger {
     let before = Infinity
     for (let pass = 0; pass < 3; pass++) {
       await this.flush()
+      // nothing more to write, no progress, or the drive is not answering: do not wait again
       if (this.queued === 0 || this.queued >= before) break
+      if (this.hungCount() > 0 || this.retryNotBefore > Date.now()) break
       before = this.queued
     }
     this.closed = true
