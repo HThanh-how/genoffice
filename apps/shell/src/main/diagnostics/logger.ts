@@ -65,8 +65,9 @@ export interface LoggerOptions {
   readonly switchAfterFailures?: number
   /** one attempt to write (including its preparation) is given up after this long (default 30 s) */
   readonly writeTimeoutMs?: number
-  /** an operation stuck for this long is no longer counted against new ones (default 2 min) */
-  readonly hungForgetMs?: number
+  /** a second folder, on another drive, to move to when the first has not answered for `degradedAfterMs` */
+  readonly altDir?: string
+  readonly degradedAfterMs?: number
   /** the queue holds at most this many characters (default 16 million) */
   readonly maxQueueBytes?: number
   /** a line longer than this is replaced by a short note (default 16 KB) */
@@ -128,6 +129,8 @@ class HungError extends Error {}
 /** An operation the file system has not answered. */
 interface HungOp {
   readonly at: number
+  /** the folder the operation was working in */
+  readonly dir: string
 }
 
 /** A first-in first-out list whose removal from the front does not move the rest. */
@@ -212,7 +215,7 @@ const sleepUnref = (ms: number): Promise<void> =>
  */
 export class DiagnosticsLogger {
   private readonly fs: LogFs
-  private readonly dir: string
+  private dir: string
   private readonly name: string
   private readonly maxBytes: number
   private readonly files: number
@@ -226,7 +229,7 @@ export class DiagnosticsLogger {
   private readonly maxQueueBytes: number
   private readonly switchAfterFailures: number
   private readonly writeTimeoutMs: number
-  private readonly hungForgetMs: number
+  private readonly degradedAfterMs: number
   private readonly yieldTick: () => Promise<void>
   private readonly retryDelays: readonly number[]
   private readonly retryBackoffMs: number
@@ -264,6 +267,9 @@ export class DiagnosticsLogger {
   private draining = false
   /** operations the file system has not answered (given up after the timeout, still pending) */
   private readonly hung = new Set<HungOp>()
+  /** since when writes have been refused because the drive does not answer */
+  private hungSince: number | undefined
+  private degraded = false
   /** the last write may have reached the file although it was reported as failed */
   private maybeDuplicate = false
   private pruning = false
@@ -291,7 +297,7 @@ export class DiagnosticsLogger {
     this.maxQueueBytes = options.maxQueueBytes ?? 16_000_000
     this.switchAfterFailures = options.switchAfterFailures ?? 3
     this.writeTimeoutMs = options.writeTimeoutMs ?? 30_000
-    this.hungForgetMs = options.hungForgetMs ?? 120_000
+    this.degradedAfterMs = options.degradedAfterMs ?? 120_000
     this.yieldTick = options.yieldTick ?? (() => new Promise((resolve) => setImmediate(resolve)))
     this.retryDelays = options.retryDelaysMs ?? [50, 200, 1000]
     this.retryBackoffMs = options.retryBackoffMs ?? 5000
@@ -620,6 +626,11 @@ export class DiagnosticsLogger {
         this.scheduleFlush(this.retryBackoffMs)
         // a file that refuses every write (held open by another program without the right to write)
         // is given up after a few tries: writing goes on in a new file
+        if (outcome.error instanceof HungError || outcome.error instanceof TimeoutError) {
+          // the drive is not answering: after a long while go to the other folder
+          this.hungSince ??= Date.now()
+          if (Date.now() - this.hungSince >= this.degradedAfterMs) this.degrade()
+        }
         // a drive that does not answer says nothing about this file: only real write errors count
         if (
           !(outcome.error instanceof HungError) &&
@@ -630,6 +641,7 @@ export class DiagnosticsLogger {
         return false
       }
       this.failedBatches = 0
+      this.hungSince = undefined
       inflight.from = end
       if (end < entries.length) await this.yieldTick()
       if (epoch !== this.epoch) return true
@@ -659,13 +671,14 @@ export class DiagnosticsLogger {
     return new Promise<T>((resolve, reject) => {
       let settled = false
       let hungOp: HungOp | undefined
+      const dir = this.dir
       const timer = setTimeout(() => {
         if (settled) return
         settled = true
         attempt.cancelled = true
         // the write itself may still go through later
         if (attempt.appendStarted) this.maybeDuplicate = true
-        hungOp = { at: Date.now() }
+        hungOp = { at: Date.now(), dir }
         this.hung.add(hungOp)
         reject(new TimeoutError(`no answer from the file system after ${this.writeTimeoutMs} ms`))
       }, this.writeTimeoutMs)
@@ -713,7 +726,11 @@ export class DiagnosticsLogger {
           await this.ensureDir()
           if (stale()) return 'superseded' as const
           this.pruneOrphansOnce()
-          if (this.activeSize === undefined) this.activeSize = await this.fs.size(this.activePath)
+          if (this.activeSize === undefined) {
+            const size = await this.fs.size(this.activePath)
+            if (stale()) return 'superseded' as const
+            this.activeSize = size
+          }
           if (stale()) return 'superseded' as const
           if (this.activeSize > 0 && this.activeSize + bytes > this.maxBytes) {
             await this.rotate(epoch, job)
@@ -753,15 +770,33 @@ export class DiagnosticsLogger {
   }
 
   /**
-   * How many operations the file system has not answered. One that has been stuck for a long time
-   * is forgotten: it may never end, and the logger must be able to try again some day.
+   * How many operations the file system has not answered in the folder in use. There is a hard cap
+   * on this (a drive that never answers must not take the threads every other file operation of the
+   * app needs): an operation leaves the count only when it finishes. If the drive stays dead, the
+   * logger moves to the other folder, if it has one (see `degrade`).
    */
   private hungCount(): number {
-    const now = Date.now()
-    for (const op of this.hung) {
-      if (now - op.at > this.hungForgetMs) this.hung.delete(op)
-    }
-    return this.hung.size
+    let count = 0
+    for (const op of this.hung) if (op.dir === this.dir) count++
+    return count
+  }
+
+  /** After a long silence from the drive, writing moves to a folder on another drive. */
+  private degrade(): boolean {
+    const alt = this.options.altDir
+    if (this.degraded || !alt || alt === this.dir) return false
+    this.degraded = true
+    this.report(`${this.dir} has not answered for a long time; continuing in ${alt}`)
+    this.dir = alt
+    this.activePath = join(alt, `${this.name}.jsonl`)
+    this.activeSize = undefined
+    this.dirReady = false
+    this.orphansPruned = false
+    this.tornTail = false
+    this.failedBatches = 0
+    this.hungSince = undefined
+    this.retryNotBefore = 0
+    return true
   }
 
   private markerLine(ev: string): string {
@@ -821,23 +856,24 @@ export class DiagnosticsLogger {
 
   private pruneOrphansOnce(): void {
     if (this.orphansPruned) return
-    this.orphansPruned = true
-    this.pruneInBackground(this.orphanKeep)
+    // only once it has really started: a try that was held back is made again later
+    if (this.pruneInBackground(this.orphanKeep)) this.orphansPruned = true
   }
 
   /**
    * Pruning only tidies up: it runs beside the writer and never holds it (listing a folder on a
    * hanging drive must not stop the log for good), one at a time, and gives up after the timeout.
    */
-  private pruneInBackground(keep: number): void {
+  private pruneInBackground(keep: number): boolean {
     // tidying is the first thing to give way: never add to operations the drive has not answered
-    if (this.pruning || this.hungCount() >= 1) return
+    if (this.pruning || this.hungCount() >= 1) return false
     this.pruning = true
     this.pruneDone = this.withTimeout(() => this.pruneOrphans(keep))
       .catch((error: unknown) => this.report('could not prune old log files', error))
       .finally(() => {
         this.pruning = false
       })
+    return true
   }
 
   /** Resolves when the writing and the tidying that are running now are over. For tests and shutdown. */
@@ -847,14 +883,15 @@ export class DiagnosticsLogger {
   }
 
   /** A rename that is tried again after short pauses: a scanner may hold the file for a moment. */
-  private async renameWithRetry(from: string, to: string): Promise<void> {
+  private async renameWithRetry(from: string, to: string, job?: Attempt): Promise<void> {
     for (let attempt = 0; ; attempt++) {
       try {
         await this.fs.rename(from, to)
         return
       } catch (error) {
         const delay = this.rotateRetryDelays[attempt]
-        if (delay === undefined) throw error
+        // an attempt that was given up does not keep trying
+        if (delay === undefined || job?.cancelled) throw error
         await this.sleep(delay)
       }
     }
@@ -873,7 +910,7 @@ export class DiagnosticsLogger {
     if (epoch !== this.epoch || job.cancelled) return
     const aside = this.orphanPath()
     try {
-      await this.renameWithRetry(this.activePath, aside)
+      await this.renameWithRetry(this.activePath, aside, job)
     } catch (error) {
       // an attempt that was given up changes nothing any more
       if (job.cancelled || epoch !== this.epoch) return
@@ -993,9 +1030,12 @@ export class DiagnosticsLogger {
   /** Writes what is queued and stops accepting lines. */
   async close(): Promise<void> {
     // lines that arrive while the last write runs are written too
+    // (but a drive that does not answer is not asked three times: stop when a pass wrote nothing)
+    let before = Infinity
     for (let pass = 0; pass < 3; pass++) {
       await this.flush()
-      if (this.queued === 0) break
+      if (this.queued === 0 || this.queued >= before) break
+      before = this.queued
     }
     this.closed = true
   }

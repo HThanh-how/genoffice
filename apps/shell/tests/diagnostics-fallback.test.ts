@@ -8,6 +8,9 @@ import {
   type FallbackFs,
 } from '../src/main/diagnostics/fallback-report'
 
+/** the mocks compare paths: make them the same on Windows, where join() uses backslashes */
+const norm = (path: string): string => path.split('\\').join('/')
+
 const dirs: string[] = []
 afterEach(() => {
   for (const d of dirs.splice(0)) rmSync(d, { recursive: true, force: true })
@@ -189,7 +192,9 @@ describe('the fallback channel for logger problems', () => {
     const written: string[] = []
     const fs: FallbackFs = {
       size: (path) =>
-        path.startsWith('/primary') ? new Promise<number>(() => undefined) : Promise.resolve(0),
+        norm(path).startsWith('/primary')
+          ? new Promise<number>(() => undefined)
+          : Promise.resolve(0),
       mkdir: async () => undefined,
       append: async (path) => void written.push(path),
       move: async () => undefined,
@@ -218,16 +223,16 @@ describe('the fallback channel for logger problems', () => {
     expect(written).toHaveLength(2)
   })
 
-  it('a late answer of the abandoned folder does not disturb the sizes or the counts', async () => {
+  it('a late answer of the abandoned folder starts no write and does not disturb the counts', async () => {
     let release: (n: number) => void = () => undefined
     const written: string[] = []
     const fs: FallbackFs = {
       size: (path) =>
-        path.startsWith('/primary')
+        norm(path).startsWith('/primary')
           ? new Promise<number>((resolve) => (release = resolve))
           : Promise.resolve(0),
       mkdir: async () => undefined,
-      append: async (path) => void written.push(path),
+      append: async (path) => void written.push(norm(path)),
       move: async () => undefined,
     }
     let now = 0
@@ -246,9 +251,37 @@ describe('the fallback channel for logger problems', () => {
     now += 20_000
     r.report('two')
     await r.idle()
-    // the late answer did not start a write, and the cap bookkeeping is still a number
-    expect(written.filter((p) => p.replace(/\\/g, '/').includes('/primary/'))).toHaveLength(1)
-    expect(Number.isFinite(r.stats().written)).toBe(true)
-    expect(r.stats().written).toBe(3)
+    // nothing was written to the abandoned folder, and each line once
+    expect(written.filter((p) => p.startsWith('/primary/'))).toHaveLength(0)
+    expect(written.filter((p) => p.startsWith('/alt/'))).toHaveLength(2)
+    expect(r.stats().written).toBe(2)
+  })
+
+  it('does not open more than two operations on a drive that never answers, whatever the number of reports', async () => {
+    let started = 0
+    const fs: FallbackFs = {
+      size: () => {
+        started++
+        return new Promise<number>(() => undefined)
+      },
+      mkdir: async () => undefined,
+      append: async () => undefined,
+      move: async () => undefined,
+    }
+    let now = 0
+    const r = new FallbackReporter({
+      dir: '/dead',
+      altDir: '/dead2',
+      echo: false,
+      fs,
+      fsTimeoutMs: 5,
+      now: () => now,
+    })
+    for (let i = 0; i < 10; i++) {
+      now += 20_000
+      r.report(`problem ${i}`)
+      await r.idle()
+    }
+    expect(started).toBe(2)
   })
 })

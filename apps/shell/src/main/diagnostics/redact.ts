@@ -23,6 +23,8 @@ const MAX_DEPTH = 4
 const MAX_ARRAY = 20
 const MAX_KEYS = 40
 const MAX_STACK_LINES = 12
+/** the most values one call looks at: a huge tree must not hold the main thread */
+const MAX_NODES = 2000
 /** shorter values are not hashed at all: a hash of a PIN or an ID number can be reversed by trying them all */
 const MIN_HASH_LENGTH = 16
 /** how much of a hex digest / base64 digest stays readable (enough to match a commit or an installer hash) */
@@ -116,10 +118,13 @@ const STRONG_SECRET_WORDS: ReadonlySet<string> = new Set([
   'mnemonic',
   'passkey',
   'matkhau',
+  'pw',
+  'cvv',
+  'cvc',
 ])
 /** The same, spelt as one word or written in Vietnamese without spaces. */
 const STRONG_SECRET_COMPACT =
-  /(password|passwd|passphrase|passcode|apikey|matkhau|recoverycode|verificationcode|smscode|connectionstring|privatekey|keymaterial|authorizationheader|secretkey|accesskey|clientsecret)/
+  /(password|passwd|passphrase|passcode|apikey|securityanswer|dbpass|matkhau|recoverycode|verificationcode|smscode|connectionstring|privatekey|keymaterial|authorizationheader|secretkey|accesskey|clientsecret)/
 /** `pass` alone is a password; `boardingPass` is not. */
 const PASSWORD_PASS_PREFIX: ReadonlySet<string> = new Set([
   'user',
@@ -219,6 +224,7 @@ const PERSONAL_WORDS: ReadonlySet<string> = new Set([
   'hoten',
   'fullname',
   'zalo',
+  'iban',
   'username',
   'tendangnhap',
   'birthdate',
@@ -254,7 +260,7 @@ const PERSONAL_PAIRS: ReadonlyArray<readonly [string, ReadonlySet<string>]> = [
 ]
 /** Long enough to be safe as plain letters inside a compact key (`soDienThoai`, `CCCDNumber`). */
 const PERSONAL_COMPACT =
-  /(cccd|cmnd|cmtnd|passport|dienthoai|socialsecurity|nationalid(?!entifier)|phonenumber|masothue|sotaikhoan|hochieu|ngaysinh|dateofbirth|diachi|hoten|bankaccount|cardnumber|tendangnhap|socmt)/
+  /(cccd|cmnd|cmtnd|passport|dienthoai|socialsecurity|nationalid(?!entifier)|phonenumber|masothue|sotaikhoan|hochieu|ngaysinh|dateofbirth|diachi|hoten|bankaccount|cardnumber|creditcard|tendangnhap|socmt)/
 
 interface KeyInfo {
   readonly personal: boolean
@@ -314,7 +320,10 @@ const keyCache = new Map<string, KeyInfo>()
 /** Key names repeat on every line, so what is worked out for a name is kept. */
 function keyInfo(key: string): KeyInfo {
   // a very long name is not kept: the cache is for the names a program uses over and over
-  if (key.length > MAX_KEY) return analyzeKey(key.slice(0, MAX_KEY))
+  // (its start and its end are both read: `…_password` ends a long name as often as it starts one)
+  if (key.length > MAX_KEY) {
+    return analyzeKey(`${key.slice(0, MAX_KEY / 2)}_${key.slice(-MAX_KEY / 2)}`)
+  }
   let info = keyCache.get(key)
   if (!info) {
     if (keyCache.size >= KEY_CACHE_LIMIT) keyCache.clear()
@@ -331,8 +340,14 @@ function looksSecret(value: string): boolean {
   if (UUID.test(value)) return false // an identifier, useful to match against other logs
   // a short word or a dotted name without digits: a mode, a status, a message key (`menu.file`)
   if (/^[A-Za-z][A-Za-z_.:-]{0,39}$/.test(value)) return false
-  // a namespaced name (`doc:12345678`, `menu.file2`, `Ctrl+Shift+P`): short parts joined by . : or +
-  if (value.length <= 48 && /^\w{1,16}(?:[.:+]\w{1,16})+$/.test(value)) return false
+  // a namespaced name (`doc:12345678`, `menu.file2`, `Ctrl+Shift+P`): short parts joined by . : or +,
+  // none of which looks random (a part of 8 or more characters mixing letters and digits does)
+  if (value.length <= 48 && /^\w{1,16}(?:[.:+]\w{1,16})+$/.test(value)) {
+    const parts = value.split(/[.:+]/)
+    if (!parts.some((part) => part.length >= 8 && /\d/.test(part) && /[A-Za-z]/.test(part))) {
+      return false
+    }
+  }
   if (/[=;]/.test(value) && value.length >= 8) return true // a cookie, a key=value pair
   return value.length >= 8 && !/\s/.test(value)
 }
@@ -402,6 +417,14 @@ function placeholder(value: unknown): Record<string, unknown> {
 const hasLetterCaseAndDigit = (s: string): boolean =>
   /[A-Z]/.test(s) && /[a-z]/.test(s) && /\d/.test(s)
 
+/** Payment cards start with 3 (American Express, JCB), 4 (Visa), 5 or 2221-2720 (Mastercard) or 6 (Discover, UnionPay). */
+function hasCardPrefix(text: string): boolean {
+  const digits = text.replace(/\D/g, '')
+  if (/^[3456]/.test(digits)) return true
+  const four = Number(digits.slice(0, 4))
+  return four >= 2221 && four <= 2720
+}
+
 /** The check digit of payment card numbers. */
 function luhnValid(text: string): boolean {
   const digits = text.replace(/\D/g, '')
@@ -427,13 +450,22 @@ function capInput(input: string): string {
 /** Credentials and personal numbers inside free text. */
 export function redactString(input: string): string {
   let s = capInput(input)
+  // Identifiers that are meant to be matched against other logs are set aside first, so that the
+  // number rules below cannot cut into them (the last group of a UUID is often twelve digits).
+  const held: string[] = []
+  const hold = (text: string): string => `\uE000${held.push(text) - 1}\uE000`
+  s = s.replace(/\b[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b/gi, hold)
+  s = s.replace(
+    /(\b(?:commit|revision|rev)[\s:=#-]{0,4})([0-9a-f]{40})\b/gi,
+    (_m, label: string, sha: string) => label + hold(sha),
+  )
   s = s.replace(/\bBearer\s+[A-Za-z0-9._~+/=-]{8,}/gi, 'Bearer [redacted]')
   // "Basic settings" is prose; real Basic credentials are base64: digits, '=', '+', '/', a long
   // run, or a mix of upper and lower case from 12 characters ("dXNlcjpwYXNz")
   s = s.replace(/\bBasic\s+([A-Za-z0-9+/]{8,}={0,2})/gi, (m, token: string) =>
     /[\d=+/]/.test(token) ||
     token.length >= 16 ||
-    (token.length >= 12 && /[a-z]/.test(token) && /[A-Z]/.test(token))
+    (token.length >= 12 && /[a-z]/.test(token) && /[A-Z]/.test(token.slice(1)))
       ? 'Basic [redacted]'
       : m,
   )
@@ -444,6 +476,10 @@ export function redactString(input: string): string {
   s = s.replace(/\beyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}/g, '[jwt]')
   s = s.replace(/\bsk-[A-Za-z0-9_-]{16,}/g, '[key]')
   s = s.replace(/\bAIza[0-9A-Za-z_-]{20,}/g, '[key]')
+  s = s.replace(/\b(?:sk|pk|rk)_(?:live|test)_[A-Za-z0-9]{8,}/g, '[key]')
+  s = s.replace(/\bglpat-[A-Za-z0-9_-]{16,}/g, '[key]')
+  s = s.replace(/\bhf_[A-Za-z0-9]{20,}/g, '[key]')
+  s = s.replace(/\bxox[baprs]-[A-Za-z0-9-]{10,}/g, '[key]')
   s = s.replace(/\b(?:gh[pousr]_|github_pat_)[A-Za-z0-9_]{20,}/g, '[key]')
   s = s.replace(/\b(?:AKIA|ASIA)[0-9A-Z]{16}\b/g, '[key]')
   // header values run to the end of the line: "Cookie: a=b; session=…" has several secrets in one value
@@ -458,7 +494,8 @@ export function redactString(input: string): string {
   )
   s = s.replace(/(\s-u\s+)[^\s:@]+:[^\s]+/g, '$1[redacted]')
   // credentials inside a URL: scheme://user:password@host
-  s = s.replace(/(\/\/)[^/\s:@]+:[^/\s@]+@/g, '$1[redacted]@')
+  // (the password may be empty before it, or hold an '@')
+  s = s.replace(/(\/\/)[^/\s:@]*:[^/\s]*@/g, '$1[redacted]@')
   // passwords may contain spaces: take everything up to a delimiter
   s = s.replace(
     /([A-Za-z0-9_-]{0,32}?(?:password|passwd|passphrase|pwd)|\bpass)(["']?\s*[:=]\s*["']?)(?!\[redacted\])[^\r\n&;"']{2,}/gi,
@@ -466,7 +503,7 @@ export function redactString(input: string): string {
   )
   // the other secret names, also after a prefix (`client_secret`, `id_token`, `AWS_SECRET_ACCESS_KEY`)
   s = s.replace(
-    /([A-Za-z0-9_-]{0,32}?(?:api[_-]?key|secret[_-]?(?:access[_-]?)?key|token|secret|(?:access|signing|encryption|private)[_-]?key))(["']?\s*[:=]\s*["']?)(?!\[redacted\])[^\s"',;&]{4,}/gi,
+    /([A-Za-z0-9_-]{0,32}?(?:api[_-]?key|secret[_-]?(?:access[_-]?)?key|token|secret|(?:access|signing|encryption|private)[_-]?key))(["']?\s*[:=]\s*["']?)(?!\[redacted\])(?:\uE000\d+\uE000|[^\s"',;&]{4,})/gi,
     '$1$2[redacted]',
   )
   // URL query strings: names stay, values go
@@ -479,7 +516,9 @@ export function redactString(input: string): string {
   s = s.replace(/[\w.+-]{1,64}@[\w-]{1,63}(?:\.[\w-]{1,63}){1,8}/g, '[email]')
   // Vietnamese mobile numbers (0912345678, +84 912 345 678) and payment card numbers (Luhn-valid, 15 to 19 digits)
   s = s.replace(/(?<![\d])(?:\+?84|0)[ .-]?(?:3|5|7|8|9)\d(?:[ .-]?\d){7}(?!\d)/g, '[phone]')
-  s = s.replace(/(?<!\d)\d(?:[ -]?\d){14,18}(?!\d)/g, (m) => (luhnValid(m) ? '[card]' : m))
+  s = s.replace(/(?<!\d)\d(?:[ -]?\d){14,18}(?!\d)/g, (m) =>
+    hasCardPrefix(m) && luhnValid(m) ? '[card]' : m,
+  )
   // 12-digit citizen id numbers, written together or in groups ("012 345 678 901", "0123.4567.8901")
   s = s.replace(
     /(?<!\d)(?:\d{12}|\d{3}([ .-])\d{3}\1\d{3}\1\d{3}|\d{4}([ .-])\d{4}\2\d{4})(?!\d)/g,
@@ -490,7 +529,7 @@ export function redactString(input: string): string {
     /((?<![\p{L}\d_])(?:cmnd|cccd|cmt|ssn|passport|id|số)(?![\p{L}\d_])[\s:#.=-]{0,6})\d{9}(?!\d)/giu,
     '$1[id]',
   )
-  return s
+  return s.replace(/\uE000(\d+)\uE000/g, (_m, index: string) => held[Number(index)] ?? '')
 }
 
 export interface RedactOptions {
@@ -571,6 +610,7 @@ export function redactValue(
   depth = 0,
   mode: 'plain' | 'content' | 'weak' = 'plain',
   keyHint?: string,
+  budget: { left: number } = { left: MAX_NODES },
 ): unknown {
   if (value === null || value === undefined) return value
   if (typeof value === 'string') {
@@ -596,14 +636,16 @@ export function redactValue(
   if (Array.isArray(value)) {
     const items = value
       .slice(0, MAX_ARRAY)
-      .map((v) => redactValue(v, options, depth + 1, mode, undefined))
+      .map((v) =>
+        --budget.left < 0 ? '…' : redactValue(v, options, depth + 1, mode, undefined, budget),
+      )
     return value.length > MAX_ARRAY ? [...items, `…(${value.length} items)`] : items
   }
   if (typeof value === 'object') {
     const out: Record<string, unknown> = {}
     let count = 0
     for (const [rawKey, inner] of Object.entries(value as Record<string, unknown>)) {
-      if (count++ >= MAX_KEYS) {
+      if (count++ >= MAX_KEYS || --budget.left < 0) {
         out['…'] = 'more keys'
         break
       }
@@ -613,17 +655,17 @@ export function redactValue(
       if (kind === 'credential' || kind === 'personal') {
         out[key] = placeholder(inner)
       } else if (kind === 'weak') {
-        out[key] = redactValue(inner, options, depth + 1, 'weak', rawKey)
+        out[key] = redactValue(inner, options, depth + 1, 'weak', rawKey, budget)
       } else if (kind === 'content') {
         if (typeof inner === 'string') {
           out[key] = options.verbose
             ? cleanString(inner, options, MAX_VERBOSE_STRING)
             : placeholder(inner)
         } else {
-          out[key] = redactValue(inner, options, depth + 1, 'content', rawKey)
+          out[key] = redactValue(inner, options, depth + 1, 'content', rawKey, budget)
         }
       } else {
-        out[key] = redactValue(inner, options, depth + 1, mode, rawKey)
+        out[key] = redactValue(inner, options, depth + 1, mode, rawKey, budget)
       }
     }
     return out

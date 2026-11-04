@@ -73,6 +73,8 @@ export class FallbackReporter {
   private alt: Target | undefined
   /** bytes written so far per file, known once the file has been looked at */
   private readonly sizes = new Map<string, number>()
+  /** tries that have not finished yet (a try that timed out may still be waiting for the file system) */
+  private pending = 0
   private total = 0
   private written = 0
   private failed = 0
@@ -150,18 +152,31 @@ export class FallbackReporter {
     }
   }
 
-  /** One try at one folder, with its own deadline. Only this try's own file state is touched. */
+  /**
+   * One try at one folder, with its own deadline. A try that is given up is told so and does
+   * nothing more; and no new try is started while two earlier ones are still waiting for the file
+   * system, so a dead drive cannot take the threads other file operations need.
+   */
   private async attempt(target: Target, line: string): Promise<boolean> {
+    if (this.pending >= 2) {
+      this.failed++
+      return false
+    }
+    const job = { cancelled: false }
     let timer: NodeJS.Timeout | undefined
     const deadline = new Promise<never>((_, reject) => {
-      timer = setTimeout(
-        () => reject(new Error('no answer from the file system')),
-        this.fsTimeoutMs,
-      )
+      timer = setTimeout(() => {
+        job.cancelled = true
+        reject(new Error('no answer from the file system'))
+      }, this.fsTimeoutMs)
       timer.unref?.()
     })
+    this.pending++
+    const work = this.writeTo(target, line, job).finally(() => {
+      this.pending--
+    })
     try {
-      await Promise.race([this.writeTo(target, line), deadline])
+      await Promise.race([work, deadline])
       return true
     } catch {
       this.failed++
@@ -171,13 +186,15 @@ export class FallbackReporter {
     }
   }
 
-  private async writeTo(target: Target, line: string): Promise<void> {
+  private async writeTo(target: Target, line: string, job: { cancelled: boolean }): Promise<void> {
     let size = this.sizes.get(target.file)
     if (size === undefined) {
       const found = await this.fs.size(target.file)
+      if (job.cancelled) return
       if (found >= this.maxBytes) {
         // full from an earlier run: keep it as .old and start again
         await this.fs.move(target.file, `${target.file}.old`)
+        if (job.cancelled) return
         size = 0
       } else {
         size = found
@@ -189,6 +206,7 @@ export class FallbackReporter {
       return
     }
     await this.fs.mkdir(target.dir)
+    if (job.cancelled) return
     await this.fs.append(target.file, line)
     this.sizes.set(target.file, size + Buffer.byteLength(line, 'utf8'))
     this.written++

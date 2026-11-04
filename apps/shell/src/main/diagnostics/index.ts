@@ -77,6 +77,8 @@ export function initDiagnostics(options: InitOptions): DiagnosticsLogger | undef
     ...(commit ? { commit } : {}),
     level: levelFromEnv(env.GENOFFICE_LOG_LEVEL) ?? (verbose ? 'debug' : 'info'),
     verbose,
+    // if the log drive stops answering for good, writing moves to the system temp folder
+    altDir: join(tmpdir(), 'GenOffice', 'logs', 'diagnostics'),
   })
   for (const entry of pending) logger.write(entry.level, entry.cat, entry.ev, entry.data, entry.at)
   pending = []

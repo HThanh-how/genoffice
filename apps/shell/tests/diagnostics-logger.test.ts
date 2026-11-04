@@ -1007,16 +1007,44 @@ describe('DiagnosticsLogger when the file system hangs: bounds and recovery', ()
     expect(paths.size).toBeLessThanOrEqual(2)
   })
 
-  it('writes again after the stuck operations finish, or are forgotten', async () => {
+  it('never has more than two operations stuck at once, however long the drive stays silent', async () => {
+    let started = 0
+    const fs: LogFs = {
+      ...realLogFs,
+      mkdir: async () => undefined,
+      size: async () => 0,
+      list: async () => [],
+      appendFile: () => {
+        started++
+        return new Promise<void>(() => undefined) // never answers, and never finishes
+      },
+    }
+    const log = new DiagnosticsLogger({
+      dir: '/d',
+      fs,
+      retryDelaysMs: [],
+      retryBackoffMs: 0,
+      switchAfterFailures: 1000,
+      writeTimeoutMs: 5,
+      degradedAfterMs: 1e9,
+      onInternalError: quiet(),
+    })
+    for (let round = 0; round < 40; round++) {
+      log.error('a', 'x')
+      await log.flush()
+      await new Promise((r) => setTimeout(r, 6))
+    }
+    expect(started).toBe(2)
+  })
+
+  it('writes again when the stuck operations finish (they leave the count by themselves)', async () => {
     const dir = tmp()
-    const hangs: Array<() => void> = []
+    const stuck: Array<() => void> = []
     let calls = 0
     const fs: LogFs = {
       ...realLogFs,
       appendFile: (p, t) => {
-        if (calls++ < 2) {
-          return new Promise<void>((resolve) => hangs.push(resolve)) // stuck until released
-        }
+        if (calls++ < 2) return new Promise<void>((resolve) => stuck.push(resolve))
         return realLogFs.appendFile(p, t)
       },
     }
@@ -1027,19 +1055,60 @@ describe('DiagnosticsLogger when the file system hangs: bounds and recovery', ()
       retryBackoffMs: 0,
       switchAfterFailures: 1000,
       writeTimeoutMs: 15,
-      hungForgetMs: 80,
+      degradedAfterMs: 1e9,
       onInternalError: quiet(),
     })
     log.error('a', 'kept')
     await log.flush() // stuck 1
-    await log.flush() // stuck 2 (the lines went back)
+    await log.flush() // stuck 2 (the lines went back each time)
     await log.flush() // refused: two operations are stuck
     expect(calls).toBe(2)
-    // they never finish; after the forget time the logger tries again
-    await new Promise((r) => setTimeout(r, 100))
+    expect(log.queued).toBe(1)
+    for (const release of stuck) release() // the drive answers at last
+    await new Promise((r) => setTimeout(r, 10))
     await log.flush()
     expect(lines(dir).map((l) => l.ev)).toContain('kept')
-    for (const release of hangs) release() // late completion changes nothing
+    expect(log.queued).toBe(0)
+  })
+
+  it('moves to the second folder when the drive stays silent, without opening more operations on it', async () => {
+    const altDir = tmp()
+    let primaryStarted = 0
+    const fs: LogFs = {
+      ...realLogFs,
+      appendFile: (p, t) => {
+        if (p.startsWith('/dead')) {
+          primaryStarted++
+          return new Promise<void>(() => undefined)
+        }
+        return realLogFs.appendFile(p, t)
+      },
+      mkdir: async (d) => {
+        if (d.startsWith('/dead')) return
+        return realLogFs.mkdir(d)
+      },
+      size: async (p) => (p.startsWith('/dead') ? 0 : realLogFs.size(p)),
+      list: async (d) => (d.startsWith('/dead') ? [] : realLogFs.list(d)),
+    }
+    const log = new DiagnosticsLogger({
+      dir: '/dead/logs',
+      altDir,
+      fs,
+      retryDelaysMs: [],
+      retryBackoffMs: 0,
+      switchAfterFailures: 1000,
+      writeTimeoutMs: 5,
+      degradedAfterMs: 30,
+      onInternalError: quiet(),
+    })
+    log.error('a', 'important')
+    for (let round = 0; round < 20; round++) {
+      await log.flush()
+      await new Promise((r) => setTimeout(r, 8))
+    }
+    expect(primaryStarted).toBeLessThanOrEqual(2)
+    expect(log.path.startsWith(altDir)).toBe(true)
+    expect(readFileSync(join(altDir, 'genoffice.jsonl'), 'utf8')).toContain('important')
   })
 
   it('keeps the duplicate marker until an append has really gone through', async () => {
@@ -1061,7 +1130,6 @@ describe('DiagnosticsLogger when the file system hangs: bounds and recovery', ()
       retryBackoffMs: 0,
       switchAfterFailures: 1000,
       writeTimeoutMs: 15,
-      hungForgetMs: 1,
       onInternalError: quiet(),
     })
     log.error('a', 'once')
@@ -1183,7 +1251,6 @@ describe('DiagnosticsLogger when the file system hangs: bounds and recovery', ()
       retryDelaysMs: [],
       retryBackoffMs: 0,
       switchAfterFailures: 1000,
-      hungForgetMs: 1,
       flushIntervalMs: 1e9,
       flushLines: 1e9,
       onInternalError: quiet(),
