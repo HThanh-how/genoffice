@@ -578,6 +578,7 @@ export class OcrSidecar {
    *  - 'cloud-all': the same for a read the person asked for: all pages that are not already good.
    *  - 'local': the light pass, `maxPagesPerFile` = the number of leading pages to read. A page that
    *    has a row of any tier is done. Sensitive documents ARE included: they never leave the device.
+   *    Also lists Word, PowerPoint and Excel files made of pictures (a picture is a page).
    *
    * A file whose pages up to the limit are all read is not a candidate (even if they were blank).
    */
@@ -600,6 +601,11 @@ export class OcrSidecar {
       mode === 'cloud'
         ? `OR EXISTS (SELECT 1 FROM ocr_pages o WHERE ${same} AND o.tier = 'local' AND o.escalate = 1)`
         : ''
+    // Word, PowerPoint and Excel files are read by the local pass only (their pictures, see
+    // office-ocr-render.ts); the cloud lists stay PDFs, so nothing of them can leave this device.
+    const kinds = local
+      ? `(${['pdf', 'docx', 'pptx', 'xlsx', 'xlsm'].map((ext) => `lower(d.path) LIKE '%.${ext}'`).join(' OR ')})`
+      : "lower(d.path) LIKE '%.pdf'"
     const rows = this.db
       .prepare(
         `SELECT d.id, d.path, coalesce(d.size_bytes, 0) AS size_bytes, coalesce(d.mtime_ms, 0) AS mtime_ms,
@@ -612,7 +618,7 @@ export class OcrSidecar {
           (SELECT f.attempts FROM ocr_local_failures f
             WHERE f.path = d.path AND f.mtime_ms = d.mtime_ms AND f.size_bytes = d.size_bytes) AS failed_attempts
         FROM documents d
-        WHERE d.excluded = 0 AND lower(d.path) LIKE '%.pdf'
+        WHERE d.excluded = 0 AND ${kinds}
           ${notMedia} AND (
           (d.status = 'empty' AND d.error LIKE 'No readable text%')
           OR (d.status = 'pending' AND EXISTS (SELECT 1 FROM ocr_pages o WHERE ${same}))
