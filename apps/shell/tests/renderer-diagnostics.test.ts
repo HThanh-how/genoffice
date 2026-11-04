@@ -101,6 +101,8 @@ describe('the tab diagnostics record', () => {
 })
 
 describe('the rotating log file', () => {
+  const quiet = { report: () => undefined }
+
   it('starts a new file when the old one is too big, and never throws', () => {
     const calls: string[] = []
     let size = 10
@@ -112,18 +114,96 @@ describe('the rotating log file', () => {
         rename: (a, b) => void calls.push(`rename ${a} ${b}`),
       },
       100,
+      quiet,
     )
     write('one')
     size = 500
     write('two')
     expect(calls).toEqual(['append one', 'rename /logs/tabs.log /logs/tabs.log.1', 'append two'])
-    const broken = rotatingFileWriter('/x', {
-      append: () => {
-        throw new Error('disk full')
+    const broken = rotatingFileWriter(
+      '/x',
+      {
+        append: () => {
+          throw new Error('disk full')
+        },
+        size: () => 0,
+        rename: () => undefined,
       },
-      size: () => 0,
-      rename: () => undefined,
-    })
+      undefined,
+      quiet,
+    )
     expect(() => broken('line')).not.toThrow()
+  })
+
+  it('keeps writing when the rotation fails (regression: main-lag.log stayed silent)', () => {
+    const lines: string[] = []
+    const reports: string[] = []
+    const write = rotatingFileWriter(
+      '/logs/main-lag.log',
+      {
+        append: (_p, t) => void lines.push(t.trim()),
+        size: () => 5000,
+        rename: () => {
+          throw Object.assign(new Error('EPERM'), { code: 'EPERM' })
+        },
+      },
+      100,
+      { report: (m) => void reports.push(m) },
+    )
+    write('first')
+    write('second')
+    expect(lines).toEqual(['first', 'second'])
+    expect(reports.some((m) => m.includes('could not rotate'))).toBe(true)
+  })
+
+  it('empties the file when it cannot be moved, and retries the rotation only after a pause', () => {
+    let now = 0
+    let size = 5000
+    const renames: number[] = []
+    const truncates: string[] = []
+    const write = rotatingFileWriter(
+      '/logs/a.log',
+      {
+        append: () => undefined,
+        size: () => size,
+        rename: () => {
+          renames.push(now)
+          throw new Error('locked')
+        },
+        truncate: (p) => {
+          truncates.push(p)
+          size = 0
+        },
+      },
+      100,
+      { ...quiet, now: () => now, retryRotateMs: 60_000 },
+    )
+    write('one')
+    expect(truncates).toEqual(['/logs/a.log'])
+    size = 5000
+    now = 1000
+    write('two') // within the pause: no new rename attempt
+    expect(renames).toEqual([0])
+    now = 61_000
+    write('three')
+    expect(renames).toEqual([0, 61_000])
+  })
+
+  it('reports a failed write instead of swallowing it', () => {
+    const reports: string[] = []
+    const write = rotatingFileWriter(
+      '/x/y.log',
+      {
+        append: () => {
+          throw new Error('disk full')
+        },
+        size: () => 0,
+        rename: () => undefined,
+      },
+      100,
+      { report: (m) => void reports.push(m) },
+    )
+    write('line')
+    expect(reports).toEqual(['could not write /x/y.log'])
   })
 })

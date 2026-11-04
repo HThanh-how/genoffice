@@ -2,6 +2,15 @@ import './uv-threadpool'
 import { watchRootAvailability } from './document-memory/runtime/root-lifecycle'
 import { powerMonitor as rootPowerMonitor } from 'electron'
 import { installIpcTracing, traceOp } from './trace-op'
+import {
+  flushDiagnosticsSync,
+  getLogger,
+  initDiagnostics,
+  installIpcLogging,
+  installLifecycleLogging,
+  log as diag,
+  startupInfo,
+} from './diagnostics'
 import { registerAppActionIpc } from './app-action-ipc'
 import { showAppMessageBox, setFeedbackThemeGetter } from './app-message-box'
 import { rootAvailability } from './document-memory/root-availability'
@@ -553,6 +562,8 @@ import { isUpdateChannel, type UpdateChannel } from '../shared/update-api'
 import { resolveWindowIcon } from './window-icon'
 
 installIpcTracing(ipcMain)
+// failures and slow calls of every handler go to the diagnostic log (channel and duration only)
+installIpcLogging(ipcMain, getLogger)
 
 /**
  * GenOffice unified shell: ONE Electron app, ONE BrowserWindow, hosting the
@@ -4559,6 +4570,7 @@ function createShellWindow(): void {
       },
       size: (path) => (existsSync(path) ? statSync(path).size : 0),
       rename: (from, to) => renameSync(from, to),
+      truncate: (path) => writeFileSync(path, ''),
     }),
   )
   manager.setDocumentReadyListener(() => revealColdOpening())
@@ -8988,6 +9000,11 @@ async function startShell(): Promise<void> {
   startLoopMonitor() // dev diagnostic; no-op unless GENOFFICE_DEBUG_LOOP=1
   const userDataDir = app.getPath('userData')
   startLoopWatchdogToFile(join(userDataDir, 'logs', 'main-lag.log')) // local log, only written when the main thread stalls > 200 ms
+  initDiagnostics({ userDataDir, version: app.getVersion() })
+  diag.info('app', 'start', startupInfo(app, { packaged: app.isPackaged }))
+  installLifecycleLogging({ app, sink: diag })
+  // the last lines before the process ends are written synchronously: nothing else runs after this
+  app.on('quit', () => flushDiagnosticsSync())
   // a move of the index to another folder, chosen in the settings, happens here: nothing has the
   // database open yet
   const dbMove = await traceOp('startup.db-move', () => applyPendingDbMove(userDataDir), {
