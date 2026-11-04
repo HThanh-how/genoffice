@@ -66,19 +66,44 @@ describe('AiRequestLog', () => {
     }).not.toThrow()
   })
 
-  it('reports silence at 30, 60, 90 and 120 s even though a heartbeat arrives every 5 s (the one-shot CLI)', () => {
+  it('says "alive but quiet" at 30, 60 and 120 s, at info level, while a heartbeat arrives every 5 s (the one-shot CLI)', () => {
     const { lines, sink } = make()
     const log = start(sink)
     for (let s = 5; s <= 140; s += 5) {
       vi.advanceTimersByTime(5_000)
       log.wire() // the heartbeat
     }
+    expect(silent(lines)).toHaveLength(0) // not a warning: bytes are arriving
+    const quiet = lines.filter((l) => l.ev === 'request.quiet')
+    expect(quiet.map((l) => l.level)).toEqual(['info', 'info', 'info'])
+    expect(quiet.map((l) => Math.round(l.data.silentContentMs / 30_000))).toEqual([1, 2, 4])
+    expect(quiet[2]!.data.silentWireMs).toBeLessThanOrEqual(5_000)
+    expect(quiet[0]!.data).toMatchObject({ stage: 'before-first-text', provider: 'agy' })
+    log.dispose()
+  })
+
+  it('warns at 30, 60, 90 and 120 s when nothing at all arrives, not even a heartbeat', () => {
+    const { lines, sink } = make()
+    const log = start(sink)
+    vi.advanceTimersByTime(140_000)
     const reports = silent(lines)
+    expect(reports.map((l) => l.level)).toEqual(['warn', 'warn', 'warn', 'warn'])
     expect(reports.map((l) => Math.floor(l.data.silentContentMs / 30_000))).toEqual([1, 2, 3, 4])
-    // the wire is alive, the content is not: both numbers say so
-    expect(reports[3]!.data.silentWireMs).toBeLessThanOrEqual(5_000)
-    expect(reports[3]!.data.silentContentMs).toBeGreaterThanOrEqual(120_000)
-    expect(reports[0]!.data).toMatchObject({ stage: 'before-first-text', provider: 'agy' })
+    expect(reports[3]!.data.silentWireMs).toBeGreaterThanOrEqual(120_000)
+    expect(lines.filter((l) => l.ev === 'request.quiet')).toHaveLength(0)
+    log.dispose()
+  })
+
+  it('goes from quiet to silent when the heartbeat stops', () => {
+    const { lines, sink } = make()
+    const log = start(sink)
+    for (let s = 5; s <= 60; s += 5) {
+      vi.advanceTimersByTime(5_000)
+      log.wire()
+    }
+    vi.advanceTimersByTime(90_000) // then nothing
+    expect(lines.filter((l) => l.ev === 'request.quiet').length).toBeGreaterThanOrEqual(1)
+    expect(silent(lines).length).toBeGreaterThanOrEqual(1)
     log.dispose()
   })
 

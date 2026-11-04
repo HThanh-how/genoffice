@@ -8,9 +8,10 @@ import type { DiagSink } from '@genoffice/ai-provider/diag-hook'
  *  - the CONTENT clock moves when the model actually produced something (text, reasoning, a tool call);
  *  - the WIRE clock also moves on a heartbeat (the one-shot Antigravity CLI sends one every 5 s while
  *    it says nothing) or on any network chunk.
- * `request.silent` follows the content clock, so a CLI that keeps its heartbeat but has produced
- * nothing for two minutes is reported, and it carries both numbers: a long content silence with a
- * short wire silence means "alive but quiet", two long ones mean "nothing is arriving at all".
+ * A long content silence with a recent wire signal is "alive but quiet" (a tool's arguments being
+ * written, a CLI that thinks): `request.quiet`, at info level, at 30 s, 60 s, 120 s, 240 s ... A long
+ * content silence with NO wire signal either is "nothing is arriving at all": `request.silent`, a
+ * warning every 30 s. Both carry both numbers.
  *
  * Nothing here may throw: the log must not decide whether a request works.
  */
@@ -58,16 +59,22 @@ export class AiRequestLog {
   private lastContentAt: number
   private lastWireAt: number
   private silentLogged = 0
+  private quietAt = SILENT_STEP_MS
   private firstTextMs: number | undefined
   private deltas = 0
   private toolCalls = 0
   private timer: ReturnType<typeof setInterval> | undefined
   private readonly clear: typeof clearInterval
 
+  /** what the lines carry: the request itself (its messages and tools) is not kept for the life of the request */
+  private readonly info: { readonly reqId: string; readonly provider: string }
+
   constructor(
-    private readonly info: AiRequestLogStart,
+    start: AiRequestLogStart,
     private readonly deps: AiRequestLogDeps,
   ) {
+    const info = start
+    this.info = { reqId: info.reqId, provider: info.provider }
     this.now = deps.now ?? Date.now
     this.clear = deps.clearInterval ?? clearInterval
     this.startedAt = this.lastContentAt = this.lastWireAt = this.now()
@@ -100,16 +107,23 @@ export class AiRequestLog {
     this.safely(() => {
       const at = this.now()
       const silentContentMs = at - this.lastContentAt
-      if (silentContentMs < SILENT_STEP_MS * (this.silentLogged + 1)) return
-      this.silentLogged++
-      this.deps.sink.warn('ai', 'request.silent', {
+      const silentWireMs = at - this.lastWireAt
+      const data = {
         reqId: this.info.reqId,
         silentContentMs,
-        silentWireMs: at - this.lastWireAt,
+        silentWireMs,
         ms: at - this.startedAt,
         stage: this.firstTextMs === undefined ? 'before-first-text' : 'streaming',
         provider: this.info.provider,
-      })
+      }
+      if (silentWireMs >= SILENT_STEP_MS) {
+        if (silentContentMs < SILENT_STEP_MS * (this.silentLogged + 1)) return
+        this.silentLogged++
+        this.deps.sink.warn('ai', 'request.silent', data)
+      } else if (silentContentMs >= this.quietAt) {
+        this.quietAt *= 2
+        this.deps.sink.info('ai', 'request.quiet', data)
+      }
     })
   }
 
@@ -122,6 +136,7 @@ export class AiRequestLog {
   content(): void {
     this.lastWireAt = this.lastContentAt = this.now()
     this.silentLogged = 0
+    this.quietAt = SILENT_STEP_MS
   }
 
   text(): void {

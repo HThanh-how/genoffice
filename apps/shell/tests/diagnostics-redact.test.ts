@@ -1,5 +1,10 @@
 import { describe, expect, it, vi } from 'vitest'
-import { describeError, redactString, redactValue } from '../src/main/diagnostics/redact'
+import {
+  describeError,
+  redactString,
+  redactValue,
+  scrubPaths,
+} from '../src/main/diagnostics/redact'
 
 describe('diagnostics redaction', () => {
   it.each([
@@ -1091,5 +1096,64 @@ describe('the reason a sign-in failed', () => {
     'auth=Abcdefgh1234',
   ])('a value that looks like a credential is still hidden: %s', (input) => {
     expect(redactString(input)).toContain('[redacted]')
+  })
+})
+
+describe('a text that is made to be slow is not', () => {
+  const within = (ms: number, fn: () => void): void => {
+    const started = performance.now()
+    fn()
+    expect(performance.now() - started).toBeLessThan(ms)
+  }
+
+  it('words of a sign-in state that can be written together in several ways', () => {
+    within(100, () => redactString(`auth=${'signin'.repeat(200)}!`))
+    within(100, () => redactString(`auth: ${'SignUp'.repeat(24)}x`))
+    within(100, () => redactString(`auth=${'signin'.repeat(27)}!`))
+    expect(redactString('auth: signin')).toBe('auth: signin')
+    expect(redactString('auth: SignOut')).toBe('auth: SignOut')
+  })
+
+  it('paths: long runs of separators, drive letters and spaces', () => {
+    within(300, () => scrubPaths(' /a'.repeat(1400)))
+    within(300, () => scrubPaths('/a'.repeat(2000)))
+    within(300, () => scrubPaths('a\\b '.repeat(1000)))
+    within(300, () => scrubPaths('C:\\a '.repeat(800)))
+    within(300, () => scrubPaths('x/'.repeat(2000) + '.pdf'))
+  })
+})
+
+describe('paths that are cut, written with slashes or under a user name with spaces', () => {
+  const scrub = (s: string): string => scrubPaths(s)
+
+  it('takes the name out of a path that a cut left without its start', () => {
+    expect(scrub('rs\\bob\\Documents\\Ho khau cua Nguyen Van A.pdf: EBUSY')).toBe(
+      '…\\<file>.pdf: EBUSY',
+    )
+    expect(scrub('failed: C:\\Users\\bob\\x\\a b.pdf\nthen rs\\bob\\y\\c d.docx')).toBe(
+      'failed: C:\\…\\<file>.pdf\nthen …\\<file>.docx',
+    )
+  })
+
+  it('knows a Windows path written with slashes, and a file URL', () => {
+    expect(scrub('open C:/Users/bob/Documents/CCCD An.pdf failed')).toBe(
+      'open C:\\…\\<file>.pdf failed',
+    )
+    expect(scrub('file:///C:/Users/bob/Documents/passport.jpg')).toBe('file:///C:\\…\\<file>.jpg')
+    expect(scrub('C:/Users/bob/AppData/Local/GenOffice/logs/a.log')).toBe(
+      'C:/Users/<user>/AppData/Local/GenOffice/logs/a.log',
+    )
+  })
+
+  it('takes the whole name of a Windows user that holds spaces', () => {
+    expect(scrub('C:\\Users\\Nguyen Van A\\AppData\\Local\\GenOffice\\logs')).toBe(
+      'C:\\Users\\<user>\\AppData\\Local\\GenOffice\\logs',
+    )
+  })
+
+  it('does not touch what is not a path', () => {
+    for (const same of ['a\\b', 'x y\\z', 'https://example.com/a/b.pdf', 'v1.2/3', 'ok.pdf']) {
+      expect(scrub(same)).toBe(same)
+    }
   })
 })

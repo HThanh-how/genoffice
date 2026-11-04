@@ -1625,14 +1625,14 @@ describe('DiagnosticsLogger limits on sending a line again, and on closing', () 
 describe('DiagnosticsLogger with a drive that cannot keep up', () => {
   it('says once, not at every round, that writes are refused while an operation hangs, and writes the line once when it answers', async () => {
     const dir = tmp()
-    let releaseMkdir: () => void = () => undefined
+    const releases: Array<() => void> = []
     let mkdirs = 0
     const reports: string[] = []
     const fs: LogFs = {
       ...realLogFs,
       mkdir: async (d) => {
         mkdirs++
-        await new Promise<void>((resolve) => (releaseMkdir = resolve))
+        await new Promise<void>((resolve) => releases.push(resolve))
         return realLogFs.mkdir(d)
       },
     }
@@ -1655,10 +1655,22 @@ describe('DiagnosticsLogger with a drive that cannot keep up', () => {
     // (cause of the timeouts + the first refusal; not one line per round)
     expect(log.stats().internalErrors).toBeLessThan(10)
     expect(log.stats().droppedTotal).toBe(0)
-    releaseMkdir()
-    await new Promise((r) => setTimeout(r, 20))
+    for (const release of releases) release() // every stuck operation answers
+    const written = (): number =>
+      existsSync(join(dir, 'genoffice.jsonl'))
+        ? lines(dir).filter((l) => l.ev === 'waits-for-the-drive').length
+        : 0
+    // (the moment of the retry is not fixed: wait for the line instead of for a number of milliseconds)
+    await vi.waitFor(
+      async () => {
+        await log.flush()
+        expect(written()).toBe(1)
+      },
+      { timeout: 5000, interval: 50 },
+    )
     await log.flush()
-    expect(lines(dir).filter((l) => l.ev === 'waits-for-the-drive')).toHaveLength(1)
+    await new Promise((r) => setTimeout(r, 100))
+    expect(written()).toBe(1)
   })
 
   it('a drive that is too slow for the flow loses lines all the while: the count goes up with the input, and the note carries the total', async () => {

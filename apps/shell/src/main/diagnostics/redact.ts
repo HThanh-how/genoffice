@@ -336,8 +336,13 @@ function keyInfo(key: string): KeyInfo {
 }
 
 /** `auth: SessionExpired`, `auth=MissingCredentials`, `auth: ok=true`: why a sign-in failed is not a secret. */
-const AUTH_STATE =
-  /^(?:(?:session|not|token|refresh|refreshed|missing|denied|failed|failure|invalid|expired|expire|authenticated|authorized|unauthorized|unauthorised|credentials?|required|sign|signin|signup|signed|in|up|out|login|logout|ok|success|error|timeout|revoked|none|disabled|enabled)+|(?:ok|success|error|status)=(?:true|false))$/i
+const AUTH_STATE_WORDS =
+  /^(?:(?:session|not|token|refresh|refreshed|missing|denied|failed|failure|invalid|expired|expire|authenticated|authorized|unauthorized|unauthorised|credentials?|required|signin|signup|signout|signed|login|logout|ok|success|error|timeout|revoked|none|disabled|enabled)+|(?:ok|success|error|status)=(?:true|false))$/i
+// (no word above is made of the others, so the match cannot be taken apart in several ways, and a value
+// that is longer than any state is not one)
+const AUTH_STATE = {
+  test: (value: string): boolean => value.length <= 40 && AUTH_STATE_WORDS.test(value),
+}
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
 
 /**
@@ -639,16 +644,25 @@ function hashPathsIn(s: string): string {
 
 const DOC_EXT =
   'pdf|docx?|dotx?|xlsx?|xlsm|csv|pptx?|odt|ods|odp|rtf|txt|md|html?|jpe?g|png|gif|bmp|tiff?|webp|heic|zip|rar|7z'
-/** `C:\Users\Ann\Hồ sơ\CCCD An.pdf`: the drive (or share) and a file of a known kind, spaces allowed in the name. */
+// (every repeat below has a bound: a long run of separators must not make the match slow)
+const NAME = String.raw`[^\\/:*?"<>|\r\n]`
+const END = String.raw`\.(${DOC_EXT})(?![\p{L}\d])`
+/** `C:\Users\Ann\Hồ sơ\CCCD An.pdf` or `C:/Users/…`: the drive (or share) and a file of a known kind, spaces allowed in the name. */
 const WINDOWS_FILE = new RegExp(
-  `(?<![\\p{L}\\d])([A-Za-z]:\\\\|\\\\\\\\[^\\\\\\s"'<>|*?]+\\\\)(?:[^\\\\/:*?"<>|\\r\\n]+\\\\)*[^\\\\/:*?"<>|\\r\\n]{0,120}?\\.(${DOC_EXT})(?![\\p{L}\\d])`,
+  String.raw`(?<![\p{L}\d])([A-Za-z]:[\\/]|\\\\[^\\\s"'<>|*?]+\\)(?:${NAME}{1,120}[\\/]){0,40}${NAME}{0,120}?${END}`,
+  'giu',
+)
+/** the same without its start, as it is left when a log line was cut in the middle of a path: `rs\bob\Documents\Ho khau.pdf` */
+const WINDOWS_FRAGMENT = new RegExp(
+  String.raw`(?<![\p{L}\d\\/:])[^\\/:*?"<>|\s]{1,60}\\(?:${NAME}{1,120}\\){0,40}${NAME}{0,120}?${END}`,
   'giu',
 )
 const POSIX_FILE = new RegExp(
-  `(?<![\\w:/.])/(?:[^/\\r\\n"'<>|*?:]+/)+[^/\\r\\n"'<>|*?:]{0,120}?\\.(${DOC_EXT})(?![\\p{L}\\d])`,
+  String.raw`(?<![\w:/.])/(?:[^/\r\n"'<>|*?:]{1,120}/){1,40}[^/\r\n"'<>|*?:]{0,120}?${END}`,
   'giu',
 )
-const WINDOWS_USER = /([A-Za-z]:\\Users\\)[^\\/\s"'<>|*?:]+/gi
+// (the name of a Windows user may hold spaces: `C:\Users\Nguyen Van A`; on the others it stops at a space)
+const WINDOWS_USER = /([A-Za-z]:[\\/]Users[\\/])[^\\/"'<>|*?:\r\n]+/gi
 const POSIX_USER = /(?<![\w:/])(\/(?:Users|home)\/)[^/\s"'<>|*?:]+/g
 
 /**
@@ -664,6 +678,7 @@ export function scrubPaths(input: string): string {
       const share = root.startsWith('\\\\')
       return `${share ? '\\\\…' : root.slice(0, 2)}\\…\\<file>.${ext.toLowerCase()}`
     })
+    .replace(WINDOWS_FRAGMENT, (_m, ext: string) => `…\\<file>.${ext.toLowerCase()}`)
     .replace(POSIX_FILE, (_m, ext: string) => `/…/<file>.${ext.toLowerCase()}`)
     .replace(WINDOWS_USER, '$1<user>')
     .replace(POSIX_USER, '$1<user>')
