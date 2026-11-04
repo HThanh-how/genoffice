@@ -866,11 +866,13 @@ export function initAutoUpdater(
   autoUpdater.on('download-progress', (progress) => {
     if (!downloadInFlight) return
     // every tenth of the download, with the speed: a download that crawls or stops shows in the log
-    const decile = Math.floor(progress.percent / 10)
+    // (a percent that is missing or NaN, total 0 or a native updater, is not a new tenth every time:
+    // NaN is never equal to itself, and it would write a line for every event)
+    const decile = Number.isFinite(progress.percent) ? Math.floor(progress.percent / 10) : -2
     if (decile !== lastLoggedDecile) {
       lastLoggedDecile = decile
       diagHook.info('updater', 'progress', {
-        percent: Math.round(progress.percent),
+        percent: Number.isFinite(progress.percent) ? Math.round(progress.percent) : null,
         bytesPerSecond: Math.round(progress.bytesPerSecond ?? 0),
         total: progress.total,
       })

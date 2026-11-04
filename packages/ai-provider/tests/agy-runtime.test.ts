@@ -390,3 +390,67 @@ describe('runAgy: --json-schema', () => {
     expect(spawned).toHaveLength(0)
   })
 })
+
+describe('runAgy: what a failure leaves in the diagnostic log', () => {
+  const capture = async (run: () => Promise<void>) => {
+    const { setDiagSink } = await import('../src/diag-hook')
+    const lines: Array<{ level: string; ev: string; data: any }> = []
+    setDiagSink({
+      info: (_c, ev, data) => void lines.push({ level: 'info', ev, data }),
+      warn: (_c, ev, data) => void lines.push({ level: 'warn', ev, data }),
+      error: (_c, ev, data) => void lines.push({ level: 'error', ev, data }),
+    })
+    try {
+      await run()
+    } finally {
+      setDiagSink(undefined)
+    }
+    return lines
+  }
+
+  it('writes how a failed run ended: the code, the tail of what the CLI said, the reason', async () => {
+    const child = new FakeChild()
+    const { deps } = runDeps(child)
+    const lines = await capture(async () => {
+      await start(
+        { cliPath: CLI, model: 'm', prompt: 'my secret prompt', reqId: 'req1' },
+        deps,
+        child,
+        (c) => {
+          c.stderr.write('AGY_ERROR: {"status":"INTERNAL","retryable":false,"message":"boom"}\n')
+          c.exit(3)
+        },
+      )
+    })
+    const failed = lines.find((l) => l.ev === 'agy.failed')!
+    expect(failed.level).toBe('warn')
+    expect(failed.data).toMatchObject({ reqId: 'req1', code: 3 })
+    expect(failed.data.stderrTail).toContain('boom')
+    expect(JSON.stringify(lines)).not.toContain('secret prompt')
+  })
+
+  it('writes agy.failed for a print-timeout too, with the same tail', async () => {
+    const child = new FakeChild()
+    const { deps } = runDeps(child)
+    const lines = await capture(async () => {
+      await start(
+        {
+          cliPath: CLI,
+          model: 'm',
+          prompt: 'p',
+          reqId: 'req2',
+        },
+        deps,
+        child,
+        (c) => {
+          c.stderr.write(`${PRINT_TIMEOUT_STDERR}`)
+          c.emitLines([PRINT_TIMEOUT_RESULT])
+          c.exit(0)
+        },
+      )
+    })
+    const failed = lines.find((l) => l.ev === 'agy.failed')!
+    expect(failed.data).toMatchObject({ reqId: 'req2', code: 0, failure: 'print-timeout' })
+    expect(failed.data.stderrTail).toContain('print timeout')
+  })
+})

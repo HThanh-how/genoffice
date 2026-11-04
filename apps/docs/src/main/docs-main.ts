@@ -1,4 +1,5 @@
 import { diagHook } from '@genoffice/ai-provider/diag-hook'
+import { AiRequestLog } from './ai-request-log'
 import { createHash, randomUUID } from 'node:crypto'
 import { handOffBytes } from './byte-handoff'
 import { appendAiDiagnostic } from './ai-diagnostics'
@@ -4631,43 +4632,11 @@ export function registerAiIpc(): void {
       lastPing = now
       send({ requestId, type: 'ping' })
     }
-    // The life of this request in the diagnostic log (numbers and fixed words only, never the text):
-    // when it started, when the first answer text came, how long it was silent, how it ended.
-    const startedAt = Date.now()
-    let firstDeltaMs: number | undefined
-    let deltas = 0
-    let toolCalls = 0
-    let lastSignalAt = startedAt
-    let silentLogged = 0
-    const heard = (): void => {
-      lastSignalAt = Date.now()
-      silentLogged = 0
-    }
-    diagHook.info('ai', 'request.start', {
-      reqId: requestId,
-      provider,
-      model: config.model,
-      messages: messages.length,
-      chars: messages.reduce(
-        (sum, m) => sum + ('text' in m && typeof m.text === 'string' ? m.text.length : 0),
-        0,
-      ),
-      tools: tools.length,
-      maxTokens,
-    })
-    const silenceTimer = setInterval(() => {
-      const silentMs = Date.now() - lastSignalAt
-      if (silentMs < 30_000 * (silentLogged + 1)) return
-      silentLogged++
-      diagHook.warn('ai', 'request.silent', {
-        reqId: requestId,
-        silentMs,
-        ms: Date.now() - startedAt,
-        stage: firstDeltaMs === undefined ? 'before-first-text' : 'streaming',
-        provider,
-      })
-    }, 15_000)
-    silenceTimer.unref?.()
+    // The life of this request in the diagnostic log (numbers and fixed words only, never the text)
+    const reqLog = new AiRequestLog(
+      { reqId: requestId, provider, model: config.model, messages, tools, maxTokens },
+      { sink: diagHook },
+    )
     const trace = startAiTrace({
       requestId,
       sessionId: request.sessionId,
@@ -4687,28 +4656,23 @@ export function registerAiIpc(): void {
         sessionScope: String(event.sender.id),
         signal: controller.signal,
         onDelta: (text) => {
-          heard()
-          deltas++
-          if (firstDeltaMs === undefined) {
-            firstDeltaMs = Date.now() - startedAt
-            diagHook.info('ai', 'request.first-text', { reqId: requestId, ms: firstDeltaMs })
-          }
+          reqLog.text()
           trace?.onDelta(text)
           send({ requestId, type: 'delta', text })
         },
         onReasoningDelta: (text) => {
-          heard()
+          reqLog.content()
           trace?.onReasoningDelta(text)
           send({ requestId, type: 'reasoning', text })
         },
         onToolCall: (toolCall) => {
-          heard()
-          toolCalls++
+          reqLog.toolCall()
           trace?.onToolCall(toolCall)
           send({ requestId, type: 'tool-call', toolCall })
         },
         onActivity: () => {
-          heard()
+          // (a heartbeat is not an answer: it only moves the wire clock, not the silence one)
+          reqLog.wire()
           ping()
         },
         onDiagnostic: (record) => appendAiDiagnostic(userDataPath('ai-diagnostics.jsonl'), record),
@@ -4722,34 +4686,17 @@ export function registerAiIpc(): void {
         },
       })
       trace?.finish()
-      diagHook.info('ai', 'request.end', {
-        reqId: requestId,
-        ms: Date.now() - startedAt,
-        firstTextMs: firstDeltaMs,
-        deltas,
-        toolCalls,
-        stopReason,
-      })
+      reqLog.end(stopReason)
       send({ requestId, type: 'done', stopReason })
     } catch (err) {
       trace?.finish(
         controller.signal.aborted ? 'aborted' : err instanceof Error ? err.message : String(err),
       )
       if (controller.signal.aborted) {
-        diagHook.info('ai', 'request.aborted', {
-          reqId: requestId,
-          ms: Date.now() - startedAt,
-          firstTextMs: firstDeltaMs,
-        })
+        reqLog.aborted()
         send({ requestId, type: 'done' })
       } else {
-        diagHook.error('ai', 'request.failed', {
-          reqId: requestId,
-          ms: Date.now() - startedAt,
-          firstTextMs: firstDeltaMs,
-          provider,
-          err,
-        })
+        reqLog.failed(err)
         // an expired/revoked key drops to signed-out so the inline sign-in button shows
         noteGskCallFailure(gskKey, err)
         send({
@@ -4760,7 +4707,7 @@ export function registerAiIpc(): void {
         })
       }
     } finally {
-      clearInterval(silenceTimer)
+      reqLog.dispose()
       unwatchSender()
       activeAiStreams.delete(requestId)
     }

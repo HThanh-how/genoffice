@@ -1011,3 +1011,85 @@ describe('diagnostics redaction', () => {
     }
   })
 })
+
+describe('paths in the log name neither the person nor the paper', () => {
+  const scrub = (s: string): string => String(describeError(new Error(s)).message)
+
+  it('leaves out the file name and the user name, and keeps the drive and the folders of the app', () => {
+    expect(
+      scrub('open failed: C:\\Users\\Nguyen Van A\\Documents\\CCCD Nguyen Van A.pdf: EBUSY'),
+    ).toBe('open failed: C:\\…\\<file>.pdf: EBUSY')
+    expect(scrub('ENOENT D:\\Hồ sơ\\Hộ khẩu 2024.docx')).toBe('ENOENT D:\\…\\<file>.docx')
+    expect(scrub('C:\\Users\\Admin\\AppData\\Local\\GenOffice\\logs\\genoffice.jsonl')).toBe(
+      'C:\\Users\\<user>\\AppData\\Local\\GenOffice\\logs\\genoffice.jsonl',
+    )
+    expect(scrub('\\\\nas01\\share\\passport.JPG could not be read')).toContain('<file>.jpg')
+    expect(scrub('\\\\nas01\\share\\passport.JPG')).not.toContain('passport')
+    expect(scrub('/Users/bob/Library/Application Support/GenOffice/x.log')).toBe(
+      '/Users/<user>/Library/Application Support/GenOffice/x.log',
+    )
+    expect(scrub('cannot read /home/bob/Tài liệu/sổ hộ khẩu.pdf')).toBe('cannot read /…/<file>.pdf')
+  })
+
+  it('leaves URLs, plain words and file names without a folder alone', () => {
+    for (const same of [
+      'GET https://example.com/a/b/report.pdf 404',
+      'agy ENOENT',
+      'report.pdf',
+      'version 1.2.3 of /usr/bin/node',
+      'a.b\\c.d',
+    ]) {
+      expect(scrub(same)).toBe(same)
+    }
+  })
+
+  it('is not slow on a long string that is full of drive letters', () => {
+    const started = Date.now()
+    scrub('C:\\a '.repeat(2000))
+    scrub('/a/'.repeat(2000))
+    expect(Date.now() - started).toBeLessThan(2000)
+  })
+
+  it('does not apply when the export hashes the paths instead', () => {
+    const out = describeError(new Error('C:\\Users\\Ann\\x\\Ho khau.pdf'), { hashPaths: true })
+    expect(String(out.message)).toMatch(/^\[path:[0-9a-f]+\]$/)
+  })
+})
+
+describe('an identifier under a name that the credential rules watch', () => {
+  it.each([
+    'user id:550e8400-e29b-41d4-a716-446655440000',
+    'user id: 550e8400-e29b-41d4-a716-446655440000 failed',
+    'login session:123e4567-e89b-12d3-a456-426614174000',
+  ])('keeps a UUID whole: %s', (input) => {
+    expect(redactString(input)).toBe(input)
+  })
+
+  it('still hides a password that is written the same way', () => {
+    expect(redactString('user bob:s3cretpw1')).toBe('user [redacted]')
+    // (a UUID written as the password of a name that is not a diagnostic word is cut as before)
+    expect(redactString('user bob:550e8400-e29b-41d4-a716-446655440000')).not.toContain('550e8400')
+  })
+})
+
+describe('the reason a sign-in failed', () => {
+  it.each([
+    'auth: SessionExpired',
+    'auth: NotAuthenticated',
+    'auth: TokenRefreshFailed',
+    'auth=MissingCredentials',
+    'auth: signin',
+    'auth: ok=true',
+  ])('is kept: %s', (input) => {
+    expect(redactString(input)).toBe(input)
+  })
+
+  it.each([
+    'auth: dXNlcjpwYXNzd29yZA==',
+    'auth: SessionExpired1234',
+    'auth: bob:hunter2pw',
+    'auth=Abcdefgh1234',
+  ])('a value that looks like a credential is still hidden: %s', (input) => {
+    expect(redactString(input)).toContain('[redacted]')
+  })
+})

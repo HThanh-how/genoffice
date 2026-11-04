@@ -1100,15 +1100,22 @@ export async function runAgy(
           // --print-timeout expiry: agy returns what it has, reports SUCCESS and exits 0, with
           // only a stderr warning to tell the two apart
           const truncated = hasAgyPrintTimeoutWarning(stderr)
-          if (truncated && !options.allowPartial) {
-            reject(withTimeline(agyTruncatedError(partial, code)))
-            return
-          }
           const ran = {
             reqId: options.reqId,
             code,
             ms: Date.now() - startedAt,
             steps: trace.length,
+          }
+          // what the CLI said at the end, cut short (the log redacts secrets and takes paths apart)
+          const tail = {
+            partialChars: partial.length,
+            resultError: (resultSeen?.error ?? '').slice(-200),
+            stderrTail: stderr.slice(-300),
+          }
+          if (truncated && !options.allowPartial) {
+            diagHook.warn('ai', 'agy.failed', { ...ran, ...tail, failure: 'print-timeout' })
+            reject(withTimeline(agyTruncatedError(partial, code)))
+            return
           }
           // exit code 3 = the model or agent failed (possibly after streaming part of an answer)
           if (resultSeen?.ok && code !== 3) {
@@ -1136,9 +1143,7 @@ export async function runAgy(
           // later: the tail of its error and of stderr, cut short (the log redacts what looks like a secret).
           diagHook.warn('ai', 'agy.failed', {
             ...ran,
-            partialChars: partial.length,
-            resultError: (resultSeen?.error ?? '').slice(-200),
-            stderrTail: stderr.slice(-300),
+            ...tail,
             failure: failure.message.slice(0, 120),
           })
           reject(failure)

@@ -9,6 +9,7 @@ import { pipeline } from 'node:stream/promises'
 import { app, net, shell } from 'electron'
 import type { BrowserWindow } from 'electron'
 import { getUiLang } from '@genoffice/i18n'
+import { diagHook } from '@genoffice/ai-provider/diag-hook'
 import {
   compareVersions,
   createUpdateCoordinator,
@@ -89,7 +90,10 @@ export function installAndRestart(
         stdio: 'ignore',
         windowsHide: true,
       })
-      child.once('error', () => resolve(false))
+      child.once('error', (err) => {
+        diagHook.warn('updater', 'fork.installer-start-failed', { err })
+        resolve(false)
+      })
       child.once('spawn', () => {
         child.unref()
         // the installer runs with no window: say that the update is under way
@@ -112,7 +116,8 @@ export function installAndRestart(
         // the installer replaces files the running app holds open: let go of them
         quit()
       })
-    } catch {
+    } catch (err) {
+      diagHook.warn('updater', 'fork.installer-start-failed', { err })
       resolve(false)
     }
   })
@@ -143,6 +148,8 @@ export async function checkForkUpdates(
         })
       } catch (fetchErr: unknown) {
         const err = fetchErr as Error
+        // the real cause (DNS, TLS, proxy, reset) is replaced by a general code below: keep it here
+        diagHook.warn('updater', 'fork.check-fetch-failed', { background, err: fetchErr })
         if (err?.name === 'TimeoutError' || String(err).toLowerCase().includes('timeout')) {
           throw new UpdateSourceError('TIMEOUT', 'Connection timed out')
         }
@@ -341,7 +348,8 @@ export async function checkForkUpdates(
 
           installer = target
           pushUpdateState({ phase: 'downloaded', percent: 100 })
-        } catch {
+        } catch (err) {
+          diagHook.warn('updater', 'fork.download-failed', { version: release.version, err })
           if (folder) await rm(folder, { recursive: true, force: true }).catch(() => {})
           pushUpdateState({ phase: 'error' })
         } finally {
@@ -361,10 +369,15 @@ export async function checkForkUpdates(
             void shell
               .openPath(ready)
               .then((error) => {
-                if (error) pushUpdateState({ phase: 'error' })
-                else closeUpdateWindow()
+                if (error) {
+                  diagHook.warn('updater', 'fork.open-installer-failed', { err: error })
+                  pushUpdateState({ phase: 'error' })
+                } else closeUpdateWindow()
               })
-              .catch(() => pushUpdateState({ phase: 'error' }))
+              .catch((err: unknown) => {
+                diagHook.warn('updater', 'fork.open-installer-failed', { err })
+                pushUpdateState({ phase: 'error' })
+              })
           })
         },
         onOpenDownload: () => {
@@ -383,9 +396,10 @@ export async function checkForkUpdates(
       showUpdateWindow(getWindow(), state, actions)
       return { upToDate: false }
     } catch (err: unknown) {
-      if (background) return
       const error = err as UpdateSourceError
       const code = error?.code
+      diagHook.warn('updater', 'fork.check-failed', { background, code, err })
+      if (background) return
       let message: string
       if (code === 'GITHUB_NOT_FOUND') {
         message = vietnamese

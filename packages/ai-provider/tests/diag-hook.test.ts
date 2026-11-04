@@ -120,3 +120,45 @@ describe('observeChild', () => {
     expect(JSON.stringify(entries)).not.toMatch(/--|\\\\|\/Users|\.exe/)
   })
 })
+
+describe('observeChild with a real child process', () => {
+  it('writes the spawn and the exit by label, and never the command line it was started with', async () => {
+    const { spawn } = await import('node:child_process')
+    const { observeChild, setDiagSink } = await import('../src/diag-hook')
+    const lines: Array<{ level: string; ev: string; data: any }> = []
+    setDiagSink({
+      info: (_c, ev, data) => void lines.push({ level: 'info', ev, data }),
+      warn: (_c, ev, data) => void lines.push({ level: 'warn', ev, data }),
+      error: (_c, ev, data) => void lines.push({ level: 'error', ev, data }),
+    })
+    try {
+      const secret = 'sk-ant-api03-FAKEFAKEFAKEFAKEFAKEFAKE'
+      const child = spawn(process.execPath, ['-e', 'process.exit(3)', '--', '--token', secret], {
+        stdio: 'ignore',
+      })
+      observeChild(child, 'test-child', 'req9')
+      await new Promise<void>((resolve) => child.on('exit', () => resolve()))
+      await new Promise((r) => setTimeout(r, 20))
+      expect(lines.map((l) => l.ev)).toEqual(['spawn', 'exit'])
+      expect(lines[1]).toMatchObject({
+        level: 'warn',
+        data: { label: 'test-child', reqId: 'req9', code: 3 },
+      })
+      const all = JSON.stringify(lines)
+      expect(all).not.toContain(secret)
+      expect(all).not.toContain('--token')
+      expect(all).not.toContain(process.execPath)
+    } finally {
+      setDiagSink(undefined)
+    }
+  })
+})
+
+describe('newReqId', () => {
+  it('is short, plain hex and different every time', async () => {
+    const { newReqId } = await import('../src/diag-hook')
+    const ids = new Set(Array.from({ length: 2000 }, () => newReqId()))
+    expect(ids.size).toBe(2000)
+    for (const id of ids) expect(id).toMatch(/^[0-9a-f]{12}$/)
+  })
+})

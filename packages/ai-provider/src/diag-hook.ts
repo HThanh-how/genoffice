@@ -5,8 +5,12 @@ import { randomBytes } from 'node:crypto'
  * tools that do not have one) to leave a trace in it: the app registers its logger with `setDiagSink`,
  * and `diagHook.info(...)` and `observeChild(...)` reach it; with no sink they do nothing.
  *
- * What is written is always an event name and numbers or short fixed words (provider, model name,
- * process label, exit code, milliseconds): never a prompt, an answer, a file name or a file's content.
+ * What is written is an event name, numbers and short fixed words (provider, model name, process
+ * label, exit code, milliseconds); never a prompt, an answer or a file's content. Error text can carry
+ * more than that (the path of a folder or of a file a program complained about): the logger, which is
+ * where every line ends up, takes the user's name and the names of files out of paths (`scrubPaths`
+ * in the app's diagnostics/redact.ts). The files this package stages for the Antigravity CLI have names
+ * made up here (`image-1.png`), never the name of the user's own file.
  */
 export interface DiagSink {
   info(cat: string, ev: string, data?: unknown): void

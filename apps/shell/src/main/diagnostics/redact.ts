@@ -8,8 +8,8 @@ import { createHmac, randomBytes } from 'node:crypto'
  * - never a key, token, cookie or password, wherever it appears inside a string;
  * - never an identity-card style number or an e-mail address.
  * A verbose mode keeps the sensitive fields too, but still passes them through the string rules and
- * clips them hard. Paths stay as they are (the log never leaves the machine); `hashPaths` is for
- * the diagnostic export, which can leave it.
+ * clips them hard. A path keeps its folders but not the name of the user or of the file (see
+ * `scrubPaths`); `hashPaths` hides all of it, for the diagnostic export, which can leave the machine.
  *
  * Every string is cut to `MAX_REGEX_INPUT` characters BEFORE any pattern runs, so a huge blob in an
  * error message (a JSON body, a base64 file) cannot hold the main thread in a slow match.
@@ -335,6 +335,9 @@ function keyInfo(key: string): KeyInfo {
   return info
 }
 
+/** `auth: SessionExpired`, `auth=MissingCredentials`, `auth: ok=true`: why a sign-in failed is not a secret. */
+const AUTH_STATE =
+  /^(?:(?:session|not|token|refresh|refreshed|missing|denied|failed|failure|invalid|expired|expire|authenticated|authorized|unauthorized|unauthorised|credentials?|required|sign|signin|signup|signed|in|up|out|login|logout|ok|success|error|timeout|revoked|none|disabled|enabled)+|(?:ok|success|error|status)=(?:true|false))$/i
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
 
 /**
@@ -548,25 +551,35 @@ export function redactString(input: string): string {
   s = s.replace(
     /(\bauth)(["']?\s*[:=]\s*["']?)(?!\[redacted\])([^\s"',;&]{4,})/gi,
     (match, name: string, sep: string, value: string) =>
-      value.includes(':') ||
-      /[=+/]/.test(value) ||
-      (value.length >= 8 && /\d/.test(value)) ||
-      // base64 or a token without digits: long, with capitals inside
-      (value.length >= 12 && /[a-z]/.test(value) && /[A-Z]/.test(value.slice(1)))
-        ? `${name}${sep}[redacted]`
-        : match,
+      AUTH_STATE.test(value)
+        ? match
+        : value.includes(':') ||
+            /[=+/]/.test(value) ||
+            (value.length >= 8 && /\d/.test(value)) ||
+            // base64 or a token without digits: long, with capitals inside
+            (value.length >= 12 && /[a-z]/.test(value) && /[A-Z]/.test(value.slice(1)))
+          ? `${name}${sep}[redacted]`
+          : match,
   )
   s = s.replace(
     /(\b(?:login|user|username|credentials?)\s+)([A-Za-z][\w.-]*):([A-Za-z]*\d[A-Za-z0-9]*)\b/gi,
-    (match, lead: string, name: string, value: string) =>
-      // `user mode:v2`, `login step:2`, `user id:42` are diagnostics: a password is longer than a
-      // short value and is not under a name that describes a setting. A name from the list protects
-      // a SHORT value or a number (`id:42`, `mode:v2`, `count:12345`); a long value under it
-      // (`session:s3cr3tvalue`, `key:AbCd1234Ef`) is a secret as ever.
-      value.length >= 5 &&
-      (!DIAGNOSTIC_NAMES.has(name.toLowerCase()) || (value.length >= 8 && !/^\d+$/.test(value)))
-        ? `${lead}[redacted]`
-        : match,
+    (match, lead: string, name: string, value: string, offset: number, whole: string) =>
+      // `user id:550e8400-e29b-41d4-a716-446655440000`: an identifier to match against other logs is
+      // kept whole, not cut at its first group (it is set aside below, after the credential rules)
+      DIAGNOSTIC_NAMES.has(name.toLowerCase()) &&
+      /^-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b/i.test(
+        whole.slice(offset + match.length, offset + match.length + 40),
+      )
+        ? match
+        : // `user mode:v2`, `login step:2`, `user id:42` are diagnostics: a password is longer than a
+          // short value and is not under a name that describes a setting. A name from the list protects
+          // a SHORT value or a number (`id:42`, `mode:v2`, `count:12345`); a long value under it
+          // (`session:s3cr3tvalue`, `key:AbCd1234Ef`) is a secret as ever.
+          value.length >= 5 &&
+            (!DIAGNOSTIC_NAMES.has(name.toLowerCase()) ||
+              (value.length >= 8 && !/^\d+$/.test(value)))
+          ? `${lead}[redacted]`
+          : match,
   )
   // URL query strings: names stay, values go
   s = s.replace(/([?&][^=&\s#"']{1,40}=)[^&\s#"']+/g, '$1[q]')
@@ -616,7 +629,44 @@ const POSIX_PATH = /(?<![\w:/])\/(?:Users|home|var|tmp|opt|mnt|Volumes)\/[^\s"'<
 
 function hashPathsIn(s: string): string {
   const swap = (m: string): string => `[path:${shortHash(m)}]`
-  return s.replace(WINDOWS_PATH, swap).replace(POSIX_PATH, swap)
+  // a file name may hold spaces: take the paths of files of a known kind whole first
+  return s
+    .replace(WINDOWS_FILE, swap)
+    .replace(POSIX_FILE, swap)
+    .replace(WINDOWS_PATH, swap)
+    .replace(POSIX_PATH, swap)
+}
+
+const DOC_EXT =
+  'pdf|docx?|dotx?|xlsx?|xlsm|csv|pptx?|odt|ods|odp|rtf|txt|md|html?|jpe?g|png|gif|bmp|tiff?|webp|heic|zip|rar|7z'
+/** `C:\Users\Ann\Hồ sơ\CCCD An.pdf`: the drive (or share) and a file of a known kind, spaces allowed in the name. */
+const WINDOWS_FILE = new RegExp(
+  `(?<![\\p{L}\\d])([A-Za-z]:\\\\|\\\\\\\\[^\\\\\\s"'<>|*?]+\\\\)(?:[^\\\\/:*?"<>|\\r\\n]+\\\\)*[^\\\\/:*?"<>|\\r\\n]{0,120}?\\.(${DOC_EXT})(?![\\p{L}\\d])`,
+  'giu',
+)
+const POSIX_FILE = new RegExp(
+  `(?<![\\w:/.])/(?:[^/\\r\\n"'<>|*?:]+/)+[^/\\r\\n"'<>|*?:]{0,120}?\\.(${DOC_EXT})(?![\\p{L}\\d])`,
+  'giu',
+)
+const WINDOWS_USER = /([A-Za-z]:\\Users\\)[^\\/\s"'<>|*?:]+/gi
+const POSIX_USER = /(?<![\w:/])(\/(?:Users|home)\/)[^/\s"'<>|*?:]+/g
+
+/**
+ * A log is often shared to find a fault, and a path names the person (`C:\Users\<name>`) and the
+ * paper (`CCCD Nguyen Van A.pdf`, `Ho khau.pdf`). So the user's name in a home folder and the name
+ * of a file of a known kind are left out: `C:\…\<file>.pdf`. The folders of the app itself keep
+ * their names (`C:\Users\<user>\AppData\Local\GenOffice\logs`), which is what a diagnosis needs.
+ * (A folder that is named after a person, or a file of a kind that is not listed, is not caught.)
+ */
+export function scrubPaths(input: string): string {
+  return input
+    .replace(WINDOWS_FILE, (_m, root: string, ext: string) => {
+      const share = root.startsWith('\\\\')
+      return `${share ? '\\\\…' : root.slice(0, 2)}\\…\\<file>.${ext.toLowerCase()}`
+    })
+    .replace(POSIX_FILE, (_m, ext: string) => `/…/<file>.${ext.toLowerCase()}`)
+    .replace(WINDOWS_USER, '$1<user>')
+    .replace(POSIX_USER, '$1<user>')
 }
 
 function clip(s: string, limit: number): string {
@@ -625,7 +675,7 @@ function clip(s: string, limit: number): string {
 
 function cleanString(value: string, options: RedactOptions, limit = MAX_STRING): string {
   let s = redactString(value)
-  if (options.hashPaths) s = hashPathsIn(s)
+  s = options.hashPaths ? hashPathsIn(s) : scrubPaths(s)
   return clip(s, limit)
 }
 

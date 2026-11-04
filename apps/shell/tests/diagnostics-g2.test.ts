@@ -37,23 +37,25 @@ describe('where the events are written (wiring of the app)', () => {
     expect(read('shell', 'src', 'main', 'index.ts')).toContain('setDiagSink(diag)')
   })
 
-  it('writes the life of an AI request: start, first text, silence, end, abort, failure', () => {
+  it('writes the life of an AI request through AiRequestLog (behaviour is tested in the docs tests)', () => {
     const docs = read('docs', 'src', 'main', 'docs-main.ts')
-    for (const ev of [
-      'request.start',
-      'request.first-text',
-      'request.silent',
-      'request.end',
-      'request.aborted',
-      'request.failed',
-    ]) {
-      expect(docs, ev).toContain(`'${ev}'`)
-    }
-    // every one of them carries the id of the request
-    const start = docs.indexOf("diagHook.info('ai', 'request.start'")
-    expect(docs.slice(start, start + 600)).toContain('reqId: requestId')
-    // and the silence timer is cleared when the request ends
-    expect(docs).toContain('clearInterval(silenceTimer)')
+    expect(docs).toContain(
+      '{ reqId: requestId, provider, model: config.model, messages, tools, maxTokens }',
+    )
+    for (const call of [
+      'reqLog.end(',
+      'reqLog.aborted()',
+      'reqLog.failed(err)',
+      'reqLog.dispose()',
+    ])
+      expect(docs, call).toContain(call)
+    // answer text and tool calls move the silence clock; a heartbeat only moves the wire clock
+    const activity = docs.slice(
+      docs.indexOf('onActivity: () => {'),
+      docs.indexOf('onActivity: () => {') + 300,
+    )
+    expect(activity).toContain('reqLog.wire()')
+    expect(activity).not.toContain('reqLog.content()')
   })
 
   it('passes the request id to the agy run, which writes how it ended', () => {

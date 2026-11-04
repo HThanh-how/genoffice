@@ -2,7 +2,7 @@ import { spawn, type ChildProcess } from 'node:child_process'
 import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { afterEach, describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import { DiagnosticsLogger, realLogFs, type LogFs } from '../src/main/diagnostics/logger'
 
 /** mocks compare paths: make them the same on Windows, where join() uses backslashes */
@@ -1574,20 +1574,30 @@ describe('DiagnosticsLogger limits on sending a line again, and on closing', () 
         ? lines(dir).filter((l) => l.ev === 'kept-line').length
         : 0
     // what each round saw, so that a failure says what happened instead of only a count
-    const seen: Array<{ queued: number; inFile: number; dropped: number }> = []
+    const seen: Array<{ inFile: number; dropped: number }> = []
     log.error('a', 'kept-line')
     for (let round = 0; round < 4; round++) {
       await log.flush() // given up in the preparation
       await new Promise((r) => setTimeout(r, 220)) // the slow answers come, and leave the count
-      seen.push({ queued: log.queued, inFile: inFile(), dropped: log.stats().droppedTotal })
+      seen.push({ inFile: inFile(), dropped: log.stats().droppedTotal })
     }
-    // nothing of it counts towards the limit on sending a line again: the line is still there
-    expect(seen.map((row) => row.dropped)).toEqual([0, 0, 0, 0])
-    expect(seen).toEqual(Array(4).fill({ queued: 1, inFile: 0, dropped: 0 }))
+    // (whether the line is in the queue or in a retry that is on its way depends on the moment, so
+    // that is not asserted) nothing of it counts towards the limit on sending a line again, and
+    // nothing reached the file, because every write was given up before the append
+    expect(seen).toEqual(Array(4).fill({ inFile: 0, dropped: 0 }))
     slow = false
+    await vi.waitFor(
+      async () => {
+        await log.flush()
+        expect(inFile()).toBe(1)
+      },
+      { timeout: 5000, interval: 50 },
+    )
+    // and it is written once, not again
     await log.flush()
+    await new Promise((r) => setTimeout(r, 250))
     expect(inFile()).toBe(1)
-    expect(log.queued).toBe(0)
+    expect(log.stats().droppedTotal).toBe(0)
   })
 
   it('close() stops waiting after the close timeout when the drive never answers', async () => {
