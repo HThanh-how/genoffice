@@ -44,16 +44,20 @@ export interface LocalOcrSettings {
   /** leading pages of each file read locally in the first, quick pass (1..5) */
   lightPages: number
   /**
-   * Pages of each file read locally in all, 1..400. The pages after `lightPages` are read later by a
-   * slow background pass that only runs when the quick pass has nothing left, and never beyond the
-   * "PDF pages to index" limit; a value at or below `lightPages` turns that pass off.
+   * Pages of each file read locally in all, 1..50. The pages after `lightPages` are read later by a
+   * slow background pass that only runs when the quick pass has nothing left and the computer is on
+   * the charger, and never beyond the "PDF pages to index" limit (10 pages on a computer with 4 GB of
+   * memory or less); a value at or below `lightPages` turns that pass off.
    */
   maxPages: number
   engine: LocalOcrEngineChoice
 }
 
-/** The same ceiling as the indexer's own PDF page limit (chunks.ts LARGE_PDF_PAGES). */
-export const LOCAL_OCR_MAX_PAGES = 400
+/**
+ * The most pages of one file whose OCR text is put in the index (storage-budget.ts maxOcrPagesPerFile):
+ * text of later pages would be read and never found.
+ */
+export const LOCAL_OCR_MAX_PAGES = 50
 
 export const DEFAULT_LOCAL_OCR_SETTINGS: LocalOcrSettings = {
   enabled: true,

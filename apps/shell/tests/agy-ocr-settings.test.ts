@@ -51,12 +51,12 @@ describe('settings defaults', () => {
     ).toEqual({ enabled: true, lightPages: 1, maxPages: 30, engine: 'tesseract-vie' })
   })
 
-  it('keeps the page limit of the slow pass between 1 and the indexer ceiling, and fills it in when it is missing', () => {
+  it('keeps the page limit of the slow pass between 1 and 50 (the pages that are indexed), and fills it in when it is missing', () => {
     const pages = (maxPages: unknown): number | undefined =>
       agyOcrSettingsFrom({ [AGY_OCR_SETTINGS_KEY]: { localOcr: { maxPages } } }).localOcr?.maxPages
     expect(pages(50)).toBe(50)
     expect(pages(0)).toBe(1)
-    expect(pages(100_000)).toBe(400)
+    expect(pages(100_000)).toBe(50)
     expect(pages('many')).toBe(30)
     expect(pages(Number.NaN)).toBe(30)
     // settings saved by an older build have no such field: the default applies, the rest is kept

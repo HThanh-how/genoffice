@@ -24,6 +24,7 @@ import { totalmem } from 'node:os'
 import type { DatabaseSync } from 'node:sqlite'
 import type { LocalOcrSettings } from '../../../shared/fork/agy-ocr'
 import { clampPdfPages, DEFAULT_PDF_PAGES } from '../chunks'
+import { DEFAULT_STORAGE_BUDGET } from '../storage-budget'
 import { backgroundCoolDown } from '../cpu-budget'
 import type { OcrRenderRequest, OcrRenderResult } from '../agy-ocr-render'
 import {
@@ -56,8 +57,10 @@ export const LOW_RAM_TOTAL_MB = 4096
 export const LOW_RAM_REST_PAGES = 10
 /** Pages of one file read per visit of the slow pass, so that the quick pass gets its turn between visits. */
 export const REST_PAGES_PER_VISIT = 5
-/** The slow pass waits this many times as long as the quick pass after each page. */
+/** The slow pass pauses this many times (each one as long as the quick pass's) after each page. */
 export const REST_COOL_FACTOR = 2
+/** Files visited by the slow pass in one `runOnce`: the runner calls again, and the quick queue is looked at first. */
+export const REST_VISITS_PER_RUN = 2
 /** What the PDF renderer's 1600 px long edge is worth on A4, for the Tesseract flattening radius. */
 export const RENDERED_PAGE_DPI = 137
 const MAX_TEXT_CHARS = 30_000
@@ -94,6 +97,8 @@ export interface LocalOcrJobDeps {
   render(path: string, request: OcrRenderRequest): Promise<OcrRenderResult | null>
   /** the indexer's PDF page limit: pages after it are never indexed, so the slow pass never reads them */
   pdfPageLimit?(): number
+  /** on battery the slow pass waits for the charger (the quick pass follows `gate`) */
+  onBattery?(): boolean
   /** persistence through the storage admission / budget gate */
   savePages(
     path: string,
@@ -161,6 +166,8 @@ export class LocalOcrJob {
     const asked = this.deps.settings().maxPages
     let wanted = Number.isFinite(asked) ? Math.round(asked) : 0
     wanted = Math.min(wanted, clampPdfPages(this.deps.pdfPageLimit?.() ?? DEFAULT_PDF_PAGES))
+    // text of the pages after this many is never put in the index (worker.ts), so it is not read
+    wanted = Math.min(wanted, DEFAULT_STORAGE_BUDGET.maxOcrPagesPerFile)
     const total = this.deps.totalRamMB ? this.deps.totalRamMB() : totalmem() / (1024 * 1024)
     if (total <= LOW_RAM_TOTAL_MB) wanted = Math.min(wanted, LOW_RAM_REST_PAGES)
     return Math.max(this.lightPages(), wanted)
@@ -183,31 +190,34 @@ export class LocalOcrJob {
     const maxFiles = Math.max(1, options.maxFiles ?? DEFAULT_MAX_FILES)
     const pdfs = this.ocr.candidates(light, { mode: 'local', includeSensitive: true })
     const images = await this.imageCandidates(maxFiles)
-    // The pages after the first ones come last: only when the quick pass has nothing left, so that new
-    // files are never kept waiting for the rest of an old one (each visit is short, see REST_PAGES_PER_VISIT).
-    const rest = pdfs.length === 0 && images.length === 0 ? this.restPages() : 0
-    const restPdfs =
-      rest > light ? this.ocr.candidates(rest, { mode: 'local', includeSensitive: true }) : []
-    if (pdfs.length === 0 && images.length === 0 && restPdfs.length === 0) return summary
-    const pdfJobs = [
-      ...pdfs.map((row) => ({ row, limit: light, slow: false })),
-      ...restPdfs.map((row) => ({ row, limit: rest, slow: true })),
-    ]
     let engine: LocalOcrEngine | null = null
     try {
       let budget = maxFiles
-      for (const { row, limit, slow } of pdfJobs) {
-        if (folderPauses.paused(row.path)) continue
-        if (this.deps.sourceAvailable && !(await this.deps.sourceAvailable(row.path))) continue
-        if (budget-- <= 0) break
-        const outcome = await this.guarded(options.signal)
+      let visited = 0
+      // a file that is not read now (its folder is paused, its drive is away) is not "waiting in the
+      // quick queue": the slow pass below starts when no file of the quick queue could be visited
+      const visitPdf = async (
+        row: OcrDocRow,
+        limit: number,
+        slow: boolean,
+      ): Promise<'skip' | 'done' | LocalOcrRunSummary> => {
+        if (folderPauses.paused(row.path)) return 'skip'
+        if (this.deps.sourceAvailable && !(await this.deps.sourceAvailable(row.path))) return 'skip'
+        if (budget-- <= 0) return 'done'
+        const outcome = await this.guarded(options.signal, slow)
         if (outcome) return stop(outcome)
         const picked = this.deps.registry.select(settings.engine)
         if (!picked) return stop('no-engine') // nothing fits the free RAM / no resources: try later
         engine = picked.engine
         const result = await this.readPdf(row, engine, limit, slow, options.signal, summary)
         summary.files++
-        if (result) return stop(result)
+        if (!slow) visited++
+        return result ? stop(result) : 'skip'
+      }
+      for (const row of pdfs) {
+        const outcome = await visitPdf(row, light, false)
+        if (typeof outcome === 'object') return outcome
+        if (outcome === 'done') break
       }
       for (const image of images) {
         if (folderPauses.paused(image.path)) continue
@@ -221,7 +231,20 @@ export class LocalOcrJob {
         engine = picked.engine
         const result = await this.readImage(image, engine, options.signal, summary)
         summary.files++
+        visited++
         if (result) return stop(result)
+      }
+      // The pages after the first ones come last: only when nothing of the quick queue was visited, a few
+      // files at a time, so that a new file waits for at most REST_VISITS_PER_RUN visits.
+      const rest = visited === 0 && !this.deps.onBattery?.() ? this.restPages() : 0
+      if (rest > light) {
+        budget = Math.min(budget, REST_VISITS_PER_RUN)
+        const candidates = this.ocr.candidates(rest, { mode: 'local', includeSensitive: true })
+        for (const row of candidates) {
+          const outcome = await visitPdf(row, rest, true)
+          if (typeof outcome === 'object') return outcome
+          if (outcome === 'done') break
+        }
       }
       return summary
     } finally {
@@ -231,11 +254,12 @@ export class LocalOcrJob {
   }
 
   /** Why work must not continue right now, or null. */
-  private async guarded(signal?: AbortSignal): Promise<string | null> {
+  private async guarded(signal?: AbortSignal, slow = false): Promise<string | null> {
     if (signal?.aborted) return 'aborted'
     if (this.deps.isStopped?.()) return 'stopped'
     const gate = this.deps.gate()
     if (!gate.ok) return `gate:${gate.reason}`
+    if (slow && this.deps.onBattery?.()) return 'gate:on-battery'
     return null
   }
 
@@ -328,7 +352,7 @@ export class LocalOcrJob {
     const failedBefore = summary.failed
     for (const page of rendered.pages) {
       if (present.includes(page.page) || skip.includes(page.page)) continue
-      const why = await this.guarded(signal)
+      const why = await this.guarded(signal, slow)
       if (why) {
         stopReason = why
         break
@@ -399,17 +423,35 @@ export class LocalOcrJob {
         break
       }
       touched = touched || saved === 'saved'
-      await this.cool(
-        ((first ? renderMs : 0) + (performance.now() - started)) * (slow ? REST_COOL_FACTOR : 1),
-      )
+      const activeMs = (first ? renderMs : 0) + (performance.now() - started)
+      // (one pause is capped by the duty cycle, so the slow pass pauses again rather than for longer)
+      for (let pause = 0; pause < (slow ? REST_COOL_FACTOR : 1); pause++) await this.cool(activeMs)
       first = false
     }
     if (touched) {
       // pages of this version were stored and none failed: an earlier failure row is stale
       if (summary.failed === failedBefore) this.ocr.clearLocalFailure(row.path, file)
-      this.deps.reindex(row.path)
+      // The slow pass puts a file back in the index when it has read all it will read of it, not at every
+      // visit (each one makes a new version of the text: chunks and vectors would be made again and again).
+      // What was read stays in ocr_pages, and the file stays a candidate until it is finished.
+      if (!slow || this.finished(row.path, file, meta.totalPages, limit, skip))
+        this.deps.reindex(row.path)
     }
     return stopReason
+  }
+
+  /** Every page up to `limit` is read, or has a text layer of its own. */
+  private finished(
+    path: string,
+    file: { mtimeMs: number; sizeBytes: number },
+    totalPages: number,
+    limit: number,
+    skip: readonly number[],
+  ): boolean {
+    const present = new Set(this.ocr.pagesPresent(path, file.mtimeMs, file.sizeBytes))
+    for (let page = 1; page <= Math.min(totalPages, limit); page++)
+      if (!present.has(page) && !skip.includes(page)) return false
+    return true
   }
 
   // ---- images --------------------------------------------------------------------------

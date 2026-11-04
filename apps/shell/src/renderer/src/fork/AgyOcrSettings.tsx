@@ -119,9 +119,11 @@ function NumberField({
   const [draft, setDraft] = useState<string | null>(null)
   const commit = () => {
     if (draft === null) return
+    // an empty box is not a 0: the value stays as it was
+    const empty = draft.trim() === ''
     const parsed = Math.round(Number(draft))
     setDraft(null)
-    if (!Number.isFinite(parsed)) return
+    if (empty || !Number.isFinite(parsed)) return
     const next = Math.min(max, Math.max(min, parsed))
     if (next !== value) onCommit(next)
   }
