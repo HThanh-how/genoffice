@@ -198,6 +198,14 @@ describe('how the quit is wired', () => {
     )
   })
 
+  it('the forced exit also gives the checks their moment before it starts the app again and ends', () => {
+    const at = index.indexOf('forceExit: () => {')
+    const body = index.slice(at, at + 700)
+    expect(body).toContain('relaunchRequests.settled(')
+    expect(body.indexOf('settled(')).toBeLessThan(body.indexOf('app.relaunch('))
+    expect(body.indexOf('app.relaunch(')).toBeLessThan(body.indexOf('app.exit(0)'))
+  })
+
   it('notes the moment of the confirmation once: the second pass through before-quit leaves it alone', () => {
     const at = index.indexOf('if (quitConfirmedAt === null) {')
     expect(at).toBeGreaterThan(-1)
@@ -535,6 +543,28 @@ describe('asking whether files exist without blocking', () => {
     release()
     await requests.settled(1000)
     expect(requests.toArgs()).toEqual(['a.docx'])
+  })
+
+  it('waits for a check that was added while it was waiting', async () => {
+    const requests = new RelaunchRequests('win32')
+    let releaseFirst: () => void = () => undefined
+    let releaseSecond: () => void = () => undefined
+    requests.track(
+      new Promise<void>((resolve) => (releaseFirst = resolve)).then(() => requests.add(['a.docx'])),
+    )
+    const waiting = requests.settled(2000)
+    await new Promise((r) => setTimeout(r, 10))
+    // a second copy arrives while the first check is still running
+    requests.track(
+      new Promise<void>((resolve) => (releaseSecond = resolve)).then(() =>
+        requests.add(['b.docx']),
+      ),
+    )
+    releaseFirst()
+    await new Promise((r) => setTimeout(r, 10))
+    releaseSecond()
+    await waiting
+    expect(requests.toArgs()).toEqual(['a.docx', 'b.docx'])
   })
 
   it('a check that fails is not an error of the request', async () => {

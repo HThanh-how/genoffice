@@ -9529,9 +9529,12 @@ app.on('will-quit', (event) => {
     log: diag,
     forceExit: () => {
       flushDiagnosticsSync()
-      // (app.exit ends the process at once, so a start requested meanwhile has to be made here)
-      if (relaunchRequests.isRequested) app.relaunch({ args: relaunchRequests.toArgs() })
-      app.exit(0)
+      // (app.exit ends the process at once, so a start requested meanwhile has to be made here, once
+      // the checks of the files asked for have had their moment)
+      void relaunchRequests.settled(1500).finally(() => {
+        if (relaunchRequests.isRequested) app.relaunch({ args: relaunchRequests.toArgs() })
+        app.exit(0)
+      })
     },
   }).finally(async () => {
     // (a check of files asked for by a second copy may still be running: give it a moment)

@@ -30,4 +30,23 @@ describe('stopEach', () => {
     expect(order).toEqual(['first', 'last'])
     expect(failed).toEqual(['broken'])
   })
+
+  it('a report that throws does not stop the others', () => {
+    const order: string[] = []
+    stopEach(
+      [
+        [
+          'broken',
+          () => {
+            throw new Error('x')
+          },
+        ],
+        ['last', () => void order.push('last')],
+      ],
+      () => {
+        throw new Error('the report failed too')
+      },
+    )
+    expect(order).toEqual(['last'])
+  })
 })

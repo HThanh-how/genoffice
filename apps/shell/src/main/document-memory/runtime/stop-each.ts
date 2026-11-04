@@ -10,7 +10,11 @@ export function stopEach(
     try {
       stop()
     } catch {
-      onFail?.(name)
+      try {
+        onFail?.(name)
+      } catch {
+        // the report is not allowed to stop the others
+      }
     }
   }
 }

@@ -195,14 +195,19 @@ export class RelaunchRequests {
 
   /** Resolves when the checks have finished, or after `timeoutMs`, whichever comes first. */
   async settled(timeoutMs: number): Promise<void> {
-    if (this.pending.size === 0) return
-    let timer: NodeJS.Timeout | undefined
-    const limit = new Promise<void>((resolve) => {
-      timer = setTimeout(resolve, timeoutMs)
-      timer.unref?.()
-    })
-    await Promise.race([Promise.all([...this.pending]), limit])
-    if (timer) clearTimeout(timer)
+    const deadline = Date.now() + timeoutMs
+    // (a check added while this waits is waited for too, up to the same limit)
+    while (this.pending.size > 0) {
+      const left = deadline - Date.now()
+      if (left <= 0) return
+      let timer: NodeJS.Timeout | undefined
+      const limit = new Promise<void>((resolve) => {
+        timer = setTimeout(resolve, left)
+        timer.unref?.()
+      })
+      await Promise.race([Promise.all([...this.pending]), limit])
+      if (timer) clearTimeout(timer)
+    }
   }
 
   add(paths: readonly string[], folders: readonly string[] = []): void {

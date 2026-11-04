@@ -119,6 +119,8 @@ interface Entry {
   readonly line: string
   /** how many times the write of this line was given up while it may have reached the file */
   tries?: number
+  /** made by the logger (the note that lines were dropped): never sent again, never counted */
+  notice?: boolean
 }
 
 /** One try at writing: set to cancelled when it is given up, so that it changes nothing afterwards. */
@@ -127,7 +129,15 @@ interface Attempt {
   appendStarted: boolean
 }
 
-class TimeoutError extends Error {}
+class TimeoutError extends Error {
+  /** the append had been handed to the file system: the lines may be in the file */
+  constructor(
+    message: string,
+    readonly afterAppend = false,
+  ) {
+    super(message)
+  }
+}
 
 /** The write was not tried because earlier operations are still stuck: the drive is the problem, not the file. */
 class HungError extends Error {}
@@ -201,7 +211,7 @@ function mergeBySeq(lists: Entry[][]): Entry[] {
 }
 
 /** a line whose write was given up this many times is not sent again */
-const MAX_GIVEN_UP_TRIES = 2
+const MAX_GIVEN_UP_TRIES = 2 // (the first write is not counted: three copies at most)
 
 const sleepUnref = (ms: number): Promise<void> =>
   new Promise((resolve) => {
@@ -562,6 +572,7 @@ export class DiagnosticsLogger {
       entries.push({
         seq: this.seq++,
         rank: 2,
+        notice: true,
         line: JSON.stringify({
           ts: this.now().toISOString(),
           level: 'warn',
@@ -634,15 +645,21 @@ export class DiagnosticsLogger {
           `could not write ${this.activePath}; ${rest.length > 0 ? 'the lines are' : 'nothing'} kept for the next flush`,
           outcome.error,
         )
-        if (outcome.error instanceof TimeoutError) {
+        if (outcome.error instanceof TimeoutError && outcome.error.afterAppend) {
           // A write that was given up after it had been handed over may still land, and a drive that
           // answers after the hang limit every time would write each batch once per round for ever.
-          // A line is written again once at most; after that the line is counted as dropped.
+          // A line is in the file at most three times in all (the first write and two more); after
+          // that it is counted as dropped. The note that lines were dropped is made by the logger: it
+          // is not sent again and not counted, or every note would make the next one. (A write given
+          // up BEFORE the append, in the preparation, put nothing in the file and is not counted.)
           const before = rest.length
           rest = rest.filter(
-            (entry) => (entry.tries = (entry.tries ?? 0) + 1) <= MAX_GIVEN_UP_TRIES,
+            (entry) =>
+              !entry.notice && (entry.tries = (entry.tries ?? 0) + 1) <= MAX_GIVEN_UP_TRIES,
           )
-          if (rest.length < before) this.noteDropped(before - rest.length)
+          const lost =
+            before - rest.length - entries.slice(inflight.from).filter((e) => e.notice).length
+          if (lost > 0) this.noteDropped(lost)
         }
         this.requeue(rest)
         // try again later, not at the next log call
@@ -711,7 +728,12 @@ export class DiagnosticsLogger {
           hungOp = { at: Date.now(), dir }
           this.hung.add(hungOp)
         }
-        reject(new TimeoutError(`no answer from the file system after ${after} ms`))
+        reject(
+          new TimeoutError(
+            `no answer from the file system after ${after} ms`,
+            attempt.appendStarted,
+          ),
+        )
       }
       const timer = setTimeout(() => {
         if (settled) return

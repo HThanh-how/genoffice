@@ -878,4 +878,89 @@ describe('diagnostics redaction', () => {
     expect(redactString('login page: loaded in 12 ms')).toBe('login page: loaded in 12 ms')
     expect(redactString('user interface: ready')).toBe('user interface: ready')
   })
+
+  it('keeps the states and settings that diagnostics write after auth, login and user', () => {
+    for (const text of [
+      'auth: failed',
+      'auth: none',
+      'auth: error',
+      'auth: pending',
+      'auth: expired',
+      'auth: required',
+      'auth: timeout',
+      'auth: granted',
+      'auth: denied',
+      'auth: unavailable',
+      'auth: refresh',
+      'auth: invalid',
+      'auth: retrying',
+      'auth: skipped',
+      'auth: true',
+      'auth: oauth2',
+      'auth: bearer',
+      'auth: failed (EACCES)',
+      'auth: ok',
+      'user mode:v2',
+      'user id:42',
+      'user count:5',
+      'login step:2',
+      'login attempt:3 failed',
+      'login flow:v2',
+      'login state:s3',
+      'user theme:dark2',
+      'user session:a1',
+      'user status:ok2',
+      'user layout:grid2',
+      'login page: loaded in 12 ms',
+      'user: guest',
+      'credentials: missing',
+      'user bob:smith',
+      'time 12:34:56',
+      'ratio 16:9',
+      'key: value',
+      'C:\\x',
+      'http://host:8080/x',
+      'build: 2024a1',
+      'mime: text/plain',
+      'ip 10.0.0.1:443',
+      'version 1.2.3-beta:rc1',
+    ]) {
+      expect(redactString(text), text).toBe(text)
+    }
+  })
+
+  it('still removes the user:password pairs and long values after auth', () => {
+    for (const [text, secret] of [
+      ['auth:admin:hunter22', 'hunter22'],
+      ['auth: admin:hunter22 failed', 'hunter22'],
+      ['login admin:pass123 ok', 'pass123'],
+      ['user bob:s3cret', 's3cret'],
+      ['credentials svc:Pw9876x', 'Pw9876x'],
+      ['auth=a1b2c3d4e5', 'a1b2c3d4e5'],
+    ] as const) {
+      expect(redactString(text), text).not.toContain(secret)
+    }
+  })
+
+  it('keeps masking a UUID under tokenId, authSessionId and sessionToken, and under objects below a credential key', () => {
+    const uuid = '3f2b8c1a-9d4e-4a7b-8c21-0123456789ab'
+    const out = redactValue({
+      tokenId: uuid,
+      authSessionId: uuid,
+      sessionToken: { id: uuid },
+      session: { token: uuid },
+      token: { id: uuid, type: 'bearer' },
+      auth: { requestId: uuid },
+      sessionId: { id: uuid },
+      traceId: uuid,
+    }) as Record<string, any>
+    expect(out.tokenId).toMatchObject({ redacted: true })
+    expect(out.authSessionId).toMatchObject({ redacted: true })
+    expect(out.sessionToken.id).toMatchObject({ redacted: true })
+    expect(out.session.token).toMatchObject({ redacted: true })
+    expect(out.token.id).toMatchObject({ redacted: true })
+    expect(out.auth.requestId).toMatchObject({ redacted: true })
+    expect(out.sessionId.id).toBe(uuid)
+    expect(out.traceId).toBe(uuid)
+  })
 })

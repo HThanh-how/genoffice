@@ -1474,7 +1474,7 @@ describe('DiagnosticsLogger moving to the second folder', () => {
 })
 
 describe('DiagnosticsLogger limits on sending a line again, and on closing', () => {
-  it('writes a line again once at most when the drive answers after the hang limit every time', async () => {
+  it('writes a line three times at most (the first and two more) when the drive answers after the hang limit every time', async () => {
     const dir = tmp()
     const fs: LogFs = {
       ...realLogFs,
@@ -1505,6 +1505,78 @@ describe('DiagnosticsLogger limits on sending a line again, and on closing', () 
     expect(log.stats().droppedTotal).toBeGreaterThan(0)
     // given up, not sent for ever (what may still wait is the note that says lines were dropped)
     expect(log.queued).toBeLessThanOrEqual(1)
+  })
+
+  it('stops sending for good with a drive that answers after the hang limit: no new notices, no growing count', async () => {
+    const dir = tmp()
+    let appends = 0
+    const fs: LogFs = {
+      ...realLogFs,
+      appendFile: async (p, t) => {
+        appends++
+        await new Promise((r) => setTimeout(r, 90)) // later than the hang limit, and it does write
+        return realLogFs.appendFile(p, t)
+      },
+    }
+    const log = new DiagnosticsLogger({
+      dir,
+      fs,
+      writeTimeoutMs: 15,
+      appendHangMs: 30,
+      retryDelaysMs: [],
+      retryBackoffMs: 0,
+      switchAfterFailures: 1000,
+      degradedAfterMs: 1e9,
+      onInternalError: () => undefined,
+    })
+    log.error('a', 'slow-line')
+    for (let round = 0; round < 12; round++) {
+      await log.flush()
+      await new Promise((r) => setTimeout(r, 100))
+    }
+    const afterTwelve = { appends, dropped: log.stats().droppedTotal }
+    for (let round = 0; round < 6; round++) {
+      await log.flush()
+      await new Promise((r) => setTimeout(r, 100))
+    }
+    // the line was given up; what is left is not sent again and does not make new notices
+    expect(appends).toBe(afterTwelve.appends)
+    expect(log.stats().droppedTotal).toBe(afterTwelve.dropped)
+    expect(log.stats().droppedTotal).toBeLessThanOrEqual(1)
+    const notices = lines(dir).filter((l) => l.ev === 'dropped').length
+    expect(notices).toBeLessThanOrEqual(1)
+  })
+
+  it('a write given up before the append (the folder did not answer) puts nothing in the file and is not counted as dropped', async () => {
+    const dir = tmp()
+    let release: () => void = () => undefined
+    let blocked = true
+    const fs: LogFs = {
+      ...realLogFs,
+      mkdir: async (d) => {
+        if (blocked) await new Promise<void>((resolve) => (release = resolve))
+        return realLogFs.mkdir(d)
+      },
+    }
+    const log = new DiagnosticsLogger({
+      dir,
+      fs,
+      writeTimeoutMs: 15,
+      retryDelaysMs: [],
+      retryBackoffMs: 0,
+      switchAfterFailures: 1000,
+      degradedAfterMs: 1e9,
+      onInternalError: () => undefined,
+    })
+    log.error('a', 'kept-line')
+    for (let round = 0; round < 5; round++) await log.flush() // five givings-up before any append
+    expect(log.stats().droppedTotal).toBe(0)
+    expect(log.queued).toBe(1)
+    blocked = false
+    release()
+    await new Promise((r) => setTimeout(r, 10))
+    await log.flush()
+    expect(lines(dir).filter((l) => l.ev === 'kept-line')).toHaveLength(1)
   })
 
   it('close() stops waiting after the close timeout when the drive never answers', async () => {
