@@ -20,7 +20,12 @@ import {
 import { readFile, stat } from 'node:fs/promises'
 import { createHash } from 'node:crypto'
 import { extname } from 'node:path'
-import { parseFileToText, pdfPageTextsSlice } from '@genoffice/file-parse'
+import {
+  countEmbeddedImages,
+  mayHoldPictures,
+  parseFileToText,
+  pdfPageTextsSlice,
+} from '@genoffice/file-parse'
 import {
   capChunks,
   chunkDocumentTextV2,
@@ -211,6 +216,12 @@ export async function extractDocumentSliced(
     truncatedReason = 'pdf-page-limit'
   }
   const fileHash = createHash('sha256').update(bytes).digest('hex')
+  // A Word, PowerPoint or Excel file with no text may be made of scanned pages: say that it holds
+  // pictures nobody has read, which is not the same as "blank". (Reading them is a separate step.)
+  const pictures =
+    !chunks.length && mayHoldPictures(path)
+      ? await countEmbeddedImages(bytes).catch(() => ({ count: 0, total: 0 }))
+      : { count: 0, total: 0 }
   let hash = fileHash
   let ocrRead = false
   if (scannedPages.length && ocr && isPdf) {
@@ -256,7 +267,9 @@ export async function extractDocumentSliced(
             ? 'No readable text; the scanned pages were read but contained no text'
             : isPdf
               ? 'No readable text; scanned documents need OCR'
-              : 'No readable text in this file; there is nothing to search',
+              : pictures.count > 0
+                ? `No readable text; the ${pictures.count} ${pictures.count === 1 ? 'picture in this file has' : 'pictures in this file have'} not been read`
+                : 'No readable text in this file; there is nothing to search',
         }),
   }
 }
