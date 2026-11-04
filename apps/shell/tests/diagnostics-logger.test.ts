@@ -1603,6 +1603,84 @@ describe('DiagnosticsLogger limits on sending a line again, and on closing', () 
   })
 })
 
+describe('DiagnosticsLogger with a drive that cannot keep up', () => {
+  it('says once, not at every round, that writes are refused while an operation hangs, and writes the line once when it answers', async () => {
+    const dir = tmp()
+    let releaseMkdir: () => void = () => undefined
+    let mkdirs = 0
+    const reports: string[] = []
+    const fs: LogFs = {
+      ...realLogFs,
+      mkdir: async (d) => {
+        mkdirs++
+        await new Promise<void>((resolve) => (releaseMkdir = resolve))
+        return realLogFs.mkdir(d)
+      },
+    }
+    const log = new DiagnosticsLogger({
+      dir,
+      fs,
+      writeTimeoutMs: 10,
+      retryDelaysMs: [],
+      retryBackoffMs: 5,
+      switchAfterFailures: 1000,
+      degradedAfterMs: 1e9,
+      onInternalError: (m) => void reports.push(m),
+    })
+    log.error('a', 'waits-for-the-drive')
+    for (let round = 0; round < 40; round++) {
+      await log.flush()
+      await new Promise((r) => setTimeout(r, 5))
+    }
+    expect(mkdirs).toBeLessThanOrEqual(2) // the hard cap on stuck operations
+    // (cause of the timeouts + the first refusal; not one line per round)
+    expect(log.stats().internalErrors).toBeLessThan(10)
+    expect(log.stats().droppedTotal).toBe(0)
+    releaseMkdir()
+    await new Promise((r) => setTimeout(r, 20))
+    await log.flush()
+    expect(lines(dir).filter((l) => l.ev === 'waits-for-the-drive')).toHaveLength(1)
+  })
+
+  it('a drive that is too slow for the flow loses lines all the while: the count goes up with the input, and the note carries the total', async () => {
+    const dir = tmp()
+    const fs: LogFs = {
+      ...realLogFs,
+      appendFile: async (p, t) => {
+        await new Promise((r) => setTimeout(r, 120)) // much later than the hang limit
+        return realLogFs.appendFile(p, t)
+      },
+    }
+    const log = new DiagnosticsLogger({
+      dir,
+      fs,
+      writeTimeoutMs: 10,
+      appendHangMs: 20,
+      retryDelaysMs: [],
+      retryBackoffMs: 0,
+      switchAfterFailures: 1000,
+      degradedAfterMs: 1e9,
+      maxQueue: 5,
+      flushIntervalMs: 5,
+      onInternalError: () => undefined,
+    })
+    const totals: number[] = []
+    for (let round = 0; round < 8; round++) {
+      for (let i = 0; i < 12; i++) log.info('a', `r${round}-${i}`)
+      await new Promise((r) => setTimeout(r, 60))
+      totals.push(log.stats().droppedTotal)
+    }
+    // by design: a queue that is full of lines a slow drive cannot take drops the rest, and says so
+    expect(totals.at(-1)!).toBeGreaterThan(totals[0]!)
+    expect(totals).toEqual([...totals].sort((a, b) => a - b)) // never goes back down
+    await new Promise((r) => setTimeout(r, 400))
+    await log.flush()
+    const notes = lines(dir).filter((l) => l.ev === 'dropped')
+    expect(notes.length).toBeGreaterThan(0)
+    expect(notes.at(-1)!.data.total).toBeGreaterThanOrEqual(notes.at(-1)!.data.lines)
+  })
+})
+
 describe('DiagnosticsLogger rotation with a stuck slot', () => {
   it('stops shifting at the first slot that cannot be replaced, so no file is lost', async () => {
     const dir = tmp()

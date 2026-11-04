@@ -292,6 +292,8 @@ export class DiagnosticsLogger {
   /** since when writes have been refused because the drive does not answer */
   private hungSince: number | undefined
   private degraded = false
+  /** the refusal to write while the drive hangs has been said already in this spell */
+  private hungReported = false
   /** the last write may have reached the file although it was reported as failed */
   private maybeDuplicate = false
   private pruning = false
@@ -580,7 +582,13 @@ export class DiagnosticsLogger {
           cat: 'logger',
           ev: 'dropped',
           pid: this.pid,
-          data: { lines: this.dropped, since: this.droppedSince?.toISOString() },
+          // `lines` since the last note, `total` since the start: a drive that is too slow for the
+          // flow loses lines all the while, and the numbers go up with it
+          data: {
+            lines: this.dropped,
+            total: this.droppedTotal + this.dropped,
+            since: this.droppedSince?.toISOString(),
+          },
         }),
       })
       this.droppedTotal += this.dropped
@@ -642,10 +650,15 @@ export class DiagnosticsLogger {
       if (outcome !== 'ok') {
         this.inflight = undefined
         let rest = entries.slice(inflight.from)
-        this.report(
-          `could not write ${this.activePath}; ${rest.length > 0 ? 'the lines are' : 'nothing'} kept for the next flush`,
-          outcome.error,
-        )
+        // A write that was not tried because the drive has not answered earlier operations is said
+        // once per spell, not at every round: the cause was reported when those operations hung.
+        if (!(outcome.error instanceof HungError) || !this.hungReported) {
+          this.report(
+            `could not write ${this.activePath}; ${rest.length > 0 ? 'the lines are' : 'nothing'} kept for the next flush`,
+            outcome.error,
+          )
+        }
+        this.hungReported = outcome.error instanceof HungError
         if (outcome.error instanceof TimeoutError && outcome.error.afterAppend) {
           // A write that was given up after it had been handed over may still land, and a drive that
           // answers after the hang limit every time would write each batch once per round for ever.
@@ -693,6 +706,7 @@ export class DiagnosticsLogger {
       }
       this.failedBatches = 0
       this.hungSince = undefined
+      this.hungReported = false
       inflight.from = end
       if (end < entries.length) await this.yieldTick()
       if (epoch !== this.epoch) return true
