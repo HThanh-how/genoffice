@@ -184,4 +184,71 @@ describe('the fallback channel for logger problems', () => {
     await r.idle() // the chain is not stuck behind the first
     expect(r.stats().failed).toBe(2)
   })
+
+  it('a hanging first folder and a good second one: the line is written there and the choice sticks', async () => {
+    const written: string[] = []
+    const fs: FallbackFs = {
+      size: (path) =>
+        path.startsWith('/primary') ? new Promise<number>(() => undefined) : Promise.resolve(0),
+      mkdir: async () => undefined,
+      append: async (path) => void written.push(path),
+      move: async () => undefined,
+    }
+    let now = 0
+    const r = new FallbackReporter({
+      dir: '/primary',
+      altDir: '/alt',
+      echo: false,
+      fs,
+      fsTimeoutMs: 40,
+      now: () => now,
+    })
+    r.report('one')
+    await r.idle()
+    expect(written).toHaveLength(1)
+    expect(written[0]!.replace(/\\/g, '/')).toContain('/alt/')
+    expect(r.path.replace(/\\/g, '/')).toContain('/alt/')
+    expect(r.stats().written).toBe(1)
+    // the next line goes straight there, without waiting for the first folder again
+    now += 20_000
+    const started = Date.now()
+    r.report('two')
+    await r.idle()
+    expect(Date.now() - started).toBeLessThan(30)
+    expect(written).toHaveLength(2)
+  })
+
+  it('a late answer of the abandoned folder does not disturb the sizes or the counts', async () => {
+    let release: (n: number) => void = () => undefined
+    const written: string[] = []
+    const fs: FallbackFs = {
+      size: (path) =>
+        path.startsWith('/primary')
+          ? new Promise<number>((resolve) => (release = resolve))
+          : Promise.resolve(0),
+      mkdir: async () => undefined,
+      append: async (path) => void written.push(path),
+      move: async () => undefined,
+    }
+    let now = 0
+    const r = new FallbackReporter({
+      dir: '/primary',
+      altDir: '/alt',
+      echo: false,
+      fs,
+      fsTimeoutMs: 20,
+      now: () => now,
+    })
+    r.report('one')
+    await r.idle()
+    release(0) // the primary answers, much too late
+    await new Promise((resolve) => setTimeout(resolve, 20))
+    now += 20_000
+    r.report('two')
+    await r.idle()
+    // the late answer did not start a write, and the cap bookkeeping is still a number
+    expect(written.filter((p) => p.replace(/\\/g, '/').includes('/primary/'))).toHaveLength(1)
+    expect(Number.isFinite(r.stats().written)).toBe(true)
+    expect(r.stats().written).toBe(3)
+  })
 })

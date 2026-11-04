@@ -119,7 +119,7 @@ const STRONG_SECRET_WORDS: ReadonlySet<string> = new Set([
 ])
 /** The same, spelt as one word or written in Vietnamese without spaces. */
 const STRONG_SECRET_COMPACT =
-  /(matkhau|recoverycode|verificationcode|smscode|connectionstring|privatekey|keymaterial|authorizationheader|secretkey|accesskey|clientsecret)/
+  /(password|passwd|passphrase|passcode|apikey|matkhau|recoverycode|verificationcode|smscode|connectionstring|privatekey|keymaterial|authorizationheader|secretkey|accesskey|clientsecret)/
 /** `pass` alone is a password; `boardingPass` is not. */
 const PASSWORD_PASS_PREFIX: ReadonlySet<string> = new Set([
   'user',
@@ -218,6 +218,11 @@ const PERSONAL_WORDS: ReadonlySet<string> = new Set([
   'dob',
   'hoten',
   'fullname',
+  'zalo',
+  'username',
+  'tendangnhap',
+  'birthdate',
+  'socmt',
 ])
 /** Phrases of two words that mean the same (the head with any of the tails). */
 const PERSONAL_PAIRS: ReadonlyArray<readonly [string, ReadonlySet<string>]> = [
@@ -229,6 +234,9 @@ const PERSONAL_PAIRS: ReadonlyArray<readonly [string, ReadonlySet<string>]> = [
   ['mobile', new Set(['number', 'no', 'phone', 'tel'])],
   ['social', new Set(['security'])],
   ['full', new Set(['name'])],
+  ['bank', new Set(['account', 'number'])],
+  ['card', new Set(['number', 'no'])],
+  ['user', new Set(['name'])],
   [
     'address',
     new Set([
@@ -246,7 +254,7 @@ const PERSONAL_PAIRS: ReadonlyArray<readonly [string, ReadonlySet<string>]> = [
 ]
 /** Long enough to be safe as plain letters inside a compact key (`soDienThoai`, `CCCDNumber`). */
 const PERSONAL_COMPACT =
-  /(cccd|cmnd|cmtnd|passport|dienthoai|socialsecurity|nationalid(?!entifier)|phonenumber|masothue|sotaikhoan|hochieu|ngaysinh|dateofbirth|diachi|hoten)/
+  /(cccd|cmnd|cmtnd|passport|dienthoai|socialsecurity|nationalid(?!entifier)|phonenumber|masothue|sotaikhoan|hochieu|ngaysinh|dateofbirth|diachi|hoten|bankaccount|cardnumber|tendangnhap|socmt)/
 
 interface KeyInfo {
   readonly personal: boolean
@@ -305,6 +313,8 @@ const keyCache = new Map<string, KeyInfo>()
 
 /** Key names repeat on every line, so what is worked out for a name is kept. */
 function keyInfo(key: string): KeyInfo {
+  // a very long name is not kept: the cache is for the names a program uses over and over
+  if (key.length > MAX_KEY) return analyzeKey(key.slice(0, MAX_KEY))
   let info = keyCache.get(key)
   if (!info) {
     if (keyCache.size >= KEY_CACHE_LIMIT) keyCache.clear()
@@ -321,6 +331,8 @@ function looksSecret(value: string): boolean {
   if (UUID.test(value)) return false // an identifier, useful to match against other logs
   // a short word or a dotted name without digits: a mode, a status, a message key (`menu.file`)
   if (/^[A-Za-z][A-Za-z_.:-]{0,39}$/.test(value)) return false
+  // a namespaced name (`doc:12345678`, `menu.file2`, `Ctrl+Shift+P`): short parts joined by . : or +
+  if (value.length <= 48 && /^\w{1,16}(?:[.:+]\w{1,16})+$/.test(value)) return false
   if (/[=;]/.test(value) && value.length >= 8) return true // a cookie, a key=value pair
   return value.length >= 8 && !/\s/.test(value)
 }
@@ -390,6 +402,21 @@ function placeholder(value: unknown): Record<string, unknown> {
 const hasLetterCaseAndDigit = (s: string): boolean =>
   /[A-Z]/.test(s) && /[a-z]/.test(s) && /\d/.test(s)
 
+/** The check digit of payment card numbers. */
+function luhnValid(text: string): boolean {
+  const digits = text.replace(/\D/g, '')
+  let sum = 0
+  for (let i = 0; i < digits.length; i++) {
+    let d = Number(digits[digits.length - 1 - i])
+    if (i % 2 === 1) {
+      d *= 2
+      if (d > 9) d -= 9
+    }
+    sum += d
+  }
+  return digits.length >= 15 && sum % 10 === 0
+}
+
 /** Cut before matching: patterns never see more than this. */
 function capInput(input: string): string {
   return input.length > MAX_REGEX_INPUT
@@ -401,12 +428,17 @@ function capInput(input: string): string {
 export function redactString(input: string): string {
   let s = capInput(input)
   s = s.replace(/\bBearer\s+[A-Za-z0-9._~+/=-]{8,}/gi, 'Bearer [redacted]')
-  // "Basic settings" is prose; real Basic credentials are base64 (digits, '=', '+', '/' or long)
+  // "Basic settings" is prose; real Basic credentials are base64: digits, '=', '+', '/', a long
+  // run, or a mix of upper and lower case from 12 characters ("dXNlcjpwYXNz")
   s = s.replace(/\bBasic\s+([A-Za-z0-9+/]{8,}={0,2})/gi, (m, token: string) =>
-    /[\d=+/]/.test(token) || token.length >= 16 ? 'Basic [redacted]' : m,
+    /[\d=+/]/.test(token) ||
+    token.length >= 16 ||
+    (token.length >= 12 && /[a-z]/.test(token) && /[A-Z]/.test(token))
+      ? 'Basic [redacted]'
+      : m,
   )
   s = s.replace(
-    /-----BEGIN [A-Z ]{0,40}KEY-----[\s\S]*?(?:-----END [A-Z ]{0,40}KEY-----|$)/g,
+    /-----BEGIN [A-Z ]{0,40}KEY(?: BLOCK)?-----[\s\S]*?(?:-----END [A-Z ]{0,40}KEY(?: BLOCK)?-----|$)/g,
     '[pem]',
   )
   s = s.replace(/\beyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}/g, '[jwt]')
@@ -419,14 +451,22 @@ export function redactString(input: string): string {
     /((?:proxy-)?authorization|(?:set-)?cookie)(["']?\s*[:=]\s*)(?:"[^"\r\n]*"?|'[^'\r\n]*'?|[^\r\n]*)/gi,
     '$1$2[redacted]',
   )
+  // command line options: `--password hunter2`, `--token=abc`, `curl -u user:pass`
+  s = s.replace(
+    /(--(?:password|passwd|pass|pwd|token|secret|api[_-]?key|access[_-]?token|auth)[= ]+)(?!\[redacted\])[^\s"']+/gi,
+    '$1[redacted]',
+  )
+  s = s.replace(/(\s-u\s+)[^\s:@]+:[^\s]+/g, '$1[redacted]')
+  // credentials inside a URL: scheme://user:password@host
+  s = s.replace(/(\/\/)[^/\s:@]+:[^/\s@]+@/g, '$1[redacted]@')
   // passwords may contain spaces: take everything up to a delimiter
   s = s.replace(
-    /([A-Za-z0-9_-]{0,32}?(?:password|passwd|passphrase|pwd))(["']?\s*[:=]\s*["']?)[^\r\n&;"']{2,}/gi,
+    /([A-Za-z0-9_-]{0,32}?(?:password|passwd|passphrase|pwd)|\bpass)(["']?\s*[:=]\s*["']?)(?!\[redacted\])[^\r\n&;"']{2,}/gi,
     '$1$2[redacted]',
   )
-  // the other secret names, also after a prefix (`client_secret`, `id_token`, `session_token`)
+  // the other secret names, also after a prefix (`client_secret`, `id_token`, `AWS_SECRET_ACCESS_KEY`)
   s = s.replace(
-    /([A-Za-z0-9_-]{0,32}?(?:api[_-]?key|token|secret|private[_-]?key))(["']?\s*[:=]\s*["']?)(?!\[redacted\])[^\s"',;&]{4,}/gi,
+    /([A-Za-z0-9_-]{0,32}?(?:api[_-]?key|secret[_-]?(?:access[_-]?)?key|token|secret|(?:access|signing|encryption|private)[_-]?key))(["']?\s*[:=]\s*["']?)(?!\[redacted\])[^\s"',;&]{4,}/gi,
     '$1$2[redacted]',
   )
   // URL query strings: names stay, values go
@@ -437,6 +477,9 @@ export function redactString(input: string): string {
     hasLetterCaseAndDigit(m) ? `${m.slice(0, DIGEST_KEEP)}…[b64:${m.length}]` : m,
   )
   s = s.replace(/[\w.+-]{1,64}@[\w-]{1,63}(?:\.[\w-]{1,63}){1,8}/g, '[email]')
+  // Vietnamese mobile numbers (0912345678, +84 912 345 678) and payment card numbers (Luhn-valid, 15 to 19 digits)
+  s = s.replace(/(?<![\d])(?:\+?84|0)[ .-]?(?:3|5|7|8|9)\d(?:[ .-]?\d){7}(?!\d)/g, '[phone]')
+  s = s.replace(/(?<!\d)\d(?:[ -]?\d){14,18}(?!\d)/g, (m) => (luhnValid(m) ? '[card]' : m))
   // 12-digit citizen id numbers, written together or in groups ("012 345 678 901", "0123.4567.8901")
   s = s.replace(
     /(?<!\d)(?:\d{12}|\d{3}([ .-])\d{3}\1\d{3}\1\d{3}|\d{4}([ .-])\d{4}\2\d{4})(?!\d)/g,

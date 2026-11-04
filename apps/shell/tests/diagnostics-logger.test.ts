@@ -946,6 +946,262 @@ describe('DiagnosticsLogger pause after a failed write, with lines arriving duri
   })
 })
 
+describe('DiagnosticsLogger when the file system hangs: bounds and recovery', () => {
+  const quiet = (): ((m: string) => void) => () => undefined
+
+  it('opens at most one folder listing while one is stuck, however many files are given up', async () => {
+    let lists = 0
+    const fs: LogFs = {
+      ...realLogFs,
+      mkdir: async () => undefined,
+      size: async () => 0,
+      list: () => {
+        lists++
+        return new Promise<string[]>(() => undefined)
+      },
+      appendFile: async () => {
+        throw Object.assign(new Error('EBUSY'), { code: 'EBUSY' })
+      },
+    }
+    const log = new DiagnosticsLogger({
+      dir: '/d',
+      fs,
+      retryDelaysMs: [],
+      retryBackoffMs: 0,
+      switchAfterFailures: 1,
+      writeTimeoutMs: 20,
+      onInternalError: quiet(),
+    })
+    for (let i = 0; i < 10; i++) {
+      log.error('a', 'x')
+      await log.flush()
+      await new Promise((r) => setTimeout(r, 25))
+    }
+    expect(lists).toBe(1)
+  })
+
+  it('does not switch files because the drive does not answer: only real write errors count', async () => {
+    const fs: LogFs = {
+      ...realLogFs,
+      mkdir: async () => undefined,
+      size: async () => 0,
+      list: async () => [],
+      appendFile: () => new Promise<void>(() => undefined),
+    }
+    const log = new DiagnosticsLogger({
+      dir: '/d',
+      fs,
+      retryDelaysMs: [],
+      retryBackoffMs: 0,
+      switchAfterFailures: 2,
+      writeTimeoutMs: 10,
+      onInternalError: quiet(),
+    })
+    const paths = new Set<string>()
+    for (let i = 0; i < 10; i++) {
+      log.error('a', 'x')
+      await log.flush()
+      paths.add(log.path)
+    }
+    // the two timeouts count; the refusals that follow while the operations are stuck do not
+    expect(paths.size).toBeLessThanOrEqual(2)
+  })
+
+  it('writes again after the stuck operations finish, or are forgotten', async () => {
+    const dir = tmp()
+    const hangs: Array<() => void> = []
+    let calls = 0
+    const fs: LogFs = {
+      ...realLogFs,
+      appendFile: (p, t) => {
+        if (calls++ < 2) {
+          return new Promise<void>((resolve) => hangs.push(resolve)) // stuck until released
+        }
+        return realLogFs.appendFile(p, t)
+      },
+    }
+    const log = new DiagnosticsLogger({
+      dir,
+      fs,
+      retryDelaysMs: [],
+      retryBackoffMs: 0,
+      switchAfterFailures: 1000,
+      writeTimeoutMs: 15,
+      hungForgetMs: 80,
+      onInternalError: quiet(),
+    })
+    log.error('a', 'kept')
+    await log.flush() // stuck 1
+    await log.flush() // stuck 2 (the lines went back)
+    await log.flush() // refused: two operations are stuck
+    expect(calls).toBe(2)
+    // they never finish; after the forget time the logger tries again
+    await new Promise((r) => setTimeout(r, 100))
+    await log.flush()
+    expect(lines(dir).map((l) => l.ev)).toContain('kept')
+    for (const release of hangs) release() // late completion changes nothing
+  })
+
+  it('keeps the duplicate marker until an append has really gone through', async () => {
+    const dir = tmp()
+    let call = 0
+    const fs: LogFs = {
+      ...realLogFs,
+      appendFile: async (p, t) => {
+        call++
+        if (call === 1) return new Promise<void>(() => undefined) // times out after being handed over
+        if (call === 2) throw new Error('EPERM') // then fails outright
+        return realLogFs.appendFile(p, t)
+      },
+    }
+    const log = new DiagnosticsLogger({
+      dir,
+      fs,
+      retryDelaysMs: [],
+      retryBackoffMs: 0,
+      switchAfterFailures: 1000,
+      writeTimeoutMs: 15,
+      hungForgetMs: 1,
+      onInternalError: quiet(),
+    })
+    log.error('a', 'once')
+    await log.flush()
+    await new Promise((r) => setTimeout(r, 5))
+    await log.flush()
+    await new Promise((r) => setTimeout(r, 5))
+    await log.flush()
+    expect(lines(dir).map((l) => l.ev)).toEqual(['flush.maybeDuplicate', 'once'])
+  })
+
+  it('a late append that really lands writes the batch twice, behind a marker (the documented cost)', async () => {
+    const dir = tmp()
+    let call = 0
+    const fs: LogFs = {
+      ...realLogFs,
+      appendFile: async (p, t) => {
+        call++
+        if (call === 1) {
+          await new Promise((r) => setTimeout(r, 120)) // too slow for the timeout, but it does write
+          return realLogFs.appendFile(p, t)
+        }
+        return realLogFs.appendFile(p, t)
+      },
+    }
+    const log = new DiagnosticsLogger({
+      dir,
+      fs,
+      writeTimeoutMs: 40,
+      retryDelaysMs: [],
+      retryBackoffMs: 0,
+      onInternalError: quiet(),
+    })
+    log.error('a', 'dup')
+    await log.flush() // times out
+    await log.flush() // goes through, behind a marker
+    await new Promise((r) => setTimeout(r, 200)) // the first one lands too
+    const events = lines(dir).map((l) => l.ev)
+    expect(events.filter((e) => e === 'dup')).toHaveLength(2)
+    expect(events).toContain('flush.maybeDuplicate')
+    // the marker comes before the copy that was written second
+    expect(events.indexOf('flush.maybeDuplicate')).toBeLessThan(events.lastIndexOf('dup'))
+  })
+
+  it('flushSync does not touch a drive that is not answering, and keeps the lines', async () => {
+    let syncWrites = 0
+    const fs: LogFs = {
+      ...realLogFs,
+      mkdir: async () => undefined,
+      size: async () => 0,
+      list: async () => [],
+      appendFile: () => new Promise<void>(() => undefined),
+      appendFileSync: () => void syncWrites++,
+    }
+    const log = new DiagnosticsLogger({
+      dir: '/d',
+      fs,
+      retryDelaysMs: [],
+      retryBackoffMs: 1e9,
+      writeTimeoutMs: 10,
+      onInternalError: quiet(),
+    })
+    log.error('a', 'x')
+    await log.flush() // times out: one operation is stuck
+    log.flushSync()
+    expect(syncWrites).toBe(0)
+    expect(log.queued).toBe(1)
+  })
+
+  it('a debug line never pushes an info line out of a full queue', () => {
+    const log = new DiagnosticsLogger({
+      dir: '/d',
+      level: 'debug',
+      fs: { ...realLogFs, appendFile: () => new Promise<void>(() => undefined) },
+      maxQueueBytes: 2_000,
+      flushIntervalMs: 1e9,
+      flushLines: 1e9,
+    })
+    for (let i = 0; i < 40; i++) log.info('a', 'info', { pad: 'p'.repeat(40) })
+    const before = log.queued
+    for (let i = 0; i < 40; i++) log.debug('a', 'debug', { pad: 'p'.repeat(40) })
+    expect(log.queued).toBe(before)
+  })
+
+  it('close() also writes lines that arrive while the last write is running', async () => {
+    const dir = tmp()
+    const fs: LogFs = {
+      ...realLogFs,
+      appendFile: async (p, t) => {
+        await new Promise((r) => setTimeout(r, 30))
+        return realLogFs.appendFile(p, t)
+      },
+    }
+    const log = new DiagnosticsLogger({ dir, fs, flushIntervalMs: 1e9 })
+    log.info('a', 'first')
+    const closing = log.close()
+    await new Promise((r) => setTimeout(r, 10))
+    log.info('a', 'during')
+    await closing
+    expect(lines(dir).map((l) => l.ev)).toEqual(['first', 'during'])
+  })
+
+  it('keeps the errors when a batch is put back under the size cap, and writes them later', async () => {
+    const dir = tmp()
+    let hang = true
+    const fs: LogFs = {
+      ...realLogFs,
+      appendFile: (p, t) => {
+        if (hang) return new Promise<void>(() => undefined)
+        return realLogFs.appendFile(p, t)
+      },
+    }
+    const log = new DiagnosticsLogger({
+      dir,
+      fs,
+      maxQueueBytes: 5_000,
+      maxLineChars: 1e9,
+      writeTimeoutMs: 15,
+      retryDelaysMs: [],
+      retryBackoffMs: 0,
+      switchAfterFailures: 1000,
+      hungForgetMs: 1,
+      flushIntervalMs: 1e9,
+      flushLines: 1e9,
+      onInternalError: quiet(),
+    })
+    for (let i = 0; i < 20; i++) log.info('a', 'x', { pad: 'p'.repeat(100) })
+    log.error('a', 'keep-me', { pad: 'p'.repeat(100) })
+    await log.flush()
+    for (let i = 0; i < 100; i++) log.info('a', 'y', { pad: 'p'.repeat(100) })
+    log.error('a', 'also-me', { pad: 'p'.repeat(100) })
+    hang = false
+    await new Promise((r) => setTimeout(r, 5))
+    await log.flush()
+    const events = lines(dir).map((l) => l.ev)
+    expect(events).toContain('keep-me')
+    expect(events).toContain('also-me')
+  })
+})
+
 describe('DiagnosticsLogger rotation with a stuck slot', () => {
   it('stops shifting at the first slot that cannot be replaced, so no file is lost', async () => {
     const dir = tmp()

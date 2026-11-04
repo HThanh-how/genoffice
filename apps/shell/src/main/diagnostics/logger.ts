@@ -65,6 +65,8 @@ export interface LoggerOptions {
   readonly switchAfterFailures?: number
   /** one attempt to write (including its preparation) is given up after this long (default 30 s) */
   readonly writeTimeoutMs?: number
+  /** an operation stuck for this long is no longer counted against new ones (default 2 min) */
+  readonly hungForgetMs?: number
   /** the queue holds at most this many characters (default 16 million) */
   readonly maxQueueBytes?: number
   /** a line longer than this is replaced by a short note (default 16 KB) */
@@ -119,6 +121,14 @@ interface Attempt {
 }
 
 class TimeoutError extends Error {}
+
+/** The write was not tried because earlier operations are still stuck: the drive is the problem, not the file. */
+class HungError extends Error {}
+
+/** An operation the file system has not answered. */
+interface HungOp {
+  readonly at: number
+}
 
 /** A first-in first-out list whose removal from the front does not move the rest. */
 class Fifo {
@@ -216,6 +226,7 @@ export class DiagnosticsLogger {
   private readonly maxQueueBytes: number
   private readonly switchAfterFailures: number
   private readonly writeTimeoutMs: number
+  private readonly hungForgetMs: number
   private readonly yieldTick: () => Promise<void>
   private readonly retryDelays: readonly number[]
   private readonly retryBackoffMs: number
@@ -252,7 +263,7 @@ export class DiagnosticsLogger {
   /** an asynchronous write is running; a new flush waits for it instead of piling up behind it */
   private draining = false
   /** operations the file system has not answered (given up after the timeout, still pending) */
-  private hungOps = 0
+  private readonly hung = new Set<HungOp>()
   /** the last write may have reached the file although it was reported as failed */
   private maybeDuplicate = false
   private pruning = false
@@ -280,6 +291,7 @@ export class DiagnosticsLogger {
     this.maxQueueBytes = options.maxQueueBytes ?? 16_000_000
     this.switchAfterFailures = options.switchAfterFailures ?? 3
     this.writeTimeoutMs = options.writeTimeoutMs ?? 30_000
+    this.hungForgetMs = options.hungForgetMs ?? 120_000
     this.yieldTick = options.yieldTick ?? (() => new Promise((resolve) => setImmediate(resolve)))
     this.retryDelays = options.retryDelaysMs ?? [50, 200, 1000]
     this.retryBackoffMs = options.retryBackoffMs ?? 5000
@@ -437,6 +449,10 @@ export class DiagnosticsLogger {
       if (!overCount && !overBytes) break
       // Full. Debug goes first, then info; a warning or an error is never pushed out by a lesser
       // line, and only a flood of them (4x the cap, or the byte cap) makes the oldest of those go too.
+      if (rank === 0) {
+        this.noteDropped()
+        return
+      }
       if (this.debugQ.shift() || this.infoQ.shift()) {
         this.noteDropped()
       } else if (rank < 2) {
@@ -604,7 +620,13 @@ export class DiagnosticsLogger {
         this.scheduleFlush(this.retryBackoffMs)
         // a file that refuses every write (held open by another program without the right to write)
         // is given up after a few tries: writing goes on in a new file
-        if (++this.failedBatches >= this.switchAfterFailures) await this.switchToNewFile()
+        // a drive that does not answer says nothing about this file: only real write errors count
+        if (
+          !(outcome.error instanceof HungError) &&
+          ++this.failedBatches >= this.switchAfterFailures
+        ) {
+          await this.switchToNewFile()
+        }
         return false
       }
       this.failedBatches = 0
@@ -636,20 +658,22 @@ export class DiagnosticsLogger {
     const attempt: Attempt = { cancelled: false, appendStarted: false }
     return new Promise<T>((resolve, reject) => {
       let settled = false
+      let hungOp: HungOp | undefined
       const timer = setTimeout(() => {
         if (settled) return
         settled = true
         attempt.cancelled = true
         // the write itself may still go through later
         if (attempt.appendStarted) this.maybeDuplicate = true
-        this.hungOps++
+        hungOp = { at: Date.now() }
+        this.hung.add(hungOp)
         reject(new TimeoutError(`no answer from the file system after ${this.writeTimeoutMs} ms`))
       }, this.writeTimeoutMs)
       timer.unref?.()
       work(attempt).then(
         (value) => {
           clearTimeout(timer)
-          if (attempt.cancelled) this.hungOps--
+          if (attempt.cancelled) this.hung.delete(hungOp!)
           else {
             settled = true
             resolve(value)
@@ -657,7 +681,7 @@ export class DiagnosticsLogger {
         },
         (error: unknown) => {
           clearTimeout(timer)
-          if (attempt.cancelled) this.hungOps--
+          if (attempt.cancelled) this.hung.delete(hungOp!)
           else {
             settled = true
             reject(error)
@@ -675,10 +699,12 @@ export class DiagnosticsLogger {
     let lastError: unknown
     for (let attempt = 0; attempt <= this.retryDelays.length; attempt++) {
       if (epoch !== this.epoch) return 'superseded' // flushSync owns the in-flight lines now
-      if (this.hungOps >= 2) {
+      if (this.hungCount() >= 2) {
         // earlier operations are still stuck in the thread pool: start no new ones
         return {
-          error: new Error(`the file system is not answering (${this.hungOps} operations pending)`),
+          error: new HungError(
+            `the file system is not answering (${this.hungCount()} operations pending)`,
+          ),
         }
       }
       try {
@@ -697,15 +723,16 @@ export class DiagnosticsLogger {
           if (stale()) return 'superseded' as const
           // after a half-written append the file may end in the middle of a line
           let out = this.tornTail ? `\n${text}` : text
-          if (this.maybeDuplicate) {
+          const withMarker = this.maybeDuplicate
+          if (withMarker) {
             // an earlier attempt may have reached the file after all: say so, so that a reader can
             // tell a repeated line from a new one
             out = `${this.markerLine('flush.maybeDuplicate')}\n${out}`
-            this.maybeDuplicate = false
           }
           job.appendStarted = true
           await this.fs.appendFile(this.activePath, out)
           if (job.cancelled) return 'superseded' as const
+          if (withMarker) this.maybeDuplicate = false
           this.tornTail = false
           this.activeSize = (this.activeSize ?? 0) + Buffer.byteLength(out, 'utf8')
           return epoch === this.epoch ? ('ok' as const) : ('superseded' as const)
@@ -723,6 +750,18 @@ export class DiagnosticsLogger {
       }
     }
     return epoch === this.epoch ? { error: lastError } : 'superseded'
+  }
+
+  /**
+   * How many operations the file system has not answered. One that has been stuck for a long time
+   * is forgotten: it may never end, and the logger must be able to try again some day.
+   */
+  private hungCount(): number {
+    const now = Date.now()
+    for (const op of this.hung) {
+      if (now - op.at > this.hungForgetMs) this.hung.delete(op)
+    }
+    return this.hung.size
   }
 
   private markerLine(ev: string): string {
@@ -791,7 +830,8 @@ export class DiagnosticsLogger {
    * hanging drive must not stop the log for good), one at a time, and gives up after the timeout.
    */
   private pruneInBackground(keep: number): void {
-    if (this.pruning) return
+    // tidying is the first thing to give way: never add to operations the drive has not answered
+    if (this.pruning || this.hungCount() >= 1) return
     this.pruning = true
     this.pruneDone = this.withTimeout(() => this.pruneOrphans(keep))
       .catch((error: unknown) => this.report('could not prune old log files', error))
@@ -835,6 +875,8 @@ export class DiagnosticsLogger {
     try {
       await this.renameWithRetry(this.activePath, aside)
     } catch (error) {
+      // an attempt that was given up changes nothing any more
+      if (job.cancelled || epoch !== this.epoch) return
       const next = this.orphanPath()
       this.report(`could not move ${this.activePath} aside; continuing in ${next}`, error)
       this.activePath = next
@@ -843,17 +885,18 @@ export class DiagnosticsLogger {
       this.pruneInBackground(this.orphanKeep)
       return
     }
-    this.activeSize = 0
+    if (!job.cancelled) this.activeSize = 0
     const oldest = this.files - 1
     let shifted = true
     for (let index = oldest - 1; index >= 1; index--) {
+      if (job.cancelled) return // the file stays where it is, as a set-aside file
       if (!(await this.moveQuietly(this.rotated(index), this.rotated(index + 1)))) {
         // a slot is held by someone else: stop here, the files below it stay where they are
         shifted = false
         break
       }
     }
-    if (shifted) {
+    if (shifted && !job.cancelled) {
       try {
         await this.fs.rename(aside, this.rotated(1))
         return
@@ -914,6 +957,12 @@ export class DiagnosticsLogger {
     const fresh = this.takeBatch()
     const entries = [...resend, ...fresh]
     if (entries.length === 0) return
+    if (this.hungCount() > 0) {
+      // the drive is not answering: a synchronous write would hold the main thread for as long
+      this.report('the file system is not answering; the last lines are not written on exit')
+      this.requeue(entries)
+      return
+    }
     const lines: string[] = []
     if (resend.length > 0) {
       lines.push(
@@ -943,7 +992,11 @@ export class DiagnosticsLogger {
 
   /** Writes what is queued and stops accepting lines. */
   async close(): Promise<void> {
-    await this.flush()
+    // lines that arrive while the last write runs are written too
+    for (let pass = 0; pass < 3; pass++) {
+      await this.flush()
+      if (this.queued === 0) break
+    }
     this.closed = true
   }
 }

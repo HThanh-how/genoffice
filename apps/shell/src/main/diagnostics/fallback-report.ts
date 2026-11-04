@@ -57,22 +57,28 @@ export interface FallbackStats {
   readonly path: string
 }
 
+interface Target {
+  readonly dir: string
+  readonly file: string
+}
+
 export class FallbackReporter {
   private readonly intervalMs: number
   private readonly maxBytes: number
   private readonly fs: FallbackFs
   private readonly now: () => number
-  private file: string
-  private dir: string
-  private altDir: string | undefined
   private readonly fsTimeoutMs: number
+  /** where lines go now; moves to `alt` for good once the first folder has failed and `alt` works */
+  private target: Target
+  private alt: Target | undefined
+  /** bytes written so far per file, known once the file has been looked at */
+  private readonly sizes = new Map<string, number>()
   private total = 0
   private written = 0
   private failed = 0
   private suppressedSinceLast = 0
   private suppressedTotal = 0
   private lastAt = -Infinity
-  private bytes: number | undefined
   private chain: Promise<void> = Promise.resolve()
 
   constructor(private readonly options: FallbackOptions) {
@@ -80,14 +86,15 @@ export class FallbackReporter {
     this.maxBytes = options.maxBytes ?? 64 * 1024
     this.fs = options.fs ?? realFallbackFs
     this.now = options.now ?? Date.now
-    this.dir = options.dir
-    this.altDir = options.altDir
     this.fsTimeoutMs = options.fsTimeoutMs ?? 10_000
-    this.file = join(this.dir, FALLBACK_FILE)
+    this.target = { dir: options.dir, file: join(options.dir, FALLBACK_FILE) }
+    if (options.altDir && options.altDir !== options.dir) {
+      this.alt = { dir: options.altDir, file: join(options.altDir, FALLBACK_FILE) }
+    }
   }
 
   get path(): string {
-    return this.file
+    return this.target.file
   }
 
   stats(): FallbackStats {
@@ -96,7 +103,7 @@ export class FallbackReporter {
       written: this.written,
       suppressed: this.suppressedTotal,
       failed: this.failed,
-      path: this.file,
+      path: this.target.file,
     }
   }
 
@@ -134,55 +141,56 @@ export class FallbackReporter {
   }
 
   private async write(line: string): Promise<void> {
-    // a hanging drive must not hold the lines behind this one for ever
-    const timeout = new Promise<never>((_, reject) => {
-      setTimeout(
-        () => reject(new Error('no answer from the file system')),
-        this.fsTimeoutMs,
-      ).unref?.()
-    })
-    try {
-      await Promise.race([this.writeTo(line), timeout])
-    } catch {
-      this.failed++
-      // try the other folder once, and stay there if it works
-      const alt = this.altDir
-      if (alt && alt !== this.dir) {
-        const primary = { dir: this.dir, file: this.file, bytes: this.bytes }
-        this.dir = alt
-        this.altDir = undefined
-        this.file = join(alt, FALLBACK_FILE)
-        this.bytes = undefined
-        try {
-          await Promise.race([this.writeTo(line), timeout])
-        } catch {
-          this.failed++
-          this.dir = primary.dir
-          this.file = primary.file
-          this.bytes = primary.bytes
-        }
-      }
+    if (await this.attempt(this.target, line)) return
+    // the first folder failed: try the other one, and stay there if it works
+    const alt = this.alt
+    if (alt && (await this.attempt(alt, line))) {
+      this.target = alt
+      this.alt = undefined
     }
   }
 
-  private async writeTo(line: string): Promise<void> {
-    if (this.bytes === undefined) {
-      const size = await this.fs.size(this.file)
-      if (size >= this.maxBytes) {
+  /** One try at one folder, with its own deadline. Only this try's own file state is touched. */
+  private async attempt(target: Target, line: string): Promise<boolean> {
+    let timer: NodeJS.Timeout | undefined
+    const deadline = new Promise<never>((_, reject) => {
+      timer = setTimeout(
+        () => reject(new Error('no answer from the file system')),
+        this.fsTimeoutMs,
+      )
+      timer.unref?.()
+    })
+    try {
+      await Promise.race([this.writeTo(target, line), deadline])
+      return true
+    } catch {
+      this.failed++
+      return false
+    } finally {
+      if (timer) clearTimeout(timer)
+    }
+  }
+
+  private async writeTo(target: Target, line: string): Promise<void> {
+    let size = this.sizes.get(target.file)
+    if (size === undefined) {
+      const found = await this.fs.size(target.file)
+      if (found >= this.maxBytes) {
         // full from an earlier run: keep it as .old and start again
-        await this.fs.move(this.file, `${this.file}.old`)
-        this.bytes = 0
+        await this.fs.move(target.file, `${target.file}.old`)
+        size = 0
       } else {
-        this.bytes = size
+        size = found
       }
     }
-    if (this.bytes >= this.maxBytes) {
+    if (size >= this.maxBytes) {
+      this.sizes.set(target.file, size)
       this.suppressedTotal++
       return
     }
-    await this.fs.mkdir(this.dir)
-    await this.fs.append(this.file, line)
-    this.bytes += Buffer.byteLength(line, 'utf8')
+    await this.fs.mkdir(target.dir)
+    await this.fs.append(target.file, line)
+    this.sizes.set(target.file, size + Buffer.byteLength(line, 'utf8'))
     this.written++
   }
 }
