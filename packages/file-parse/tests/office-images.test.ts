@@ -166,9 +166,8 @@ describe('loadOfficePictures', () => {
     ])
   })
 
-  it('falls back to the media folder in the order of the names when the package cannot be walked', async () => {
+  it('falls back to the media folder in the order of the names when the package has no main part to walk', async () => {
     const bytes = await pack({
-      'word/document.xml': '<w:document>not what we expect</w:document>',
       'word/media/image10.png': BIG,
       'word/media/image2.png': BIG,
       'word/media/image1.png': BIG,
@@ -180,8 +179,28 @@ describe('loadOfficePictures', () => {
     ])
   })
 
+  it('lists no picture that only a header, a footer or nobody uses, when the body shows none', async () => {
+    const bytes = await pack({
+      'word/document.xml': '<w:document><w:p>some text</w:p></w:document>',
+      'word/_rels/document.xml.rels': rel([['rId1', 'media/header.png']]),
+      'word/header1.xml': '<w:hdr><a:blip r:embed="rId1"/></w:hdr>',
+      'word/media/header.png': BIG,
+      'word/media/orphan.png': BIG,
+    })
+    expect((await loadOfficePictures(bytes)).names).toEqual([])
+  })
+
   it('lists at most MAX_OFFICE_IMAGES, and nothing for a file with no picture', async () => {
-    const many: Record<string, number | string> = { 'word/document.xml': '<w:document/>' }
+    const total = MAX_OFFICE_IMAGES + 20
+    const many: Record<string, number | string> = {
+      'word/document.xml': `<w:document>${Array.from({ length: total }, (_x, i) => `<a:blip r:embed="rId${i + 1}"/>`).join('')}</w:document>`,
+      'word/_rels/document.xml.rels': rel(
+        Array.from({ length: total }, (_x, i): [string, string] => [
+          `rId${i + 1}`,
+          `media/image${i + 1}.png`,
+        ]),
+      ),
+    }
     for (let i = 1; i <= MAX_OFFICE_IMAGES + 20; i++) many[`word/media/image${i}.png`] = BIG
     expect((await loadOfficePictures(await pack(many))).names).toHaveLength(MAX_OFFICE_IMAGES)
     expect(

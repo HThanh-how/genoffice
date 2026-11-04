@@ -150,8 +150,9 @@ export interface OfficePictures {
  * The pictures of a Word, PowerPoint or Excel file in the order the document shows them (the body
  * of a Word file; the slides in their order; the drawings of the sheets in theirs), so that "page 3"
  * of the scan is the same picture every time the file is read. Pictures that only the headers, the
- * masters or the layouts use are not listed. A package that cannot be walked this way falls back
- * to the media folder in the order of the names. Pictures smaller than `MIN_SIGNIFICANT_IMAGE_BYTES`
+ * masters or the layouts use, or that nothing uses, are not listed. A package that cannot be walked this
+ * way (no main part, or a part that cannot be read) falls back to the media folder in the order of the names.
+ * The same picture under two names is listed twice (comparing contents would mean reading every picture). Pictures smaller than `MIN_SIGNIFICANT_IMAGE_BYTES`
  * (logos, icons, rules) and larger than a sane limit are left out, and at most `MAX_OFFICE_IMAGES`
  * are listed. Only the list of the archive and the XML parts are read here; a picture is inflated
  * by `read`.
@@ -160,14 +161,19 @@ export async function loadOfficePictures(bytes: Uint8Array): Promise<OfficePictu
   const zip = await JSZip.loadAsync(bytes)
   const kind = kindOf(zip)
   let found: string[] = []
+  // The media folder in the order of the names is for a package that cannot be walked (no main part, or a
+  // part that could not be read). A package that WAS walked and shows no picture has none: the pictures
+  // that only a header, a footer or nobody uses are not the pages of a scan.
+  let walked = false
   if (kind) {
     try {
       for (const part of await orderedParts(zip, kind)) found.push(...(await picturesOf(zip, part)))
+      walked = true
     } catch {
       found = []
     }
   }
-  if (found.length === 0) {
+  if (!walked) {
     found = Object.keys(zip.files)
       .filter(
         (name) =>

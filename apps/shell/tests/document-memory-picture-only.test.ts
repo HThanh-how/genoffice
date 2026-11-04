@@ -21,6 +21,14 @@ async function writeDocx(
   const dir = mkdtempSync(join(tmpdir(), 'picture-only-'))
   dirs.push(dir)
   const zip = new JSZip()
+  // the body shows every picture, so that they are the pictures of the document and not stray files
+  const shown = Object.keys(media)
+  zip.file(
+    'word/_rels/document.xml.rels',
+    `<Relationships>${shown
+      .map((file, i) => `<Relationship Id="rIdP${i}" Target="media/${file}"/>`)
+      .join('')}</Relationships>`,
+  )
   zip.file(
     '_rels/.rels',
     '<Relationships><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="/word/document.xml"/></Relationships>',
@@ -29,7 +37,7 @@ async function writeDocx(
     'word/document.xml',
     `<?xml version="1.0"?><w:document ${W}><w:body>${
       text ? `<w:p><w:r><w:t>${text}</w:t></w:r></w:p>` : '<w:p/>'
-    }</w:body></w:document>`,
+    }${shown.map((_file, i) => `<w:p><a:blip r:embed="rIdP${i}"/></w:p>`).join('')}</w:body></w:document>`,
   )
   for (const [file, bytes] of Object.entries(media))
     zip.file(`word/media/${file}`, Buffer.alloc(bytes, 3))
