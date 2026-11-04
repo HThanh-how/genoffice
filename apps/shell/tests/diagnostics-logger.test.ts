@@ -1,5 +1,5 @@
 import { spawn, type ChildProcess } from 'node:child_process'
-import { mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
@@ -1552,33 +1552,42 @@ describe('DiagnosticsLogger limits on sending a line again, and on closing', () 
     let slow = true
     const fs: LogFs = {
       ...realLogFs,
-      // the size of the file takes longer than the write timeout, but it does come
+      // the size of the file takes much longer than the write timeout, but it does come (wide gaps:
+      // a coarse timer clock, as on Windows, or a busy machine must not make it finish in time)
       size: async (p) => {
-        if (slow) await new Promise((r) => setTimeout(r, 60))
+        if (slow) await new Promise((r) => setTimeout(r, 200))
         return realLogFs.size(p)
       },
     }
     const log = new DiagnosticsLogger({
       dir,
       fs,
-      writeTimeoutMs: 15,
+      writeTimeoutMs: 40,
       retryDelaysMs: [],
-      retryBackoffMs: 50,
+      retryBackoffMs: 100,
       switchAfterFailures: 1000,
       degradedAfterMs: 1e9,
       onInternalError: () => undefined,
     })
+    const inFile = (): number =>
+      existsSync(join(dir, 'genoffice.jsonl'))
+        ? lines(dir).filter((l) => l.ev === 'kept-line').length
+        : 0
+    // what each round saw, so that a failure says what happened instead of only a count
+    const seen: Array<{ queued: number; inFile: number; dropped: number }> = []
     log.error('a', 'kept-line')
-    for (let round = 0; round < 6; round++) {
+    for (let round = 0; round < 4; round++) {
       await log.flush() // given up in the preparation
-      await new Promise((r) => setTimeout(r, 70)) // the slow answers come, and leave the count
+      await new Promise((r) => setTimeout(r, 220)) // the slow answers come, and leave the count
+      seen.push({ queued: log.queued, inFile: inFile(), dropped: log.stats().droppedTotal })
     }
     // nothing of it counts towards the limit on sending a line again: the line is still there
-    expect(log.stats().droppedTotal).toBe(0)
-    expect(log.queued).toBe(1)
+    expect(seen.map((row) => row.dropped)).toEqual([0, 0, 0, 0])
+    expect(seen).toEqual(Array(4).fill({ queued: 1, inFile: 0, dropped: 0 }))
     slow = false
     await log.flush()
-    expect(lines(dir).filter((l) => l.ev === 'kept-line')).toHaveLength(1)
+    expect(inFile()).toBe(1)
+    expect(log.queued).toBe(0)
   })
 
   it('close() stops waiting after the close timeout when the drive never answers', async () => {
