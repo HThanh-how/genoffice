@@ -18,6 +18,10 @@ export interface LifecycleOptions {
   readonly app: AppLike
   readonly proc?: NodeJS.Process | EventEmitter
   readonly sink: LifecycleSink
+  /** writes what is queued, synchronously: called when a crash or the end of the process is near */
+  readonly flushSync?: () => void
+  /** web contents that exist already (windows and views created before the hooks were installed) */
+  readonly existingWebContents?: () => WebContentsLike[]
   readonly memoryIntervalMs?: number
   /** rss above this is logged at warn level on every sample */
   readonly memoryWarnBytes?: number
@@ -31,8 +35,9 @@ export interface LifecycleOptions {
 const MB = 1024 * 1024
 const round1 = (n: number): number => Math.round(n * 10) / 10
 
-interface WindowLike extends EventEmitter {
-  isDestroyed(): boolean
+/** A window, a tab or a view: each is its own web contents with its own renderer process. */
+export interface WebContentsLike extends EventEmitter {
+  readonly id?: number
 }
 
 /**
@@ -66,31 +71,34 @@ export function installLifecycleLogging(options: LifecycleOptions): () => void {
       serviceName: details?.serviceName,
     })
   })
-  on(app, 'browser-window-created', (_event: unknown, win: WindowLike) => {
-    const id = (win as { id?: number }).id
+  const watchContents = (wc: WebContentsLike): void => {
     let hungSince: number | undefined
     const unresponsive = (): void => {
       hungSince = Date.now()
-      sink.warn('window', 'unresponsive', { win: id })
+      sink.warn('window', 'unresponsive', { wc: wc.id })
     }
     const responsive = (): void => {
       sink.warn('window', 'responsive', {
-        win: id,
+        wc: wc.id,
         hungMs: hungSince === undefined ? undefined : Date.now() - hungSince,
       })
       hungSince = undefined
     }
-    win.on('unresponsive', unresponsive)
-    win.on('responsive', responsive)
-    win.once('closed', () => {
-      win.off('unresponsive', unresponsive)
-      win.off('responsive', responsive)
+    wc.on('unresponsive', unresponsive)
+    wc.on('responsive', responsive)
+    wc.once('destroyed', () => {
+      wc.off('unresponsive', unresponsive)
+      wc.off('responsive', responsive)
     })
-  })
+  }
+  for (const wc of options.existingWebContents?.() ?? []) watchContents(wc)
+  on(app, 'web-contents-created', (_event: unknown, wc: WebContentsLike) => watchContents(wc))
 
   // `uncaughtExceptionMonitor` observes without changing what Node does with the error
   on(proc as EventEmitter, 'uncaughtExceptionMonitor', (error: unknown, origin: unknown) => {
     sink.error('process', 'uncaughtException', { origin, err: describeError(error) })
+    // the process may be gone before the next timer: write what is queued now
+    options.flushSync?.()
   })
   on(proc as EventEmitter, 'unhandledRejection', (reason: unknown) => {
     sink.error('process', 'unhandledRejection', { err: describeError(reason) })
@@ -98,8 +106,14 @@ export function installLifecycleLogging(options: LifecycleOptions): () => void {
     console.error('[unhandledRejection]', reason)
   })
 
-  on(app, 'before-quit', () => sink.info('app', 'before-quit'))
-  on(app, 'will-quit', () => sink.info('app', 'will-quit'))
+  on(app, 'before-quit', () => {
+    sink.info('app', 'before-quit')
+    options.flushSync?.()
+  })
+  on(app, 'will-quit', () => {
+    sink.info('app', 'will-quit')
+    options.flushSync?.()
+  })
   on(app, 'quit', (_event: unknown, exitCode: unknown) => sink.info('app', 'quit', { exitCode }))
 
   const sample =

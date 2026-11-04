@@ -41,17 +41,33 @@ describe('lifecycle logging', () => {
     ])
   })
 
-  it('records unresponsive and responsive with the hang time', () => {
+  it('records unresponsive and responsive of every web contents, with the hang time', () => {
     const { app, entries } = setup()
-    const win = Object.assign(new EventEmitter(), { id: 3, isDestroyed: () => false })
-    app.emit('browser-window-created', {}, win)
-    win.emit('unresponsive')
-    win.emit('responsive')
+    const wc = Object.assign(new EventEmitter(), { id: 3 })
+    app.emit('web-contents-created', {}, wc)
+    wc.emit('unresponsive')
+    wc.emit('responsive')
     expect(entries.map((e) => e.ev)).toEqual(['unresponsive', 'responsive'])
-    expect(entries[1]!.data.win).toBe(3)
+    expect(entries[1]!.data.wc).toBe(3)
     expect(typeof entries[1]!.data.hungMs).toBe('number')
-    win.emit('closed')
-    expect(win.listenerCount('unresponsive')).toBe(0)
+    wc.emit('destroyed')
+    expect(wc.listenerCount('unresponsive')).toBe(0)
+  })
+
+  it('also watches web contents that existed before the hooks were installed', () => {
+    const early = Object.assign(new EventEmitter(), { id: 1 })
+    const { entries } = setup({ existingWebContents: () => [early] })
+    early.emit('unresponsive')
+    expect(entries.map((e) => e.ev)).toEqual(['unresponsive'])
+  })
+
+  it('writes the queue to disk at once on a crash and when quitting', () => {
+    let flushes = 0
+    const { app, proc } = setup({ flushSync: () => void flushes++ })
+    proc.emit('uncaughtExceptionMonitor', new Error('x'), 'uncaughtException')
+    app.emit('before-quit')
+    app.emit('will-quit')
+    expect(flushes).toBe(3)
   })
 
   it('records uncaught exceptions and unhandled rejections without leaking secrets', () => {

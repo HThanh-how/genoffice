@@ -110,4 +110,80 @@ describe('IPC logging', () => {
     // the sink failure must not leak into the caller
     expect(() => ipc.handlers.get('a')!({})).not.toThrow()
   })
+
+  it('logs a call that never answers once, while it is still running, and its total when it ends', async () => {
+    const ipc = fakeIpc()
+    const { entries, sink } = sinkOf()
+    let t = 0
+    let sweep: (() => void) | undefined
+    installIpcLogging(ipc, () => sink, {
+      pendingMs: 10_000,
+      now: () => t,
+      setInterval: ((fn: () => void) => ((sweep = fn), 1)) as any,
+      clearInterval: (() => undefined) as any,
+    })
+    let finish: () => void = () => undefined
+    ipc.handle('ai:chat', () => new Promise<void>((resolve) => (finish = resolve)))
+    const call = ipc.handlers.get('ai:chat')!({}, 'secret prompt')
+    t = 5_000
+    sweep!()
+    expect(entries).toHaveLength(0)
+    t = 12_000
+    sweep!()
+    sweep!() // reported once only
+    expect(entries.map((e) => [e.ev, e.data])).toEqual([
+      ['handler.pending', { channel: 'ai:chat', ageMs: 12_000 }],
+    ])
+    t = 70_000
+    finish()
+    await call
+    await Promise.resolve()
+    expect(entries.map((e) => e.ev)).toEqual(['handler.pending', 'handler.slow'])
+    expect(entries[1]!.data).toEqual({ channel: 'ai:chat', ms: 70_000 })
+    expect(JSON.stringify(entries)).not.toContain('secret')
+  })
+
+  it('stops the sweeper when nothing is in flight', async () => {
+    const ipc = fakeIpc()
+    const { sink } = sinkOf()
+    let started = 0
+    let cleared = 0
+    installIpcLogging(ipc, () => sink, {
+      setInterval: (() => ++started) as any,
+      clearInterval: (() => void cleared++) as any,
+    })
+    ipc.handle('a', async () => 1)
+    await ipc.handlers.get('a')!({})
+    await Promise.resolve()
+    expect([started, cleared]).toEqual([1, 1])
+  })
+
+  it('does not report calls that wait for a person as slow or pending', async () => {
+    const ipc = fakeIpc()
+    const { entries, sink } = sinkOf()
+    let t = 0
+    installIpcLogging(ipc, () => sink, { now: () => t, setInterval: (() => 1) as any })
+    ipc.handle('home:browse', async () => {
+      t += 60_000
+    })
+    ipc.handle('home:scan-document-folder', async () => {
+      t += 60_000
+    })
+    await ipc.handlers.get('home:browse')!({})
+    await ipc.handlers.get('home:scan-document-folder')!({})
+    await Promise.resolve()
+    expect(entries).toEqual([])
+  })
+
+  it('still reports the failure of a call that waits for a person', async () => {
+    const ipc = fakeIpc()
+    const { entries, sink } = sinkOf()
+    installIpcLogging(ipc, () => sink)
+    ipc.handle('home:browse', async () => {
+      throw new Error('no dialog')
+    })
+    await expect(ipc.handlers.get('home:browse')!({})).rejects.toThrow('no dialog')
+    await Promise.resolve()
+    expect(entries.map((e) => e.ev)).toEqual(['handler.failed'])
+  })
 })

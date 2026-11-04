@@ -1,4 +1,5 @@
 import type { WebContents } from 'electron'
+import { reportDiagnosticsProblem } from '../diagnostics/fallback-report'
 
 /**
  * A small record of what each tab's page did while it loaded, for the day a tab shows up white and
@@ -100,8 +101,7 @@ export function rotatingFileWriter(
     retryRotateMs?: number
   } = {},
 ): DiagnosticsWrite {
-  const report =
-    options.report ?? ((message, error) => console.error(`[diagnostics] ${message}`, error))
+  const report = options.report ?? reportDiagnosticsProblem
   const now = options.now ?? Date.now
   const retryRotateMs = options.retryRotateMs ?? 60_000
   let nextRotateAt = 0

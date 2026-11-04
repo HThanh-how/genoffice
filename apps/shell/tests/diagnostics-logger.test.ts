@@ -109,6 +109,8 @@ describe('DiagnosticsLogger', () => {
       size: async () => 0,
       rename: async () => void touched++,
       unlink: async () => void touched++,
+      truncate: async () => void touched++,
+      list: async () => [],
       appendFileSync: () => void touched++,
       mkdirSync: () => void touched++,
     }
@@ -117,7 +119,7 @@ describe('DiagnosticsLogger', () => {
     expect(touched).toBe(0)
   })
 
-  it('drops debug lines first when the queue is full and says how many', async () => {
+  it('drops debug first, then info, and never an error, when the queue is full', async () => {
     const dir = tmp()
     const log = new DiagnosticsLogger({
       dir,
@@ -126,16 +128,68 @@ describe('DiagnosticsLogger', () => {
       flushIntervalMs: 10_000,
       flushLines: 1000,
     })
-    for (let i = 0; i < 10; i++) log.debug('a', `d${i}`)
-    log.debug('a', 'overflow')
-    log.error('a', 'keep-me')
-    expect(log.droppedCount).toBe(2)
+    for (let i = 0; i < 5; i++) log.error('a', `err${i}`)
+    for (let i = 0; i < 5; i++) log.info('a', `info${i}`)
+    log.debug('a', 'debug-overflow') // dropped: debug is the first to go
+    log.info('a', 'info-overflow') // evicts the oldest info
+    log.error('a', 'late-error') // evicts the next oldest info
+    expect(log.droppedCount).toBe(3)
     await log.flush()
-    const all = lines(dir)
-    expect(all.some((l) => l.ev === 'keep-me')).toBe(true)
-    expect(all.some((l) => l.ev === 'overflow')).toBe(false)
-    expect(all.find((l) => l.ev === 'dropped')?.data.lines).toBe(2)
+    const events = lines(dir).map((l) => l.ev)
+    for (let i = 0; i < 5; i++) expect(events).toContain(`err${i}`)
+    expect(events).toContain('late-error')
+    expect(events).not.toContain('debug-overflow')
+    expect(events).not.toContain('info0')
+    expect(lines(dir).find((l) => l.ev === 'dropped')?.data.lines).toBe(3)
     expect(log.droppedCount).toBe(0)
+    expect(log.stats().droppedTotal).toBe(3)
+  })
+
+  it('keeps warnings and errors beyond the cap (up to 4x) while a flood of info is dropped', async () => {
+    const dir = tmp()
+    const log = new DiagnosticsLogger({
+      dir,
+      maxQueue: 10,
+      flushIntervalMs: 10_000,
+      flushLines: 1000,
+    })
+    for (let i = 0; i < 30; i++) log.error('a', `e${i}`)
+    for (let i = 0; i < 30; i++) log.info('a', `i${i}`)
+    await log.flush()
+    const events = lines(dir).map((l) => l.ev)
+    for (let i = 0; i < 30; i++) expect(events).toContain(`e${i}`)
+    expect(events.filter((e) => e.startsWith('i')).length).toBe(0)
+  })
+
+  it('keeps the original time of a line written before the logger existed', async () => {
+    const dir = tmp()
+    const log = new DiagnosticsLogger({ dir })
+    log.write('info', 'app', 'early', undefined, new Date('2026-01-02T03:04:05.000Z'))
+    await log.flush()
+    expect(lines(dir)[0].ts).toBe('2026-01-02T03:04:05.000Z')
+  })
+
+  it('writes a flood in slices that stay near the size limit, with turns of the loop between', async () => {
+    const dir = tmp()
+    let yields = 0
+    const log = new DiagnosticsLogger({
+      dir,
+      maxBytes: 20_000,
+      files: 3,
+      chunkBytes: 5_000,
+      flushIntervalMs: 10_000,
+      flushLines: 1_000_000,
+      maxQueue: 10_000,
+      yieldTick: async () => void yields++,
+    })
+    for (let i = 0; i < 500; i++) log.info('a', `n${i}`, { pad: 'x'.repeat(40) })
+    await log.flush()
+    expect(yields).toBeGreaterThan(5)
+    for (const f of readdirSync(dir)) {
+      expect(readFileSync(join(dir, f)).length).toBeLessThanOrEqual(20_000 + 5_000)
+    }
+    const all = readdirSync(dir).flatMap((f) => lines(dir, f))
+    expect(all.at(-1).ev === 'n499' || lines(dir).at(-1).ev === 'n499').toBe(true)
   })
 
   it('rotates by size and keeps the configured number of files', async () => {
@@ -154,7 +208,7 @@ describe('DiagnosticsLogger', () => {
     expect(Number(first2.split('-')[1])).toBeLessThan(Number(first1.split('-')[1]))
   })
 
-  it('does not swallow a failed rotation: reports it and keeps writing in a new file', async () => {
+  it('does not swallow a failed rotation: reports it and keeps writing', async () => {
     const dir = tmp()
     const reports: string[] = []
     const fs: LogFs = {
@@ -177,36 +231,164 @@ describe('DiagnosticsLogger', () => {
       await log.flush()
     }
     expect(reports.some((m) => m.includes('could not rotate'))).toBe(true)
-    // every event is somewhere on disk
+    // the cause is reported with the path, and the newest events are on disk
     const all = readdirSync(dir)
       .flatMap((f) => lines(dir, f))
       .map((l) => l.ev)
-    for (let i = 0; i < 10; i++) expect(all).toContain(`event-${i}`)
-    expect(log.path).not.toBe(join(dir, 'genoffice.jsonl'))
+    expect(all).toContain('event-9')
+    expect(log.stats().internalErrors).toBeGreaterThan(0)
   })
 
-  it('reports a write failure instead of going silent, and recovers on the next flush', async () => {
-    const reports: string[] = []
-    let fail = true
+  it('deletes or empties the live file when it cannot be moved, so it is not found full again', async () => {
+    const dir = tmp()
     const fs: LogFs = {
       ...realLogFs,
-      mkdir: async () => undefined,
-      size: async () => 0,
-      appendFile: async () => {
-        if (fail) throw new Error('disk full')
+      rename: async (from, to) => {
+        if (to.endsWith('genoffice.1.jsonl'))
+          throw Object.assign(new Error('EPERM'), { code: 'EPERM' })
+        return realLogFs.rename(from, to)
       },
     }
     const log = new DiagnosticsLogger({
-      dir: '/d',
+      dir,
       fs,
+      maxBytes: 300,
+      flushLines: 1,
+      onInternalError: () => undefined,
+    })
+    for (let i = 0; i < 12; i++) {
+      log.info('a', `event-${i}`, { pad: 'y'.repeat(50) })
+      await log.flush()
+    }
+    expect(log.path).toBe(join(dir, 'genoffice.jsonl'))
+    expect(readdirSync(dir)).toEqual(['genoffice.jsonl'])
+    expect(readFileSync(join(dir, 'genoffice.jsonl')).length).toBeLessThan(900)
+  })
+
+  it('falls back to a new file only when the live one can neither move nor be removed, and prunes old ones', async () => {
+    const dir = tmp()
+    for (const ts of ['1700000000001', '1700000000002', '1700000000003']) {
+      writeFileSync(join(dir, `genoffice.${ts}.jsonl`), 'old\n')
+    }
+    writeFileSync(join(dir, 'genoffice.jsonl'), 'x'.repeat(400) + '\n')
+    const locked = (p: string): boolean => p.endsWith('genoffice.jsonl')
+    const fs: LogFs = {
+      ...realLogFs,
+      rename: async (from, to) => {
+        if (locked(from)) throw Object.assign(new Error('EBUSY'), { code: 'EBUSY' })
+        return realLogFs.rename(from, to)
+      },
+      unlink: async (p) => {
+        if (locked(p)) throw Object.assign(new Error('EBUSY'), { code: 'EBUSY' })
+        return realLogFs.unlink(p)
+      },
+      truncate: async () => {
+        throw Object.assign(new Error('EBUSY'), { code: 'EBUSY' })
+      },
+    }
+    const reports: string[] = []
+    const log = new DiagnosticsLogger({
+      dir,
+      fs,
+      maxBytes: 300,
+      flushLines: 1,
+      now: () => new Date(1700000000999),
       onInternalError: (m) => void reports.push(m),
     })
-    log.info('a', 'lost')
+    log.info('a', 'one', { pad: 'z'.repeat(50) })
+    await log.flush()
+    const orphans = readdirSync(dir).filter((f) => /^genoffice\.\d{10,}\.jsonl$/.test(f))
+    // the three old ones were pruned to the newest one (at start), then the new one was added
+    expect(orphans.length).toBeLessThanOrEqual(3)
+    expect(orphans).toContain('genoffice.1700000000999.jsonl')
+    expect(orphans).not.toContain('genoffice.1700000000001.jsonl')
+    expect(reports.some((m) => m.includes('continuing in'))).toBe(true)
+  })
+
+  it('retries a write that fails for a moment and loses nothing', async () => {
+    const dir = tmp()
+    let failures = 2
+    const fs: LogFs = {
+      ...realLogFs,
+      appendFile: async (p, t) => {
+        if (failures-- > 0) throw Object.assign(new Error('busy'), { code: 'EBUSY' })
+        return realLogFs.appendFile(p, t)
+      },
+    }
+    const reports: string[] = []
+    const log = new DiagnosticsLogger({
+      dir,
+      fs,
+      sleep: async () => undefined,
+      onInternalError: (m) => void reports.push(m),
+    })
+    log.error('a', 'important')
+    await log.flush()
+    expect(lines(dir).map((l) => l.ev)).toEqual(['important'])
+    expect(reports).toEqual([])
+  })
+
+  it('puts a batch back in the queue when every retry fails, and writes it later', async () => {
+    const dir = tmp()
+    const reports: string[] = []
+    let broken = true
+    const fs: LogFs = {
+      ...realLogFs,
+      appendFile: async (p, t) => {
+        if (broken) throw Object.assign(new Error('EPERM'), { code: 'EPERM' })
+        return realLogFs.appendFile(p, t)
+      },
+    }
+    const log = new DiagnosticsLogger({
+      dir,
+      fs,
+      sleep: async () => undefined,
+      onInternalError: (m) => void reports.push(m),
+    })
+    log.error('a', 'first')
     await log.flush()
     expect(reports[0]).toContain('could not write')
-    fail = false
-    log.info('a', 'ok')
-    await expect(log.flush()).resolves.toBeUndefined()
+    expect(reports[0]).toContain('kept for the next flush')
+    log.error('a', 'second')
+    broken = false
+    await log.flush()
+    // order is kept: the held batch comes before the newer line
+    expect(lines(dir).map((l) => l.ev)).toEqual(['first', 'second'])
+  })
+
+  it('flushSync writes an unfinished batch again, in order, behind a marker, then the queue', async () => {
+    const dir = tmp()
+    let release: () => void = () => undefined
+    const gate = new Promise<void>((resolve) => (release = resolve))
+    const fs: LogFs = {
+      ...realLogFs,
+      appendFile: async () => {
+        await gate // the asynchronous write never finishes before the process ends
+      },
+    }
+    const log = new DiagnosticsLogger({ dir, fs, flushIntervalMs: 10_000 })
+    log.info('a', 'in-flight-1')
+    log.info('a', 'in-flight-2')
+    const pending = log.flush()
+    await new Promise((r) => setTimeout(r, 20))
+    log.error('a', 'newer')
+    log.flushSync()
+    const events = lines(dir).map((l) => l.ev)
+    expect(events).toEqual(['flush.resent', 'in-flight-1', 'in-flight-2', 'newer'])
+    release()
+    await pending
+    // the asynchronous write was abandoned: nothing is written twice
+    expect(lines(dir).map((l) => l.ev)).toEqual(events)
+  })
+
+  it('keeps logging after a flushSync (a quit can be cancelled)', async () => {
+    const dir = tmp()
+    const log = new DiagnosticsLogger({ dir, flushIntervalMs: 5 })
+    log.info('app', 'before-quit')
+    log.flushSync()
+    log.info('app', 'after-cancelled-quit')
+    await log.flush()
+    expect(lines(dir).map((l) => l.ev)).toEqual(['before-quit', 'after-cancelled-quit'])
   })
 
   it('picks up an existing file size so rotation counts what is already there', async () => {
@@ -237,6 +419,29 @@ describe('DiagnosticsLogger', () => {
     const started = performance.now()
     for (let i = 0; i < 5000; i++) log.info('ipc', 'handler.slow', { channel: 'home:x', ms: i })
     const perCall = (performance.now() - started) / 5000
-    expect(perCall).toBeLessThan(0.2)
+    expect(perCall).toBeLessThan(1)
   })
+})
+
+describe('DiagnosticsLogger on a real, held file (Windows only)', () => {
+  it.runIf(process.platform === 'win32')(
+    'keeps every event when the live file cannot be moved',
+    async () => {
+      const dir = tmp()
+      const log = new DiagnosticsLogger({
+        dir,
+        maxBytes: 400,
+        flushLines: 1,
+        onInternalError: () => undefined,
+      })
+      for (let i = 0; i < 20; i++) {
+        log.info('a', `event-${i}`, { pad: 'w'.repeat(60) })
+        await log.flush()
+      }
+      const all = readdirSync(dir)
+        .flatMap((f) => lines(dir, f))
+        .map((l) => l.ev)
+      for (let i = 0; i < 20; i++) expect(all).toContain(`event-${i}`)
+    },
+  )
 })

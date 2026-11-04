@@ -8932,6 +8932,7 @@ async function runHeadlessExportEntry(
   })
   // app.quit() always exits 0; the genoffice envelope needs the real code, and
   // every teardown this run owns has already happened.
+  flushDiagnosticsSync() // app.exit() does not emit 'quit'
   app.exit(headlessExitCode(outcome))
 }
 
@@ -9002,7 +9003,12 @@ async function startShell(): Promise<void> {
   startLoopWatchdogToFile(join(userDataDir, 'logs', 'main-lag.log')) // local log, only written when the main thread stalls > 200 ms
   initDiagnostics({ userDataDir, version: app.getVersion() })
   diag.info('app', 'start', startupInfo(app, { packaged: app.isPackaged }))
-  installLifecycleLogging({ app, sink: diag })
+  installLifecycleLogging({
+    app,
+    sink: diag,
+    flushSync: flushDiagnosticsSync,
+    existingWebContents: () => webContents.getAllWebContents(),
+  })
   // the last lines before the process ends are written synchronously: nothing else runs after this
   app.on('quit', () => flushDiagnosticsSync())
   // a move of the index to another folder, chosen in the settings, happens here: nothing has the

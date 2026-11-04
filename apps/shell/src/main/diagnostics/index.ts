@@ -1,14 +1,17 @@
 import { join } from 'node:path'
+import { configureFallbackReporter } from './fallback-report'
 import { DiagnosticsLogger, type LogLevel, type Span } from './logger'
 
 export { DiagnosticsLogger, type LogLevel, type Span } from './logger'
 export { redactString, redactValue, describeError, shortHash } from './redact'
 export { installIpcLogging } from './ipc-logging'
+export { getFallbackReporter, reportDiagnosticsProblem } from './fallback-report'
 export { installLifecycleLogging, startupInfo } from './lifecycle'
 
 const PRE_INIT_LIMIT = 500
 
 interface Pending {
+  readonly at: Date
   readonly level: LogLevel
   readonly cat: string
   readonly ev: string
@@ -49,14 +52,16 @@ export function initDiagnostics(options: InitOptions): DiagnosticsLogger | undef
     return undefined
   }
   const verbose = env.GENOFFICE_LOG_VERBOSE === '1'
+  configureFallbackReporter({ dir: join(options.userDataDir, 'logs') })
+  const commit = options.commit ?? env.GENOFFICE_COMMIT
   logger = new DiagnosticsLogger({
     dir: join(options.userDataDir, 'logs'),
     version: options.version,
-    ...(options.commit ? { commit: options.commit } : {}),
+    ...(commit ? { commit } : {}),
     level: levelFromEnv(env.GENOFFICE_LOG_LEVEL) ?? (verbose ? 'debug' : 'info'),
     verbose,
   })
-  for (const entry of pending) logger.write(entry.level, entry.cat, entry.ev, entry.data)
+  for (const entry of pending) logger.write(entry.level, entry.cat, entry.ev, entry.data, entry.at)
   pending = []
   return logger
 }
@@ -73,7 +78,7 @@ function write(level: LogLevel, cat: string, ev: string, data?: unknown): void {
   if (disabled) return
   // before init (module load, early startup): keep a bounded backlog, newest wins
   if (pending.length >= PRE_INIT_LIMIT) pending.shift()
-  pending.push({ level, cat, ev, data })
+  pending.push({ at: new Date(), level, cat, ev, data })
 }
 
 const noopSpan: Span = { end: () => undefined, fail: () => undefined }
