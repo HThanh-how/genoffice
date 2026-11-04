@@ -3,6 +3,8 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
 import {
+  defaultFallbackDir,
+  getFallbackReporter,
   getLogger,
   initDiagnostics,
   levelFromEnv,
@@ -82,6 +84,17 @@ describe('initDiagnostics', () => {
       initDiagnostics({ userDataDir: tmp(), version: '1', env: { GENOFFICE_LOG_VERBOSE: '1' } })!
         .verbose,
     ).toBe(true)
+  })
+
+  it('puts the fallback file outside userData, in the local application data folder', () => {
+    expect(defaultFallbackDir({ LOCALAPPDATA: 'C:\\Users\\An\\AppData\\Local' })).toMatch(
+      /Users.An.AppData.Local.GenOffice.logs$/,
+    )
+    expect(defaultFallbackDir({})).toContain('GenOffice')
+    const dir = tmp()
+    const fallback = join(dir, 'elsewhere')
+    initDiagnostics({ userDataDir: join(dir, 'ud'), version: '1', fallbackDir: fallback, env: {} })
+    expect(getFallbackReporter()?.path).toBe(join(fallback, 'genoffice-logger-errors.txt'))
   })
 
   it('log.span before init does nothing and does not throw', () => {

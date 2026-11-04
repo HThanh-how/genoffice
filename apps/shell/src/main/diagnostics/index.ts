@@ -1,3 +1,4 @@
+import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { configureFallbackReporter } from './fallback-report'
 import { DiagnosticsLogger, type LogLevel, type Span } from './logger'
@@ -32,11 +33,18 @@ export function levelFromEnv(value: string | undefined): LogLevel | undefined {
   return LEVELS.find((l) => l === v)
 }
 
+export function defaultFallbackDir(env: NodeJS.ProcessEnv): string {
+  const base = env.LOCALAPPDATA || tmpdir()
+  return join(base, 'GenOffice', 'logs')
+}
+
 export interface InitOptions {
   /** Electron's `userData`: the logs go to `<userData>/logs` */
   readonly userDataDir: string
   readonly version: string
   readonly commit?: string
+  /** where problems of the logger itself are written (default: a folder outside `userData`, see below) */
+  readonly fallbackDir?: string
   readonly env?: NodeJS.ProcessEnv
 }
 
@@ -55,7 +63,9 @@ export function initDiagnostics(options: InitOptions): DiagnosticsLogger | undef
     return undefined
   }
   const verbose = env.GENOFFICE_LOG_VERBOSE === '1'
-  configureFallbackReporter({ dir: join(options.userDataDir, 'logs') })
+  // `userData` can be on the very drive that fails (a moved profile, a network share), so the
+  // report of a logger problem goes to the local application data folder instead
+  configureFallbackReporter({ dir: options.fallbackDir ?? defaultFallbackDir(env) })
   const commit = options.commit ?? env.GENOFFICE_COMMIT ?? BUILD_COMMIT
   logger = new DiagnosticsLogger({
     dir: join(options.userDataDir, 'logs'),

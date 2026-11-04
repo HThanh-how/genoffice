@@ -265,4 +265,143 @@ describe('diagnostics redaction', () => {
     const err = new Error('outer', { cause: new Error('inner Bearer abcdefghijklmnop1234') })
     expect(JSON.stringify(describeError(err))).not.toContain('abcdefghijklmnop1234')
   })
+
+  it('reads key names word by word: every spelling of a secret is masked', () => {
+    const secret = 'hunter2-abc-def'
+    const out = JSON.stringify(
+      redactValue({
+        secretKey: secret,
+        accessKey: secret,
+        secretAccessKey: secret,
+        AWS_SECRET_ACCESS_KEY: secret,
+        pwd: secret,
+        passcode: secret,
+        passwordHash: secret,
+        pin: secret,
+        otp: secret,
+        key: secret,
+        auth: secret,
+        sessionId: secret,
+        jwt: secret,
+        'x-api-key': secret,
+        signature: secret,
+      }),
+    )
+    expect(out).not.toContain(secret)
+  })
+
+  it('masks a password or a PIN given as a number, but not counters with a similar name', () => {
+    const out = redactValue({
+      password: 12345678,
+      pin: 1234,
+      otp: 987654,
+      passwordLength: 12,
+      tokenCount: 12,
+      maxTokens: 4096,
+      keys: 5,
+      keyboard: 'qwerty',
+      tokens: { input: 5, output: 7 },
+    }) as Record<string, any>
+    expect(out.password).toEqual({ redacted: true, type: 'number' })
+    expect(out.pin).toEqual({ redacted: true, type: 'number' })
+    expect(out.otp).toEqual({ redacted: true, type: 'number' })
+    expect(out.passwordLength).toBe(12)
+    expect(out.tokenCount).toBe(12)
+    expect(out.maxTokens).toBe(4096)
+    expect(out.keys).toBe(5)
+    expect(out.keyboard).toBe('qwerty')
+    expect(out.tokens).toEqual({ input: 5, output: 7 })
+  })
+
+  it('masks personal numbers whatever the type, the spelling or the container', () => {
+    const out = JSON.stringify(
+      redactValue({
+        cmnd: '012345678',
+        cccd: '012345678',
+        phone: '0912345678',
+        CCCDNumber: 912345678,
+        idNumber: 912345678,
+        nationalId: '079203001234',
+        socialSecurity: '12-34',
+        phonenumber: '0912345678',
+        sdt: '0912345678',
+        soDienThoai: '0912345678',
+        stk: '123456789',
+        mst: '0101234567',
+        cmtnd: '123456789',
+        idCard: '123456789',
+        citizenship: 'VN-123',
+        telephone: '0912345678',
+        phones: [912345678, 912345679],
+        bhxh: '1234567890',
+        nested: { ssn: 123456789n, cccd_no: 79203001234 },
+      }),
+    )
+    for (const value of [
+      '012345678',
+      '0912345678',
+      '912345678',
+      '079203001234',
+      '0101234567',
+      '123456789',
+      '79203001234',
+      '1234567890',
+    ]) {
+      expect(out).not.toContain(value)
+    }
+  })
+
+  it('does not mistake other words for personal numbers', () => {
+    const out = redactValue({
+      telemetry: 123456789,
+      syntaxLevel: 123456789,
+      international: 123456789,
+      microphone: 123456789,
+      classname: 'a-class',
+      accountType: 'free',
+    }) as Record<string, any>
+    for (const key of ['telemetry', 'syntaxLevel', 'international', 'microphone']) {
+      expect(out[key]).toBe(123456789)
+    }
+    expect(out.classname).toBe('a-class')
+    expect(out.accountType).toBe('free')
+  })
+
+  it('writes a bigint through the string rules', () => {
+    expect(redactValue({ big: 123456789012n })).toEqual({ big: '[id]' })
+  })
+
+  it('inside content containers, short text is masked unless the key names an identifier', () => {
+    const out = JSON.stringify(
+      redactValue({
+        messages: ['hunter2'],
+        args: ['password123', '--token', 'abc'],
+        params: { pin: '123456', name: 'Alice', model: 'claude-x', toolUseId: 'tu_1' },
+        context: { user: 'nguyenvana', role: 'owner' },
+        parts: ['hello'],
+      }),
+    )
+    for (const text of [
+      'hunter2',
+      'password123',
+      '--token',
+      'Alice',
+      'nguyenvana',
+      'hello',
+      '123456',
+    ]) {
+      expect(out).not.toContain(text)
+    }
+    for (const kept of ['claude-x', 'tu_1', 'owner']) expect(out).toContain(kept)
+  })
+
+  it('reduces a large thrown object to bounded data before it becomes text', () => {
+    const big: Record<string, string> = {}
+    for (let i = 0; i < 40; i++) big[`k${i}`] = 'v'.repeat(500)
+    describeError(big) // warm up
+    const started = performance.now()
+    const described = describeError(big)
+    expect(performance.now() - started).toBeLessThan(20)
+    expect(String(described.message).length).toBeLessThan(600)
+  })
 })

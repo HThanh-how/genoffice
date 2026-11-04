@@ -37,7 +37,7 @@ export function shortHash(value: string): string {
 
 const normalizeKey = (key: string): string => key.toLowerCase().replace(/[_\-\s]/g, '')
 
-/** Keys (lower case, without `_`/`-`) that carry a credential: the whole value goes, whatever its type. */
+/** Keys (lower case, without `_`/`-`) that carry a credential whatever they are followed by. */
 const CREDENTIAL_KEYS: ReadonlySet<string> = new Set([
   'header',
   'headers',
@@ -83,41 +83,132 @@ const CONTENT_KEYS: ReadonlySet<string> = new Set([
   'title',
 ])
 
-/** key names that end like a secret (`accessToken`, `client_secret`, `githubPassword`, `apiKey`) */
-const SECRET_SUFFIX = /(token|secret|password|passwd|passphrase|apikey|privatekey|credential)s?$/
-
-/** Words in a key name that say the number is a personal one (`cccdNumber`, `citizenId`, `phone`). */
-const ID_WORDS: ReadonlySet<string> = new Set([
-  'cccd',
-  'cmnd',
-  'cmt',
-  'ssn',
-  'passport',
-  'citizen',
-  'identity',
-  'phone',
-  'tel',
-  'mobile',
-  'account',
-  'tax',
-  'nid',
-])
-
-/** `cccdNumber`, `citizen_id`, `Phone` → ['cccd','number'], ['citizen','id'], ['phone'] */
+/**
+ * Key names are read word by word (`AWS_SECRET_ACCESS_KEY`, `clientSecret`, `CCCDNumber`,
+ * `soDienThoai`), a plural counts as its singular. `keyboard`, `telemetry` or `syntax` contain a
+ * word of a list as letters only and are left alone.
+ */
 function keyWords(key: string): string[] {
   return key
     .replace(/([a-z0-9])([A-Z])/g, '$1 $2')
+    .replace(/([A-Z]+)([A-Z][a-z])/g, '$1 $2')
     .toLowerCase()
     .split(/[^a-z0-9]+/)
     .filter(Boolean)
+    .map((w) => (w.length > 3 && w.endsWith('s') && !w.endsWith('ss') ? w.slice(0, -1) : w))
 }
 
-/** A whole number of 9 to 12 digits under a key named like a personal number. Measures are left alone. */
-function isPersonalNumber(key: string, value: unknown): boolean {
-  if (typeof value !== 'number' || !Number.isInteger(value)) return false
-  const abs = Math.abs(value)
-  if (abs < 1e8 || abs >= 1e12) return false
-  return keyWords(key).some((w) => ID_WORDS.has(w))
+/** Secret words whose value goes whatever its type (a password given as a number too). */
+const STRONG_SECRET_WORDS: ReadonlySet<string> = new Set([
+  'secret',
+  'password',
+  'passwd',
+  'pwd',
+  'passcode',
+  'passphrase',
+  'pin',
+  'otp',
+  'apikey',
+  'hmac',
+])
+/** Words that make a secret only when the value is text (`tokenCount: 12` and `maxTokens: 4096` are counters). */
+const WEAK_SECRET_WORDS: ReadonlySet<string> = new Set([
+  'token',
+  'jwt',
+  'bearer',
+  'auth',
+  'signature',
+  'cookie',
+  'credential',
+])
+const KEY_QUALIFIERS: ReadonlySet<string> = new Set([
+  'access',
+  'secret',
+  'api',
+  'private',
+  'encryption',
+  'signing',
+  'license',
+])
+/** A secret-looking name with one of these is a size or a limit, not a secret. */
+const MEASURE_WORDS: ReadonlySet<string> = new Set([
+  'count',
+  'max',
+  'min',
+  'total',
+  'limit',
+  'length',
+  'len',
+  'size',
+  'ttl',
+  'ms',
+  'seconds',
+  'expiry',
+  'expire',
+  'age',
+  'used',
+  'remaining',
+  'budget',
+  'usage',
+  'ratio',
+  'num',
+])
+
+type SecretKind = 'strong' | 'weak' | undefined
+
+function secretKind(words: string[]): SecretKind {
+  if (words.some((w) => STRONG_SECRET_WORDS.has(w))) return 'strong'
+  const last = words[words.length - 1]
+  if (last === 'pass') return 'strong'
+  if (words.some((w) => WEAK_SECRET_WORDS.has(w))) return 'weak'
+  if (words.includes('session') && words.some((w) => w === 'id' || w === 'token' || w === 'key')) {
+    return 'weak'
+  }
+  // `key` alone at the end, or beside access / secret / api / private (`secretAccessKey`, `apiKey`)
+  if (words.includes('key') && (last === 'key' || words.some((w) => KEY_QUALIFIERS.has(w)))) {
+    return 'weak'
+  }
+  return undefined
+}
+
+/** Whole words that say the value is a personal identification or contact number. */
+const PERSONAL_WORDS: ReadonlySet<string> = new Set([
+  'cccd',
+  'cmnd',
+  'cmt',
+  'cmtnd',
+  'ssn',
+  'passport',
+  'citizen',
+  'citizenship',
+  'phone',
+  'telephone',
+  'tel',
+  'mobile',
+  'sdt',
+  'stk',
+  'mst',
+  'bhxh',
+  'nid',
+])
+/** Phrases of two words, or parts of one long compact word, that mean the same. */
+const PERSONAL_PAIRS: ReadonlyArray<readonly [string, ReadonlySet<string>]> = [
+  ['tax', new Set(['id', 'code', 'number', 'no'])],
+  ['account', new Set(['number', 'no', 'id'])],
+  ['id', new Set(['card', 'number', 'no'])],
+  ['national', new Set(['id', 'number'])],
+  ['social', new Set(['security'])],
+]
+/** Long enough to be safe as plain letters inside a compact key (`soDienThoai`, `CCCDNumber`). */
+const PERSONAL_COMPACT =
+  /(cccd|cmnd|cmtnd|passport|dienthoai|socialsecurity|nationalid|phonenumber)/
+
+function isPersonalKey(key: string, words: string[]): boolean {
+  if (words.some((w) => PERSONAL_WORDS.has(w))) return true
+  for (const [head, tails] of PERSONAL_PAIRS) {
+    if (words.includes(head) && words.some((w) => tails.has(w))) return true
+  }
+  return PERSONAL_COMPACT.test(key.toLowerCase().replace(/[^a-z0-9]/g, ''))
 }
 
 /** True when no string occurs anywhere in `value` (numbers and flags only: a usage record, say). */
@@ -129,19 +220,56 @@ function holdsNoText(value: unknown, depth = 0): boolean {
   return items.slice(0, MAX_KEYS).every((v) => holdsNoText(v, depth + 1))
 }
 
-type KeyKind = 'credential' | 'content' | undefined
+type KeyKind = 'credential' | 'personal' | 'content' | undefined
 
 function keyKind(key: string, value: unknown): KeyKind {
-  const k = normalizeKey(key)
-  // a number or a flag is not content (`maxTokens: 4096`, `input: 12`)
-  if (value === null || typeof value === 'number' || typeof value === 'boolean') return undefined
-  if (CREDENTIAL_KEYS.has(k)) return 'credential'
-  if (CONTENT_KEYS.has(k)) return 'content'
-  if (SECRET_SUFFIX.test(k)) {
-    // `apiKeys: ['…']`, `secrets: { a: '…' }` go whole; `tokens: { input: 5, output: 7 }` is a count
+  if (value === null || value === undefined || typeof value === 'boolean') return undefined
+  const words = keyWords(key)
+  if (isPersonalKey(key, words)) return 'personal'
+  const compact = normalizeKey(key)
+  if (CREDENTIAL_KEYS.has(compact)) return typeof value === 'number' ? undefined : 'credential'
+  const secret = secretKind(words)
+  if (secret === 'strong') {
+    // `passwordLength: 12` is a measure; `password: 12345678` is a password
+    if (typeof value === 'number' && words.some((w) => MEASURE_WORDS.has(w))) return undefined
+    return 'credential'
+  }
+  if (secret === 'weak') {
+    if (typeof value === 'number' || typeof value === 'bigint') return undefined
+    // `tokens: { input: 5, output: 7 }` is a count
     return holdsNoText(value) ? undefined : 'credential'
   }
+  // a number is not content (`input: 12`)
+  if (typeof value === 'number') return undefined
+  if (CONTENT_KEYS.has(compact)) return 'content'
   return undefined
+}
+
+/** Keys whose short string value is an identifier, not text (`role: 'user'`, `toolUseId`, `model`). */
+const ID_VALUE_KEYS: ReadonlySet<string> = new Set([
+  'id',
+  'uuid',
+  'role',
+  'type',
+  'kind',
+  'status',
+  'model',
+  'provider',
+  'mime',
+  'mimetype',
+  'ext',
+  'lang',
+  'language',
+  'event',
+  'op',
+  'action',
+])
+
+function isIdValueKey(key: string | undefined): boolean {
+  if (!key) return false
+  const words = keyWords(key)
+  const last = words[words.length - 1]
+  return ID_VALUE_KEYS.has(normalizeKey(key)) || last === 'id'
 }
 
 /** `{ redacted: true, len, hash }` for a sensitive value: it can be compared, never read. */
@@ -265,7 +393,9 @@ export function describeError(
     }
     return out
   }
-  return { message: cleanString(typeof error === 'string' ? error : safeJson(error), options) }
+  // an arbitrary thrown value is reduced to bounded plain data before it is turned into text
+  const text = typeof error === 'string' ? error : safeJson(redactValue(error, options))
+  return { message: cleanString(text, options) }
 }
 
 function safeJson(value: unknown): string {
@@ -281,23 +411,25 @@ const IDENTIFIER = /^[\w.:-]{1,32}$/
 
 /**
  * A plain-data copy of `value` that is safe to write: bounded, with sensitive fields replaced.
- * `inContent` is set below a content key (`messages`, `args`, …): there a short identifier
- * (`"user"`, `"tool_use"`) and every number or flag is kept, and any other text becomes `{ len, hash }`.
+ * `inContent` is set below a content key (`messages`, `args`, …): there the numbers and flags are
+ * kept, a short identifier is kept only under a key that names one (`role`, `type`, `…Id`), and any
+ * other text becomes `{ len, hash }`.
  */
 export function redactValue(
   value: unknown,
   options: RedactOptions = {},
   depth = 0,
   inContent = false,
+  keyHint?: string,
 ): unknown {
   if (value === null || value === undefined) return value
   if (typeof value === 'string') {
     if (!inContent) return cleanString(value, options)
-    if (IDENTIFIER.test(value)) return cleanString(value, options)
+    if (IDENTIFIER.test(value) && isIdValueKey(keyHint)) return cleanString(value, options)
     return options.verbose ? cleanString(value, options, MAX_VERBOSE_STRING) : placeholder(value)
   }
   if (typeof value === 'number' || typeof value === 'boolean') return value
-  if (typeof value === 'bigint') return String(value)
+  if (typeof value === 'bigint') return cleanString(String(value), options)
   if (typeof value === 'function' || typeof value === 'symbol') return `[${typeof value}]`
   if (value instanceof Error) return describeError(value, options)
   // binary data is file content: only its size is recorded
@@ -311,7 +443,7 @@ export function redactValue(
   if (Array.isArray(value)) {
     const items = value
       .slice(0, MAX_ARRAY)
-      .map((v) => redactValue(v, options, depth + 1, inContent))
+      .map((v) => redactValue(v, options, depth + 1, inContent, undefined))
     return value.length > MAX_ARRAY ? [...items, `…(${value.length} items)`] : items
   }
   if (typeof value === 'object') {
@@ -325,9 +457,7 @@ export function redactValue(
       // a key can be an e-mail address or a file name too
       const key = cleanString(rawKey, options, MAX_KEY)
       const kind = keyKind(rawKey, inner)
-      if (isPersonalNumber(rawKey, inner)) {
-        out[key] = { redacted: true, type: 'number' }
-      } else if (kind === 'credential') {
+      if (kind === 'credential' || kind === 'personal') {
         out[key] = placeholder(inner)
       } else if (kind === 'content') {
         if (typeof inner === 'string') {
@@ -335,10 +465,10 @@ export function redactValue(
             ? cleanString(inner, options, MAX_VERBOSE_STRING)
             : placeholder(inner)
         } else {
-          out[key] = redactValue(inner, options, depth + 1, true)
+          out[key] = redactValue(inner, options, depth + 1, true, rawKey)
         }
       } else {
-        out[key] = redactValue(inner, options, depth + 1, inContent)
+        out[key] = redactValue(inner, options, depth + 1, inContent, rawKey)
       }
     }
     return out

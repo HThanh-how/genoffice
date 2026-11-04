@@ -61,6 +61,12 @@ export interface LoggerOptions {
   readonly retryBackoffMs?: number
   /** the pauses between attempts to move the live file aside (default 50, 200 ms) */
   readonly rotateRetryDelaysMs?: readonly number[]
+  /** after this many batches in a row that could not be written, writing moves to a new file (default 3) */
+  readonly switchAfterFailures?: number
+  /** one attempt to write (including its preparation) is given up after this long (default 30 s) */
+  readonly writeTimeoutMs?: number
+  /** the queue holds at most this many characters (default 32 million) */
+  readonly maxQueueBytes?: number
   /** a line longer than this is replaced by a short note (default 16 KB) */
   readonly maxLineChars?: number
   readonly fs?: LogFs
@@ -110,6 +116,8 @@ interface Entry {
 class Fifo {
   private items: Entry[] = []
   private head = 0
+  /** characters held */
+  bytes = 0
 
   get length(): number {
     return this.items.length - this.head
@@ -117,12 +125,14 @@ class Fifo {
 
   push(entry: Entry): void {
     this.items.push(entry)
+    this.bytes += entry.line.length
   }
 
   shift(): Entry | undefined {
     const entry = this.items[this.head]
     if (entry === undefined) return undefined
     this.items[this.head++] = undefined as unknown as Entry
+    this.bytes -= entry.line.length
     // give the memory back from time to time instead of on every removal
     if (this.head > 1024 && this.head * 2 > this.items.length) {
       this.items = this.items.slice(this.head)
@@ -136,6 +146,7 @@ class Fifo {
     const all = this.items.slice(this.head)
     this.items = []
     this.head = 0
+    this.bytes = 0
     return all
   }
 
@@ -143,6 +154,7 @@ class Fifo {
   prepend(entries: Entry[]): void {
     this.items = [...entries, ...this.items.slice(this.head)]
     this.head = 0
+    for (const entry of entries) this.bytes += entry.line.length
   }
 }
 
@@ -193,6 +205,9 @@ export class DiagnosticsLogger {
   private readonly maxQueue: number
   private readonly chunkBytes: number
   private readonly maxLineChars: number
+  private readonly maxQueueBytes: number
+  private readonly switchAfterFailures: number
+  private readonly writeTimeoutMs: number
   private readonly yieldTick: () => Promise<void>
   private readonly retryDelays: readonly number[]
   private readonly retryBackoffMs: number
@@ -223,6 +238,12 @@ export class DiagnosticsLogger {
   private activeSize: number | undefined
   /** a write failed half way: the next chunk starts on a fresh line */
   private tornTail = false
+  /** batches in a row that could not be written */
+  private failedBatches = 0
+  private lastOrphanMs = 0
+  /** an asynchronous write is running; a new flush waits for it instead of piling up behind it */
+  private draining = false
+  private drainAgain = false
   private dirReady = false
   private orphansPruned = false
   private closed = false
@@ -240,6 +261,9 @@ export class DiagnosticsLogger {
     this.maxQueue = options.maxQueue ?? 10_000
     this.chunkBytes = options.chunkBytes ?? 128 * 1024
     this.maxLineChars = options.maxLineChars ?? 16 * 1024
+    this.maxQueueBytes = options.maxQueueBytes ?? 32_000_000
+    this.switchAfterFailures = options.switchAfterFailures ?? 3
+    this.writeTimeoutMs = options.writeTimeoutMs ?? 30_000
     this.yieldTick = options.yieldTick ?? (() => new Promise((resolve) => setImmediate(resolve)))
     this.retryDelays = options.retryDelaysMs ?? [50, 200, 1000]
     this.retryBackoffMs = options.retryBackoffMs ?? 5000
@@ -270,6 +294,10 @@ export class DiagnosticsLogger {
   /** Lines dropped because the queue was full and not yet reported. */
   get droppedCount(): number {
     return this.dropped
+  }
+
+  private get queuedBytes(): number {
+    return this.debugQ.bytes + this.infoQ.bytes + this.urgentQ.bytes
   }
 
   /** Lines waiting to be written. */
@@ -387,17 +415,22 @@ export class DiagnosticsLogger {
   }
 
   private enqueue(rank: number, line: string): void {
-    if (this.queued >= this.maxQueue) {
+    for (;;) {
+      const overCount = this.queued >= this.maxQueue
+      const overBytes = this.queuedBytes + line.length > this.maxQueueBytes
+      if (!overCount && !overBytes) break
       // Full. Debug goes first, then info; a warning or an error is never pushed out by a lesser
-      // line, and only a flood of them (4x the cap) makes the oldest of those go too.
+      // line, and only a flood of them (4x the cap, or the byte cap) makes the oldest of those go too.
       if (this.debugQ.shift() || this.infoQ.shift()) {
-        this.noteDropped()
-      } else if (rank === 2 && this.urgentQ.length >= this.maxQueue * 4) {
-        this.urgentQ.shift()
         this.noteDropped()
       } else if (rank < 2) {
         this.noteDropped()
         return
+      } else if (overBytes || this.urgentQ.length >= this.maxQueue * 4) {
+        if (!this.urgentQ.shift()) break
+        this.noteDropped()
+      } else {
+        break
       }
     }
     const entry: Entry = { seq: this.seq++, rank, line }
@@ -429,12 +462,31 @@ export class DiagnosticsLogger {
     }
   }
 
-  /** Writes what is queued. Resolves when the file has it (or the failure was reported). */
+  /**
+   * Writes what is queued. Resolves when the file has it (or the failure was reported). While a
+   * write is running a second call does not queue another one behind it (that would pile up
+   * without end on a drive that never answers): it asks the running write for one more pass.
+   */
   flush(): Promise<void> {
     this.clearTimer()
+    if (this.draining) {
+      this.drainAgain = true
+      return this.chain
+    }
     this.chain = this.chain
-      .then(() => this.drain())
+      .then(async () => {
+        this.draining = true
+        try {
+          do {
+            this.drainAgain = false
+            if (!(await this.drain())) break
+          } while (this.drainAgain)
+        } finally {
+          this.draining = false
+        }
+      })
       .catch((error) => {
+        this.draining = false
         this.report('flush failed', error)
       })
     return this.chain
@@ -480,9 +532,9 @@ export class DiagnosticsLogger {
    * slices, so a flood is neither written as one huge block (which would push a file far past its
    * size limit) nor joined and handed over in one long step.
    */
-  private async drain(): Promise<void> {
+  private async drain(): Promise<boolean> {
     const entries = this.takeBatch()
-    if (entries.length === 0) return
+    if (entries.length === 0) return true
     const epoch = this.epoch
     const inflight = { lines: entries, from: 0 }
     this.inflight = inflight
@@ -500,7 +552,7 @@ export class DiagnosticsLogger {
         .map((e) => e.line)
         .join('\n')}\n`
       const outcome = await this.writeChunk(text, bytes, epoch)
-      if (outcome === 'superseded') return
+      if (outcome === 'superseded') return true
       if (outcome !== 'ok') {
         this.inflight = undefined
         const rest = entries.slice(inflight.from)
@@ -512,13 +564,49 @@ export class DiagnosticsLogger {
         // try again later, not at the next log call
         this.retryNotBefore = Date.now() + this.retryBackoffMs
         this.scheduleFlush(this.retryBackoffMs)
-        return
+        // a file that refuses every write (held open by another program without the right to write)
+        // is given up after a few tries: writing goes on in a new file
+        if (++this.failedBatches >= this.switchAfterFailures) await this.switchToNewFile()
+        return false
       }
+      this.failedBatches = 0
       inflight.from = end
       if (end < entries.length) await this.yieldTick()
-      if (epoch !== this.epoch) return
+      if (epoch !== this.epoch) return true
     }
     this.inflight = undefined
+    return true
+  }
+
+  private async switchToNewFile(): Promise<void> {
+    const next = this.orphanPath()
+    this.report(`${this.activePath} refuses every write; continuing in ${next}`)
+    this.activePath = next
+    this.activeSize = 0
+    this.tornTail = false
+    this.failedBatches = 0
+    await this.pruneOrphans(2)
+  }
+
+  /** An attempt that does not finish (a dead network drive) is given up, so the writer is not stuck for good. */
+  private withTimeout<T>(work: () => Promise<T>): Promise<T> {
+    return new Promise<T>((resolve, reject) => {
+      const timer = setTimeout(
+        () => reject(new Error(`no answer from the file system after ${this.writeTimeoutMs} ms`)),
+        this.writeTimeoutMs,
+      )
+      timer.unref?.()
+      work().then(
+        (value) => {
+          clearTimeout(timer)
+          resolve(value)
+        },
+        (error: unknown) => {
+          clearTimeout(timer)
+          reject(error)
+        },
+      )
+    })
   }
 
   private async writeChunk(
@@ -530,20 +618,22 @@ export class DiagnosticsLogger {
     for (let attempt = 0; attempt <= this.retryDelays.length; attempt++) {
       if (epoch !== this.epoch) return 'superseded' // flushSync owns the in-flight lines now
       try {
-        await this.ensureDir()
-        await this.pruneOrphansOnce()
-        if (this.activeSize === undefined) this.activeSize = await this.fs.size(this.activePath)
-        if (this.activeSize > 0 && this.activeSize + bytes > this.maxBytes) {
-          await this.rotate(epoch)
-        }
-        // flushSync may have written this very batch while the awaits above were pending
-        if (epoch !== this.epoch) return 'superseded'
-        // after a half-written append the file may end in the middle of a line
-        const out = this.tornTail ? `\n${text}` : text
-        await this.fs.appendFile(this.activePath, out)
-        this.tornTail = false
-        this.activeSize = (this.activeSize ?? 0) + Buffer.byteLength(out, 'utf8')
-        return epoch === this.epoch ? 'ok' : 'superseded'
+        return await this.withTimeout(async () => {
+          await this.ensureDir()
+          await this.pruneOrphansOnce()
+          if (this.activeSize === undefined) this.activeSize = await this.fs.size(this.activePath)
+          if (this.activeSize > 0 && this.activeSize + bytes > this.maxBytes) {
+            await this.rotate(epoch)
+          }
+          // flushSync may have written this very batch while the awaits above were pending
+          if (epoch !== this.epoch) return 'superseded'
+          // after a half-written append the file may end in the middle of a line
+          const out = this.tornTail ? `\n${text}` : text
+          await this.fs.appendFile(this.activePath, out)
+          this.tornTail = false
+          this.activeSize = (this.activeSize ?? 0) + Buffer.byteLength(out, 'utf8')
+          return epoch === this.epoch ? 'ok' : 'superseded'
+        })
       } catch (error) {
         lastError = error
         this.tornTail = true
@@ -574,7 +664,9 @@ export class DiagnosticsLogger {
   }
 
   private orphanPath(): string {
-    return join(this.dir, `${this.name}.${this.now().getTime()}.jsonl`)
+    // two in the same millisecond would overwrite one another
+    this.lastOrphanMs = Math.max(this.now().getTime(), this.lastOrphanMs + 1)
+    return join(this.dir, `${this.name}.${this.lastOrphanMs}.jsonl`)
   }
 
   /** Old fallback files are not part of the numbered chain, so they are cleaned up here. */
@@ -613,48 +705,39 @@ export class DiagnosticsLogger {
   }
 
   /**
-   * `name.jsonl` -> `name.1.jsonl` -> … Each step is its own try. The live file is moved aside
-   * (with retries); if the numbered slot cannot take it, it is moved to a `name.<ms>.jsonl` file;
-   * if it cannot be moved at all the logger starts a new file next to it and leaves the old one
-   * alone (the lines in it are worth more than the space). Old fallback files are pruned, so they
-   * cannot pile up.
+   * `name.jsonl` -> `name.1.jsonl` -> … The live file is moved aside FIRST (with retries): if it
+   * cannot be moved the numbered chain is left exactly as it is (shifting it first would wear away
+   * the older files at every start while the live one stays stuck), the logger continues in a new
+   * file next to it and the old fallback files are pruned. The live file itself is never deleted or
+   * emptied: the lines in it are worth more than the space. Once it is aside, the chain is shifted
+   * and the file takes the first slot; if that slot is held by someone else the file stays where it
+   * is, as a `name.<ms>.jsonl` file.
    */
   private async rotate(epoch: number): Promise<void> {
+    if (epoch !== this.epoch) return
+    const aside = this.orphanPath()
+    try {
+      await this.renameWithRetry(this.activePath, aside)
+    } catch (error) {
+      const next = this.orphanPath()
+      this.report(`could not move ${this.activePath} aside; continuing in ${next}`, error)
+      this.activePath = next
+      this.activeSize = 0
+      this.tornTail = false
+      await this.pruneOrphans(2)
+      return
+    }
+    this.activeSize = 0
     const oldest = this.files - 1
     await this.removeQuietly(this.rotated(oldest))
     for (let index = oldest - 1; index >= 1; index--) {
       await this.moveQuietly(this.rotated(index), this.rotated(index + 1))
     }
-    let slotFree = true
     try {
       await this.removeIfExists(this.rotated(1))
+      await this.fs.rename(aside, this.rotated(1))
     } catch (error) {
-      // the slot is held by someone else: the live file must not be deleted because of that
-      slotFree = false
-      this.report(`could not free ${this.rotated(1)}`, error)
-    }
-    if (slotFree) {
-      try {
-        await this.renameWithRetry(this.activePath, this.rotated(1))
-        this.activeSize = 0
-        return
-      } catch (error) {
-        this.report(`could not rotate ${this.activePath}`, error)
-      }
-    }
-    if (epoch !== this.epoch) return
-    try {
-      await this.renameWithRetry(this.activePath, this.orphanPath())
-      this.activeSize = 0
-      await this.pruneOrphans(2)
-      return
-    } catch (error) {
-      // The live file cannot be moved at all (another program holds it). It is left alone: deleting
-      // or emptying it would throw away the newest lines of the log. Writing goes on in a new file.
-      const next = this.orphanPath()
-      this.report(`could not move ${this.activePath} aside; continuing in ${next}`, error)
-      this.activePath = next
-      this.activeSize = 0
+      this.report(`could not put ${aside} in the first slot`, error)
       await this.pruneOrphans(2)
     }
   }

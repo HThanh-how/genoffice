@@ -231,7 +231,7 @@ describe('DiagnosticsLogger', () => {
       log.info('a', `event-${i}`, { pad: 'y'.repeat(50) })
       await log.flush()
     }
-    expect(reports.some((m) => m.includes('could not rotate'))).toBe(true)
+    expect(reports.some((m) => /could not (move|put)/.test(m))).toBe(true)
     // the cause is reported with the path, and the newest events are on disk
     const all = readdirSync(dir)
       .flatMap((f) => lines(dir, f))
@@ -341,7 +341,7 @@ describe('DiagnosticsLogger', () => {
     expect(unlinked.some((p) => p.endsWith('genoffice.jsonl'))).toBe(false)
     expect(readFileSync(join(dir, 'genoffice.jsonl'), 'utf8')).toBe('x'.repeat(400) + '\n')
     const orphans = readdirSync(dir).filter((f) => /^genoffice\.\d{10,}\.jsonl$/.test(f))
-    expect(orphans).toContain('genoffice.1700000000999.jsonl')
+    expect(orphans).toContain('genoffice.1700000001000.jsonl') // 999 was the failed move aside
     expect(orphans).not.toContain('genoffice.1700000000001.jsonl')
     expect(reports.some((m) => m.includes('continuing in'))).toBe(true)
   })
@@ -362,14 +362,15 @@ describe('DiagnosticsLogger', () => {
       fs,
       sleep: async () => undefined,
       retryBackoffMs: 0,
+      switchAfterFailures: 99,
       onInternalError: (m) => void reports.push(m),
     })
     for (let i = 0; i < 5; i++) {
       log.error('a', 'x')
       await log.flush()
     }
-    expect(reports).toHaveLength(1)
-    expect(log.stats().internalErrors).toBe(5)
+    expect(reports.filter((m) => m.startsWith('could not write'))).toHaveLength(1)
+    expect(log.stats().internalErrors).toBeGreaterThanOrEqual(5)
   })
 
   it('retries a write that fails for a moment and loses nothing', async () => {
@@ -617,6 +618,140 @@ describe('DiagnosticsLogger queue limits', () => {
   })
 })
 
+describe('DiagnosticsLogger when the live file refuses every write', () => {
+  it('moves to a new file after a few failed batches in a row, and the lines get there', async () => {
+    const dir = tmp()
+    const live = join(dir, 'genoffice.jsonl')
+    writeFileSync(live, 'seed\n')
+    const fs: LogFs = {
+      ...realLogFs,
+      appendFile: async (p, t) => {
+        if (p === live) throw Object.assign(new Error('EBUSY'), { code: 'EBUSY' }) // held open without write sharing
+        return realLogFs.appendFile(p, t)
+      },
+    }
+    const log = new DiagnosticsLogger({
+      dir,
+      fs,
+      retryDelaysMs: [],
+      retryBackoffMs: 0,
+      switchAfterFailures: 3,
+      now: () => new Date(1700000000000),
+      onInternalError: () => undefined,
+    })
+    for (let i = 0; i < 5; i++) {
+      log.error('a', `event-${i}`)
+      await log.flush()
+    }
+    expect(log.path).not.toBe(live)
+    expect(log.path).toMatch(/genoffice\.\d{10,}\.jsonl$/)
+    const events = readFileSync(log.path, 'utf8')
+      .split('\n')
+      .filter((l) => l.startsWith('{'))
+      .map((l) => JSON.parse(l).ev)
+    for (let i = 0; i < 5; i++) expect(events).toContain(`event-${i}`)
+    expect(readFileSync(live, 'utf8')).toBe('seed\n')
+  })
+
+  it('does not wear down the numbered files when the live file cannot be moved', async () => {
+    const dir = tmp()
+    for (let i = 1; i <= 4; i++) writeFileSync(join(dir, `genoffice.${i}.jsonl`), `old-${i}\n`)
+    writeFileSync(join(dir, 'genoffice.jsonl'), 'x'.repeat(400) + '\n')
+    const fs: LogFs = {
+      ...realLogFs,
+      rename: async (from, to) => {
+        if (from.endsWith('genoffice.jsonl'))
+          throw Object.assign(new Error('EBUSY'), { code: 'EBUSY' })
+        return realLogFs.rename(from, to)
+      },
+    }
+    const log = new DiagnosticsLogger({
+      dir,
+      fs,
+      maxBytes: 300,
+      files: 5,
+      sleep: async () => undefined,
+      onInternalError: () => undefined,
+    })
+    log.info('a', 'one')
+    await log.flush()
+    for (let i = 1; i <= 4; i++) {
+      expect(readFileSync(join(dir, `genoffice.${i}.jsonl`), 'utf8')).toBe(`old-${i}\n`)
+    }
+  })
+})
+
+describe('DiagnosticsLogger on a drive that does not answer', () => {
+  it('gives up an attempt after the timeout and keeps the lines for later', async () => {
+    const fs: LogFs = {
+      ...realLogFs,
+      mkdir: async () => undefined,
+      size: async () => 0,
+      list: async () => [],
+      appendFile: () => new Promise<void>(() => undefined),
+    }
+    const reports: string[] = []
+    const log = new DiagnosticsLogger({
+      dir: '/d',
+      fs,
+      writeTimeoutMs: 20,
+      retryDelaysMs: [],
+      retryBackoffMs: 1e9,
+      switchAfterFailures: 99,
+      onInternalError: (m) => void reports.push(m),
+    })
+    log.error('a', 'x')
+    await log.flush()
+    expect(reports[0]).toContain('could not write')
+    expect(log.queued).toBe(1)
+  })
+
+  it('does not stack up a write behind a write that is still running', async () => {
+    let appends = 0
+    let release: () => void = () => undefined
+    const gate = new Promise<void>((resolve) => (release = resolve))
+    const fs: LogFs = {
+      ...realLogFs,
+      mkdir: async () => undefined,
+      size: async () => 0,
+      list: async () => [],
+      appendFile: async () => {
+        appends++
+        await gate
+      },
+    }
+    const log = new DiagnosticsLogger({ dir: '/d', fs, flushIntervalMs: 1, flushLines: 1 })
+    log.info('a', 'one')
+    await new Promise((r) => setTimeout(r, 20))
+    for (let i = 0; i < 200; i++) {
+      log.info('a', 'more')
+      await new Promise((r) => setImmediate(r))
+    }
+    expect(appends).toBe(1)
+    release()
+    await log.flush()
+    // everything that arrived meanwhile went out in one more pass, not in 200
+    expect(appends).toBeLessThanOrEqual(3)
+    expect(log.queued).toBe(0)
+  })
+
+  it('bounds the queue by size too', () => {
+    const log = new DiagnosticsLogger({
+      dir: '/d',
+      fs: { ...realLogFs, appendFile: () => new Promise<void>(() => undefined) },
+      maxQueue: 1_000_000,
+      maxQueueBytes: 5_000,
+      maxLineChars: 1e9,
+      flushIntervalMs: 1e9,
+      flushLines: 1e9,
+    })
+    for (let i = 0; i < 500; i++) log.info('a', 'x', { pad: 'p'.repeat(100) })
+    expect(log.queued).toBeLessThan(50)
+    for (let i = 0; i < 500; i++) log.error('a', 'x', { pad: 'p'.repeat(100) })
+    expect(log.queued).toBeLessThan(60)
+  })
+})
+
 describe('DiagnosticsLogger retry and exit races', () => {
   it('waits the backoff after a failed batch: new lines do not start a retry before it', async () => {
     const dir = tmp()
@@ -792,6 +927,43 @@ describe('DiagnosticsLogger with a real lock held by another process (Windows on
         }
       })
     })
+
+  it.runIf(process.platform === 'win32')(
+    'moves to a new file when another process holds the live file without the right to write',
+    async () => {
+      const dir = tmp()
+      const live = join(dir, 'genoffice.jsonl')
+      writeFileSync(live, 'seed\n')
+      const child = holder(live, 'Read')
+      try {
+        await waitLocked(child)
+        const log = new DiagnosticsLogger({
+          dir,
+          retryDelaysMs: [],
+          retryBackoffMs: 0,
+          onInternalError: () => undefined,
+        })
+        for (let i = 0; i < 6; i++) {
+          log.error('a', `event-${i}`)
+          await log.flush()
+        }
+        const files = readdirSync(dir).filter((f) => /^genoffice\.\d{10,}\.jsonl$/.test(f))
+        expect(files.length).toBeGreaterThan(0)
+        expect(files.length).toBeLessThanOrEqual(3)
+        const all = files.flatMap((f) =>
+          readFileSync(join(dir, f), 'utf8')
+            .split('\n')
+            .filter((l) => l.startsWith('{'))
+            .map((l) => JSON.parse(l).ev as string),
+        )
+        for (let i = 0; i < 6; i++) expect(all).toContain(`event-${i}`)
+      } finally {
+        child.stdin!.end('\n')
+        child.kill()
+      }
+    },
+    60_000,
+  )
 
   it.runIf(process.platform === 'win32')(
     'keeps writing and loses no line while another process holds the live file without the right to rename it',
