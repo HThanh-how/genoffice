@@ -1262,6 +1262,35 @@ describe('DiagnosticsLogger when the file system hangs: bounds and recovery', ()
     expect(log.queued).toBe(1)
   })
 
+  it('flushSync leaves the drive alone while an append is being waited for, and keeps the lines', async () => {
+    let syncWrites = 0
+    let finish: () => void = () => undefined
+    const fs: LogFs = {
+      ...realLogFs,
+      mkdir: async () => undefined,
+      size: async () => 0,
+      list: async () => [],
+      appendFile: () => new Promise<void>((resolve) => (finish = resolve)),
+      appendFileSync: () => void syncWrites++,
+    }
+    const log = new DiagnosticsLogger({
+      dir: '/d',
+      fs,
+      writeTimeoutMs: 20,
+      appendHangMs: 5_000, // slow, not dead: it is waited for
+      onInternalError: () => undefined,
+    })
+    log.error('a', 'in-flight')
+    const writing = log.flush()
+    await new Promise((r) => setTimeout(r, 80)) // past the write timeout, within the hang limit
+    log.error('a', 'newer')
+    log.flushSync()
+    expect(syncWrites).toBe(0)
+    expect(log.queued).toBe(1)
+    finish()
+    await writing
+  })
+
   it('a debug line never pushes an info line out of a full queue', () => {
     const log = new DiagnosticsLogger({
       dir: '/d',
@@ -1363,7 +1392,7 @@ describe('DiagnosticsLogger moving to the second folder', () => {
     log.error('a', 'first')
     await log.flush() // times out in mkdir of the dead folder, then the logger moves
     releaseMkdir() // the dead drive's mkdir finishes now, after the move
-    await new Promise((r) => setTimeout(r, 10))
+    await new Promise((r) => setImmediate(r))
     log.error('a', 'second')
     await log.flush()
     const text = readFileSync(join(altDir, 'genoffice.jsonl'), 'utf8')
@@ -1383,14 +1412,14 @@ describe('DiagnosticsLogger moving to the second folder', () => {
       dir: '/d',
       fs,
       retryDelaysMs: [],
-      writeTimeoutMs: 60,
-      appendHangMs: 60,
+      writeTimeoutMs: 150,
+      appendHangMs: 150,
       onInternalError: () => undefined,
     })
     log.error('a', 'x')
     const started = Date.now()
     await log.close()
-    expect(Date.now() - started).toBeLessThan(110) // one timeout, not two
+    expect(Date.now() - started).toBeLessThan(270) // one timeout (150), not two (300)
   })
 
   it('tidies the old set-aside files later when the first try was held back', async () => {

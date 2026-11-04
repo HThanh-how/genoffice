@@ -518,6 +518,7 @@ import { quitCoordinator } from './quit-coordinator'
 import {
   RelaunchRequests,
   describeWindows,
+  existingPaths,
   hideWindowsForQuit,
   runQuitSequence,
   type QuitStep,
@@ -8849,14 +8850,16 @@ app.on('second-instance', (_event, argv, _cwd, additionalData) => {
     // shutting its databases. Start the app again, with what was asked for, once this one is over.
     // the same filtering as for a second copy that arrives while the app runs: only files that can be
     // opened and folders to scan are handed on, never the other flags of that command line
-    relaunchRequests.add(
-      // (the paths of the additional data are checked too: they are not an argument list, but they
-      // end up as one)
-      collectLaunchPaths(withoutFolderScanArgs(argv), additionalData).filter((path) =>
-        isOpenableLaunchPath(path),
-      ),
-      parseFolderScanArgv(argv, additionalData),
-    )
+    // (the paths of the additional data are checked too: they are not an argument list, but they end
+    // up as one.) Whether the files exist is asked without blocking the main thread, which has the
+    // clean-up to run: a path on a dead share must not hold it for as long as the system waits.
+    const asked = collectLaunchPaths(
+      withoutFolderScanArgs(argv),
+      additionalData,
+      () => true,
+    ).filter((path) => isOpenableLaunchPath(path, () => true))
+    relaunchRequests.add([], parseFolderScanArgv(argv, additionalData))
+    relaunchRequests.track(existingPaths(asked).then((found) => relaunchRequests.add(found)))
     diag.info('quit', 'relaunch-requested')
     return
   }
@@ -9530,7 +9533,9 @@ app.on('will-quit', (event) => {
       if (relaunchRequests.isRequested) app.relaunch({ args: relaunchRequests.toArgs() })
       app.exit(0)
     },
-  }).finally(() => {
+  }).finally(async () => {
+    // (a check of files asked for by a second copy may still be running: give it a moment)
+    await relaunchRequests.settled(1500)
     appShutdownState = 'done'
     // the app was started again during the clean-up: start it again now that this one is over
     if (relaunchRequests.isRequested) app.relaunch({ args: relaunchRequests.toArgs() })

@@ -689,7 +689,16 @@ export function redactValue(
           out[key] = redactValue(inner, options, depth + 1, 'content', rawKey, budget)
         }
       } else {
-        out[key] = redactValue(inner, options, depth + 1, mode, rawKey, budget)
+        // Under a weak secret name every value is judged by that name, not by the name of its own
+        // key: `{ token: { value: <uuid> } }` is a token, `value` says nothing.
+        out[key] = redactValue(
+          inner,
+          options,
+          depth + 1,
+          mode,
+          mode === 'weak' ? keyHint : rawKey,
+          budget,
+        )
       }
     }
     return out

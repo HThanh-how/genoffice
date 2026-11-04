@@ -832,4 +832,24 @@ describe('diagnostics redaction', () => {
     expect(performance.now() - started).toBeLessThan(500)
     expect(Object.keys(out).length).toBeLessThanOrEqual(42)
   })
+
+  it('a UUID inside a credential key is a credential, however deep, and an identifier key keeps its UUIDs', () => {
+    const uuid = '3f2b8c1a-9d4e-4a7b-8c21-0123456789ab'
+    const out = JSON.stringify(
+      redactValue({
+        token: { value: uuid },
+        auth: { k: uuid, more: [uuid] },
+        accessToken: [{ a: uuid }],
+        sessionId: { id: uuid },
+        requestIds: [uuid],
+      }),
+    )
+    const parsed = JSON.parse(out)
+    expect(parsed.token.value).toMatchObject({ redacted: true })
+    expect(parsed.auth.k).toMatchObject({ redacted: true })
+    expect(parsed.auth.more[0]).toMatchObject({ redacted: true })
+    expect(parsed.accessToken[0].a).toMatchObject({ redacted: true })
+    expect(parsed.sessionId.id).toBe(uuid)
+    expect(parsed.requestIds[0]).toBe(uuid)
+  })
 })

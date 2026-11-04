@@ -11,6 +11,7 @@
  * decides about the steps that wait (`await`) and about the optional steps that have not started.
  */
 
+import { access as fsAccess } from 'node:fs/promises'
 import { FOLDER_SCAN_FLAG } from './folder-scan-argv'
 
 export interface QuitWindow {
@@ -175,7 +176,33 @@ export class RelaunchRequests {
    */
   private looksLikeFlag(value: string): boolean {
     if (value.startsWith('-')) return true
-    return this.platform === 'win32' && value.startsWith('/')
+    if (this.platform === 'win32' && value.startsWith('/')) return true
+    // a leading space, a quote or a control character could split the value into several arguments
+    // (or hide a flag inside it) once the new process's command line is put together
+    if (value !== value.trimStart() || value.includes('"')) return true
+    for (let i = 0; i < value.length; i++) if (value.charCodeAt(i) < 32) return true
+    return false
+  }
+
+  private readonly pending = new Set<Promise<unknown>>()
+
+  /** Work that will add to the request (a check of the files); `settled` waits for it. */
+  track(work: Promise<unknown>): void {
+    this.requested = true
+    const done = work.catch(() => undefined).finally(() => this.pending.delete(done))
+    this.pending.add(done)
+  }
+
+  /** Resolves when the checks have finished, or after `timeoutMs`, whichever comes first. */
+  async settled(timeoutMs: number): Promise<void> {
+    if (this.pending.size === 0) return
+    let timer: NodeJS.Timeout | undefined
+    const limit = new Promise<void>((resolve) => {
+      timer = setTimeout(resolve, timeoutMs)
+      timer.unref?.()
+    })
+    await Promise.race([Promise.all([...this.pending]), limit])
+    if (timer) clearTimeout(timer)
   }
 
   add(paths: readonly string[], folders: readonly string[] = []): void {
@@ -193,4 +220,33 @@ export class RelaunchRequests {
   toArgs(): string[] {
     return [...this.paths, ...[...this.folders].flatMap((folder) => [FOLDER_SCAN_FLAG, folder])]
   }
+}
+
+/**
+ * The paths that exist, found without blocking: each is asked of the file system on its own and given
+ * `timeoutMs`; a path on a share that does not answer is left out. (`existsSync` on a dead network
+ * share holds the main thread for as long as the system waits, which is a long time.)
+ */
+export async function existingPaths(
+  paths: readonly string[],
+  timeoutMs = 1500,
+  access: (path: string) => Promise<unknown> = (path) => fsAccess(path),
+): Promise<string[]> {
+  const found = await Promise.all(
+    paths.map(async (path) => {
+      let timer: NodeJS.Timeout | undefined
+      const limit = new Promise<false>((resolve) => {
+        timer = setTimeout(() => resolve(false), timeoutMs)
+        timer.unref?.()
+      })
+      try {
+        return await Promise.race([access(path).then(() => true as const), limit])
+      } catch {
+        return false
+      } finally {
+        if (timer) clearTimeout(timer)
+      }
+    }),
+  )
+  return paths.filter((_path, index) => found[index])
 }
