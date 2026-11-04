@@ -101,4 +101,6 @@ export const zh = {
   aiScopeColumns: '已选中 {names} 共 {count} 列',
   aiScopeRangeTip: 'AI 会把"这一列 / 这些行 / 选中部分"理解为该区域；发送后本轮固定不变',
   aiScopeClearTitle: '取消该区域范围，本次针对整张表',
+  aiProviderNotConfigured: '未配置 AI 提供商。请选择提供商或登录后重试。',
+  aiSettingsUnreadable: '无法读取 AI 设置。请稍后重试；如果问题持续，请重新打开应用。',
 }

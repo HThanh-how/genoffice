@@ -102,4 +102,6 @@ export const zhTW = {
   aiScopeColumns: '已選取 {names} 共 {count} 欄',
   aiScopeRangeTip: 'AI 會把「這一欄 / 這些列 / 選取部分」理解為該範圍；送出後本輪固定不變',
   aiScopeClearTitle: '取消該範圍，本次針對整張工作表',
+  aiProviderNotConfigured: '未設定 AI 提供者。請選擇提供者或登入後重試。',
+  aiSettingsUnreadable: '無法讀取 AI 設定。請稍後再試；若問題持續，請重新開啟應用程式。',
 } satisfies Record<keyof typeof zh, string>

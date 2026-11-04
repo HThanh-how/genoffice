@@ -108,4 +108,8 @@ export const ja = {
   aiScopeRangeTip:
     'AI は「この列 / これらの行 / 選択部分」をこの範囲として解釈します。送信すると今回の実行中は固定されます',
   aiScopeClearTitle: '範囲指定を解除してシート全体を対象にする',
+  aiProviderNotConfigured:
+    'AI プロバイダーが設定されていません。プロバイダーを選択するかサインインしてからやり直してください。',
+  aiSettingsUnreadable:
+    'AI の設定を読み込めませんでした。しばらくしてからもう一度お試しください。解消しない場合はアプリを開き直してください。',
 } satisfies Record<keyof typeof zh, string>

@@ -1756,6 +1756,19 @@ const tMain = createI18n({
     csvKeepFormatDetail: 'CSV 只保留單張工作表的純值——公式、格式和其他工作表不會存入 .csv 檔案。',
   },
 })
+/** "No API key configured for X", naming the environment variable a custom endpoint expects it in */
+function missingKeyMessage(
+  provider: string,
+  config: { profile?: { apiKeyEnv?: string | undefined } | undefined } | undefined,
+): string {
+  const base = tm('errNoApiKey', { provider })
+  const env = config?.profile?.apiKeyEnv?.trim()
+  if (!env) return base
+  // Only a name that looks like one is shown: the field is free text, and a real key pasted into
+  // it must not end up in an error message (environment variable names are UPPER_SNAKE_CASE).
+  return /^[A-Z][A-Z0-9_]{0,63}$/.test(env) ? `${base} (${env})` : `${base} (env var)`
+}
+
 const tm = (key: Parameters<typeof tMain>[1], params?: Parameters<typeof tMain>[2]) =>
   tMain(getUiLang(), key, params)
 
@@ -4125,7 +4138,8 @@ export function registerSheetsAiIpc(): void {
     if (!config || (!isCliProvider(provider) && !config.apiKey)) {
       return {
         ok: false,
-        error: provider === 'genspark' ? tm('errGskNotLoggedIn') : tm('errNoApiKey', { provider }),
+        error:
+          provider === 'genspark' ? tm('errGskNotLoggedIn') : missingKeyMessage(provider, config),
       }
     }
     if (!isCliProvider(provider) && !config.model) return { ok: false, error: tm('errNoModel') }
@@ -4179,7 +4193,8 @@ export function registerSheetsAiIpc(): void {
       send({
         requestId,
         type: 'error',
-        error: provider === 'genspark' ? tm('errGskNotLoggedIn') : tm('errNoApiKey', { provider }),
+        error:
+          provider === 'genspark' ? tm('errGskNotLoggedIn') : missingKeyMessage(provider, config),
       })
       return
     }

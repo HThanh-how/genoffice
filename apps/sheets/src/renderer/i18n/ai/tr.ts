@@ -109,4 +109,8 @@ export const tr = {
   aiScopeRangeTip:
     'AI, "bu sütun / bu satırlar / seçili kısım" ifadelerini bu aralık olarak anlar ve gönderdikten sonra çalıştırma boyunca sabit kalır',
   aiScopeClearTitle: 'Aralık kapsamını bırak ve tüm sayfayı hedefle',
+  aiProviderNotConfigured:
+    'Yapay zeka sağlayıcısı yapılandırılmamış. Bir sağlayıcı seçin veya oturum açın, ardından tekrar deneyin.',
+  aiSettingsUnreadable:
+    'Yapay zeka ayarları okunamadı. Birazdan tekrar deneyin; sorun sürerse uygulamayı yeniden açın.',
 } satisfies Record<keyof typeof zh, string>

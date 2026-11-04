@@ -110,4 +110,8 @@ export const nl = {
   aiScopeRangeTip:
     'AI leest "deze kolom / deze rijen / het geselecteerde deel" als dit bereik; bij verzenden wordt het voor de hele run vastgezet',
   aiScopeClearTitle: 'Bereikbereik wissen en het hele blad gebruiken',
+  aiProviderNotConfigured:
+    'AI-provider is niet geconfigureerd. Kies een provider of meld u aan en probeer het opnieuw.',
+  aiSettingsUnreadable:
+    'De AI-instellingen konden niet worden gelezen. Probeer het zo opnieuw, of open de app opnieuw als het blijft gebeuren.',
 } satisfies Record<keyof typeof zh, string>
