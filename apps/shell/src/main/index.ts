@@ -230,7 +230,7 @@ import {
   syncCloudProjects,
 } from './cloud-projects'
 import { handleDroppedFiles } from './dropped-files'
-import { collectLaunchPaths } from './launch-paths'
+import { collectLaunchPaths, isOpenableLaunchPath } from './launch-paths'
 import { parseFolderScanArgv, withoutFolderScanArgs } from './folder-scan-argv'
 import { FolderScanManager } from './document-memory/folder-scan'
 import { KnownSourcesManager } from './document-memory/known-sources'
@@ -516,6 +516,13 @@ import {
 import { installShellCloseGuard, promptDirtyTabs } from './window-close-guard'
 import { quitCoordinator } from './quit-coordinator'
 import {
+  RelaunchRequests,
+  describeWindows,
+  hideWindowsForQuit,
+  runQuitSequence,
+  type QuitStep,
+} from './quit-sequence'
+import {
   activateDetached,
   closeDetachedWithoutPrompt,
   createDetachedEditorWindow,
@@ -782,11 +789,14 @@ function validLegacyDocEndpoint(value: unknown): value is string {
   }
 }
 const OPEN_DOCUMENTS_PATH = () => join(app.getPath('userData'), OPEN_DOCUMENTS_FILE)
+let appShuttingDown = false
 /** only the instance holding the single-instance lock may write or remove the registry */
 let ownsOpenDocumentsRegistry = false
 let stopAuthWatch: (() => void) | null = null
 const publishOpenDocumentsIfOwner = (paths: readonly string[]) => {
-  if (ownsOpenDocumentsRegistry) publishOpenDocuments(OPEN_DOCUMENTS_PATH(), paths)
+  // (not while closing: the list was cleared on purpose)
+  if (ownsOpenDocumentsRegistry && !appShuttingDown)
+    publishOpenDocuments(OPEN_DOCUMENTS_PATH(), paths)
 }
 
 /** every open file: the shell's tabs plus the detached editor windows */
@@ -4162,6 +4172,8 @@ function notifyFolderRootChanged(root: string): void {
 
 /** one recursive watcher per tree root; follows the save-folder setting and the added folders */
 function ensureFolderWatchers(): void {
+  // closing: the watchers were stopped on purpose, and a root that comes back must not start new ones
+  if (appShuttingDown) return
   const wanted = new Set<string>()
   for (const root of folderRootPaths()) {
     // register so the root gets probed; existsSync / fs.watch only run on a verified-reachable root
@@ -4853,7 +4865,6 @@ const storageStartup: StorageStartupTracker = registerStorageStartup({
       if (!win.isDestroyed()) win.webContents.send(channel, state)
   },
 })
-let appShuttingDown = false
 let everything: EverythingController | null = null
 const pendingRememberPaths: string[] = []
 function recordRecentFile(path: string): void {
@@ -8833,6 +8844,22 @@ app.on('open-file', (event, filePath) => {
 })
 
 app.on('second-instance', (_event, argv, _cwd, additionalData) => {
+  if (appShuttingDown) {
+    // Closing (the windows are already hidden): do not bring a window back to a process that is
+    // shutting its databases. Start the app again, with what was asked for, once this one is over.
+    // the same filtering as for a second copy that arrives while the app runs: only files that can be
+    // opened and folders to scan are handed on, never the other flags of that command line
+    relaunchRequests.add(
+      // (the paths of the additional data are checked too: they are not an argument list, but they
+      // end up as one)
+      collectLaunchPaths(withoutFolderScanArgs(argv), additionalData).filter((path) =>
+        isOpenableLaunchPath(path),
+      ),
+      parseFolderScanArgv(argv, additionalData),
+    )
+    diag.info('quit', 'relaunch-requested')
+    return
+  }
   const paths = collectLaunchPaths(withoutFolderScanArgs(argv), additionalData)
   const folders = parseFolderScanArgv(argv, additionalData)
   revealShellWindow()
@@ -9350,6 +9377,20 @@ app.on('window-all-closed', () => {
 app.on('before-quit', (event) => {
   if (quitCoordinator.isConfirmed()) {
     appShuttingDown = true
+    // The quit is decided: take the windows off the screen now. What follows (closing large
+    // databases) can keep the main thread busy for seconds, and a window that is still shown while
+    // that happens is labelled "Not Responding" by Windows.
+    // (app.quit() at the end of the clean-up lands here a second time: keep the first moment)
+    if (quitConfirmedAt === null) {
+      quitConfirmedAt = performance.now()
+      const before = describeWindows(BrowserWindow.getAllWindows())
+      hideWindowsForQuit(BrowserWindow.getAllWindows())
+      diag.info('quit', 'confirmed', {
+        windows: before.count,
+        visibleBefore: before.visible,
+        visibleAfter: describeWindows(BrowserWindow.getAllWindows()).visible,
+      })
+    }
     markSheetsShuttingDown()
     stopSheetsSidecar()
     stopMcpSync()
@@ -9372,6 +9413,18 @@ app.on('before-quit', (event) => {
 })
 
 let appShutdownState: 'idle' | 'shutting-down' | 'done' = 'idle'
+/** the app was started again while it was closing: it is started once more when it has closed */
+const relaunchRequests = new RelaunchRequests()
+/** when the quit was confirmed (the time between that and 'will-quit' is the windows closing) */
+let quitConfirmedAt: number | null = null
+/** the size of a database's write-ahead log, which decides how long closing it takes (0 if there is none) */
+function walBytes(dbPath: string): number {
+  try {
+    return statSync(`${dbPath}-wal`).size
+  } catch {
+    return 0
+  }
+}
 // after every window has closed, so the shell window's own 'closed' republish cannot revive the file
 app.on('will-quit', (event) => {
   if (appShutdownState === 'done') return
@@ -9380,50 +9433,107 @@ app.on('will-quit', (event) => {
   appShutdownState = 'shutting-down'
 
   appShuttingDown = true
-  markSheetsShuttingDown()
-  stopSheetsSidecar()
-  stopMcpSync()
+  // Chromium takes a window off the screen as soon as it is closed, so by now there may be none left:
+  // this is for a quit that did not pass through the confirmation above. Log what is left, and how long
+  // the windows took to go since the quit was confirmed, to tell a stall BEFORE they vanish from one after.
+  const windowsNow = describeWindows(BrowserWindow.getAllWindows())
+  hideWindowsForQuit(BrowserWindow.getAllWindows())
+  diag.info('quit', 'will-quit', {
+    windows: windowsNow.count,
+    visible: windowsNow.visible,
+    msSinceConfirmed:
+      quitConfirmedAt === null ? undefined : Math.round(performance.now() - quitConfirmedAt),
+  })
 
-  disposeDocumentIndexIpc?.()
-  disposeDocumentIndexIpc = null
-  folderScanReadyListeners.clear()
-  folderScan?.close()
-  knownSources?.close()
-  fileIndexer?.stop()
-  fileSearch?.close()
-  fileIndexStore?.close()
-  stopAuthWatch?.()
-  for (const watcher of folderWatchers.values()) watcher.close()
-  controlServer?.close()
-  // a second instance that lost the lock quits too; it must not delete the running editor's list
-  if (ownsOpenDocumentsRegistry) clearOpenDocuments(OPEN_DOCUMENTS_PATH())
+  const memoryDbPath =
+    documentMemory?.dbPath ?? join(resolveDbDir(app.getPath('userData')), 'document-memory.db')
+  const indexDbPath = join(app.getPath('userData'), 'file-index.db')
+  const steps: QuitStep[] = [
+    {
+      name: 'stop-background',
+      essential: true,
+      run: () => {
+        markSheetsShuttingDown()
+        stopSheetsSidecar()
+        stopMcpSync()
+        disposeDocumentIndexIpc?.()
+        disposeDocumentIndexIpc = null
+        folderScanReadyListeners.clear()
+      },
+    },
+    // (no database in these: they stop at once, instead of staying up through the long closes below)
+    {
+      name: 'watchers-close',
+      essential: true,
+      run: () => {
+        stopAuthWatch?.()
+        for (const watcher of folderWatchers.values()) watcher.close()
+        folderWatchers.clear()
+        controlServer?.close()
+        // a second instance that lost the lock quits too; it must not delete the running editor's list
+        if (ownsOpenDocumentsRegistry) clearOpenDocuments(OPEN_DOCUMENTS_PATH())
+      },
+    },
+    // (sizes only: they say how long the closing below will take, and help to find out why the logs grow)
+    {
+      name: 'wal-sizes',
+      run: () =>
+        void diag.info('quit', 'wal', {
+          documentMemory: walBytes(memoryDbPath),
+          fileIndex: walBytes(indexDbPath),
+        }),
+    },
+    { name: 'folder-scan-close', essential: true, run: () => folderScan?.close() },
+    { name: 'known-sources-close', essential: true, run: () => knownSources?.close() },
+    { name: 'file-indexer-stop', essential: true, run: () => fileIndexer?.stop() },
+    { name: 'file-search-close', essential: true, run: () => fileSearch?.close() },
+    {
+      name: 'document-memory-close',
+      essential: true,
+      run: async () => {
+        if (!documentMemory) return
+        let deadlineTimer: NodeJS.Timeout | null = null
+        const timeoutPromise = new Promise<'timeout'>((resolve) => {
+          deadlineTimer = setTimeout(() => resolve('timeout'), 15_000)
+          deadlineTimer.unref?.()
+        })
+        try {
+          const outcome = await Promise.race([
+            documentMemory
+              .closeAsync((name, ms) => diag.info('quit', 'document-memory', { name, ms }))
+              .then(() => 'closed' as const),
+            timeoutPromise,
+          ])
+          if (outcome === 'timeout') {
+            diag.warn('quit', 'document-memory.timeout', { ms: 15_000 })
+            console.warn(
+              '[app-shutdown] Document memory closeAsync exceeded 15s deadline; forcing process teardown',
+            )
+          }
+        } catch (err) {
+          console.error('[app-shutdown] Error during document memory closeAsync:', err)
+          throw err
+        } finally {
+          if (deadlineTimer) clearTimeout(deadlineTimer)
+        }
+      },
+    },
+    // the largest databases last: the index of documents first, so that a long close of the file index cannot keep it from closing
+    { name: 'file-index-store-close', essential: true, run: () => fileIndexStore?.close() },
+  ]
 
-  const memoryClosePromise = (async () => {
-    if (!documentMemory) return
-    let deadlineTimer: NodeJS.Timeout | null = null
-    const timeoutPromise = new Promise<'timeout'>((resolve) => {
-      deadlineTimer = setTimeout(() => resolve('timeout'), 15_000)
-      deadlineTimer.unref?.()
-    })
-    try {
-      const outcome = await Promise.race([
-        documentMemory.closeAsync().then(() => 'closed' as const),
-        timeoutPromise,
-      ])
-      if (outcome === 'timeout') {
-        console.warn(
-          '[app-shutdown] Document memory closeAsync exceeded 15s deadline; forcing process teardown',
-        )
-      }
-    } catch (err) {
-      console.error('[app-shutdown] Error during document memory closeAsync:', err)
-    } finally {
-      if (deadlineTimer) clearTimeout(deadlineTimer)
-    }
-  })()
-
-  void memoryClosePromise.finally(() => {
+  void runQuitSequence(steps, {
+    log: diag,
+    forceExit: () => {
+      flushDiagnosticsSync()
+      // (app.exit ends the process at once, so a start requested meanwhile has to be made here)
+      if (relaunchRequests.isRequested) app.relaunch({ args: relaunchRequests.toArgs() })
+      app.exit(0)
+    },
+  }).finally(() => {
     appShutdownState = 'done'
+    // the app was started again during the clean-up: start it again now that this one is over
+    if (relaunchRequests.isRequested) app.relaunch({ args: relaunchRequests.toArgs() })
     app.quit()
   })
 })

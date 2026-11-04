@@ -1,4 +1,5 @@
-const FLAG = '--genoffice-scan-folder'
+export const FOLDER_SCAN_FLAG = '--genoffice-scan-folder'
+const FLAG = FOLDER_SCAN_FLAG
 
 export function parseFolderScanArgv(argv: readonly string[], additionalData?: unknown): string[] {
   const paths: string[] = []

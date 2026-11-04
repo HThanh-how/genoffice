@@ -4463,7 +4463,9 @@ function broadcastAiSettingsChanged(): void {
 const webSearchAborts = createSearchAbortRegistry()
 
 export function registerAiIpc(): void {
-  app.once('before-quit', () => {
+  // At 'will-quit', not 'before-quit': that one fires first also when the user cancels the
+  // save prompt, and the app must keep its AI helpers when it goes on running.
+  app.once('will-quit', () => {
     shutdownCodexAppServers()
     shutdownAgyResidentServers()
   })

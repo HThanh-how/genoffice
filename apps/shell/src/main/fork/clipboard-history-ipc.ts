@@ -52,7 +52,8 @@ export function registerClipboardHistory(deps: ClipboardHistoryDeps): void {
 export function initClipboardHistory(): void {
   const store = history
   if (!store) return
-  app.once('before-quit', () => store.dispose())
+  // at 'will-quit': 'before-quit' also fires when the user cancels the save prompt, and the app goes on
+  app.once('will-quit', () => store.dispose())
   app.on('browser-window-focus', () => store.setFocused(true))
   app.on('browser-window-blur', () => store.setFocused(false))
   store.settingsChanged()

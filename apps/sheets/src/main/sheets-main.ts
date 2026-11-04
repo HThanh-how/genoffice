@@ -4057,7 +4057,8 @@ let aiIpcRegistered = false
 export function registerSheetsAiIpc(): void {
   if (aiIpcRegistered) return
   aiIpcRegistered = true
-  app.once('before-quit', shutdownCodexAppServers)
+  // at 'will-quit': 'before-quit' also fires when the user cancels the save prompt
+  app.once('will-quit', shutdownCodexAppServers)
   void app.whenReady().then(() => probeAgyUsable())
 
   // Node fetch (undici) direct connections get reset under VPN/tun setups; retry over Chromium's stack

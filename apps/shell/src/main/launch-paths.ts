@@ -49,6 +49,14 @@ function payloadLaunchPaths(additionalData: unknown): string[] {
   return paths
 }
 
+/** A file the app can open, that exists: the test every path passes before it is acted on or handed on. */
+export function isOpenableLaunchPath(
+  path: string,
+  exists: (path: string) => boolean = existsSync,
+): boolean {
+  return SUPPORTED_LAUNCH_RE.test(path) && exists(path)
+}
+
 export function collectLaunchPaths(
   argv: readonly string[],
   additionalData?: unknown,
