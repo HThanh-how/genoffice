@@ -4,6 +4,7 @@ import {
   DEFAULT_AGY_OCR_SETTINGS,
   agyOcrSettingsFrom,
   mergeAgyOcrSettings,
+  mergeLocalOcrSettings,
 } from '../src/shared/fork/agy-ocr'
 import {
   activityLine,
@@ -34,7 +35,7 @@ describe('settings defaults', () => {
       ignoreFiveHour: false,
       onlyOnAC: true,
       onlyWhenIdle: true,
-      localOcr: { enabled: true, lightPages: 2, engine: 'auto' },
+      localOcr: { enabled: true, lightPages: 2, maxPages: 30, engine: 'auto' },
     })
   })
 
@@ -42,12 +43,26 @@ describe('settings defaults', () => {
     const merged = agyOcrSettingsFrom({
       [AGY_OCR_SETTINGS_KEY]: { localOcr: { enabled: false, lightPages: 99, engine: 'nope' } },
     })
-    expect(merged.localOcr).toEqual({ enabled: false, lightPages: 5, engine: 'auto' })
+    expect(merged.localOcr).toEqual({ enabled: false, lightPages: 5, maxPages: 30, engine: 'auto' })
     expect(
       agyOcrSettingsFrom({
         [AGY_OCR_SETTINGS_KEY]: { localOcr: { engine: 'tesseract-vie', lightPages: 1 } },
       }).localOcr,
-    ).toEqual({ enabled: true, lightPages: 1, engine: 'tesseract-vie' })
+    ).toEqual({ enabled: true, lightPages: 1, maxPages: 30, engine: 'tesseract-vie' })
+  })
+
+  it('keeps the page limit of the slow pass between 1 and 50 (the pages that are indexed), and fills it in when it is missing', () => {
+    const pages = (maxPages: unknown): number | undefined =>
+      agyOcrSettingsFrom({ [AGY_OCR_SETTINGS_KEY]: { localOcr: { maxPages } } }).localOcr?.maxPages
+    expect(pages(50)).toBe(50)
+    expect(pages(0)).toBe(1)
+    expect(pages(100_000)).toBe(50)
+    expect(pages('many')).toBe(30)
+    expect(pages(Number.NaN)).toBe(30)
+    // settings saved by an older build have no such field: the default applies, the rest is kept
+    expect(
+      mergeLocalOcrSettings({ enabled: false, lightPages: 3, engine: 'auto' } as never, {}),
+    ).toEqual({ enabled: false, lightPages: 3, maxPages: 30, engine: 'auto' })
   })
 
   it('a missing, empty or corrupt stored value reads as the defaults (ON)', () => {

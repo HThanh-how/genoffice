@@ -584,7 +584,7 @@ describe('OCR crash prevention and error handling (JOB OCR-WIN-01)', () => {
 
       const job = new LocalOcrJob({
         db: store.rawDb,
-        settings: () => ({ enabled: true, lightPages: 2, engine: 'tesseract-vie' }),
+        settings: () => ({ enabled: true, lightPages: 2, maxPages: 2, engine: 'tesseract-vie' }),
         registry,
         gate: () => ({ ok: true }),
         render: async () => null,

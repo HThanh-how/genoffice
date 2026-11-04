@@ -148,6 +148,33 @@ async function until(check: () => boolean, timeout = 8000) {
   }
 }
 
+/**
+ * Ticks until `expected` pages are read. One tick can stop early and legitimately ('gate:storage-busy'
+ * while the index is still compacting after the library was added), and the next one carries on: a
+ * test that counts the pages of ONE tick depends on that moment.
+ */
+async function tickUntilRead(
+  wiring: {
+    runner: { tick(): Promise<{ pages: number; failed: number; stoppedBecause?: string } | null> }
+  },
+  expected: number,
+): Promise<{ pages: number; failed: number }> {
+  const total = { pages: 0, failed: 0 }
+  const started = Date.now()
+  while (total.pages < expected) {
+    if (Date.now() - started > 8000)
+      throw new Error(`only ${total.pages} of ${expected} pages read`)
+    const summary = await wiring.runner.tick()
+    if (summary) {
+      total.pages += summary.pages
+      total.failed += summary.failed
+      if (summary.pages > 0) continue
+    }
+    await new Promise((resolve) => setTimeout(resolve, 50))
+  }
+  return total
+}
+
 // ---- the engine double: forces specific recognised text, nothing else ---------------------------
 
 function recognition(text: string, confidence: number): LocalOcrRecognition {
@@ -199,6 +226,7 @@ const settings =
   () => ({
     enabled: true,
     lightPages: 2,
+    maxPages: 2,
     engine: 'auto',
     ...patch,
   })
@@ -290,9 +318,8 @@ describe('scheduler tick -> local pass -> tiers -> cloud selection (real SQLite,
     // before the local pass: with a local engine that can run, the cloud reader waits (nothing to read yet)
     expect(cloudPaths(wiring.host)).toEqual([])
 
-    const summary = await wiring.runner.tick()
+    const summary = await tickUntilRead(wiring, 6)
     expect(summary).toMatchObject({ pages: 6, failed: 0 }) // scan p1-2, passport p1-2, receipt, ID photo
-    expect(summary!.stoppedBecause).toBeUndefined()
 
     const ocr = reader!.ocr
     expect(ocr.pageTier(lib.scan, 1)).toMatchObject({
@@ -331,7 +358,7 @@ describe('scheduler tick -> local pass -> tiers -> cloud selection (real SQLite,
       registry: registryOf(engine),
       coolDown: async () => undefined,
     })
-    await wiring.runner.tick()
+    await tickUntilRead(wiring, 6)
 
     await until(
       () =>
@@ -662,7 +689,7 @@ describe('real Tesseract through the manager (image prepared by the index worker
     await until(() => reader!.documentByPath(receipt)?.status === 'ready')
     // the default registry (real Tesseract; its image preparation is an `ocr-prepare` request to the index worker)
     const wiring = manager!.localOcr(
-      () => ({ enabled: true, lightPages: 1, engine: 'tesseract-vie' }),
+      () => ({ enabled: true, lightPages: 1, maxPages: 1, engine: 'tesseract-vie' }),
       () => ({ ok: true }),
       {
         coolDown: async () => undefined,

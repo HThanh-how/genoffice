@@ -6,6 +6,17 @@ export {
 } from './parse'
 export { docToText } from './doc'
 export { docxToText } from './docx'
+export {
+  countEmbeddedImages,
+  LARGE_PICTURE_BYTES,
+  loadOfficePictures,
+  realOfficeText,
+  mayHoldPictures,
+  MAX_OFFICE_IMAGES,
+  MIN_SIGNIFICANT_IMAGE_BYTES,
+  type EmbeddedImages,
+  type OfficePictures,
+} from './office-images'
 export { pptToText } from './ppt'
 export { pptxToText } from './pptx'
 export { xlsxToText } from './xlsx'

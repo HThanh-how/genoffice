@@ -3,7 +3,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { DatabaseSync } from 'node:sqlite'
 import { createHash } from 'node:crypto'
-import { afterEach, beforeEach, describe, expect, it } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { planOcrBatch } from '@genoffice/ai-provider/agy-ocr'
 import { renderPdfPagesForOcr } from '../src/main/document-memory/agy-ocr-render'
 import { createOcrHost } from '../src/main/document-memory/ocr-host'
@@ -11,6 +11,8 @@ import { encodeGrayJpeg } from '../src/main/document-memory/jpeg-gray'
 import { decodePngGray } from '../src/main/document-memory/local-ocr/gray-image'
 import {
   LocalOcrJob,
+  REST_COOL_FACTOR,
+  REST_VISITS_PER_RUN,
   FileChangedDuringReadError,
   type LocalOcrEvent,
   type LocalOcrJobDeps,
@@ -173,12 +175,12 @@ async function reindexNow(path: string): Promise<void> {
 
 function makeJob(
   engine: LocalOcrEngine | null,
-  overrides: Partial<LocalOcrJobDeps> & { light?: number; ramMB?: number } = {},
+  overrides: Partial<LocalOcrJobDeps> & { light?: number; maxPages?: number; ramMB?: number } = {},
 ) {
-  const { light = 2, ramMB = 16_000, ...rest } = overrides
+  const { light = 2, maxPages = light, ramMB = 16_000, ...rest } = overrides
   const deps: LocalOcrJobDeps = {
     db: store.rawDb,
-    settings: () => ({ enabled: true, lightPages: light, engine: 'auto' }),
+    settings: () => ({ enabled: true, lightPages: light, maxPages, engine: 'auto' }),
     registry: { select: () => (engine ? { engine, skipped: [] } : null) },
     render: (path, request) => renderPdfPagesForOcr(path, request),
     savePages: (path, meta, pages) => {
@@ -438,6 +440,335 @@ describe('LocalOcrJob on scanned PDFs (real SQLite, real PDFium render, engine d
     expect(manual[0]).toMatchObject({ path, pagesDone: 2, totalPages: 5 })
   })
 
+  describe('the slow pass over the pages after the first ones', () => {
+    const present = (path: string): number[] =>
+      store.ocr.pagesPresent(path, stat(path).mtimeMs, stat(path).sizeBytes)
+
+    it('reads the later pages a few at a time once the quick pass is done, up to the limit, and they become searchable', async () => {
+      const path = invoicePdf('quyen sach scan.pdf', 12)
+      enrollEmpty(path)
+      const engine = new ScriptedEngine(['good'])
+      const job = makeJob(engine, { light: 2, maxPages: 8 })
+      expect(job.restPages()).toBe(8)
+
+      await job.runOnce() // the quick pass: pages 1-2 only
+      expect(present(path)).toEqual([1, 2])
+      await reindexNow(path)
+
+      const second = await job.runOnce() // REST_PAGES_PER_VISIT pages
+      expect(second).toMatchObject({ files: 1, pages: 5, failed: 0 })
+      expect(present(path)).toEqual([1, 2, 3, 4, 5, 6, 7])
+      // (not put back in the index yet: the file is not finished, and every visit would make a new version)
+      expect(reindexed).toEqual([path])
+      await reindexNow(path)
+
+      await job.runOnce() // up to the limit of 8, not further
+      expect(reindexed).toEqual([path, path]) // finished: now
+      expect(present(path)).toEqual([1, 2, 3, 4, 5, 6, 7, 8])
+      await reindexNow(path)
+
+      const done = await job.runOnce()
+      expect(done).toMatchObject({ files: 0, pages: 0 })
+      expect(present(path)).toHaveLength(8)
+      expect(engine.calls).toBe(8)
+      expect(store.searchLexical('0433 Viettel').length).toBeGreaterThan(0)
+    })
+
+    it('follows the scan info the indexer records (pages that have a text layer are never read)', async () => {
+      const path = invoicePdf('mixed book.pdf', 12)
+      enrollEmpty(path)
+      const engine = new ScriptedEngine(['good'])
+      const job = makeJob(engine, { light: 2, maxPages: 9 })
+      await job.runOnce()
+      await reindexNow(path)
+      // what the index worker writes after each extraction (pages 3 and 4 hold their own text)
+      const file = stat(path)
+      store.ocr.saveScanInfo(path, file, {
+        totalPages: 12,
+        scannedPages: [1, 2, 5, 6, 7, 8, 9, 10, 11, 12],
+      })
+      await job.runOnce()
+      await reindexNow(path)
+      store.ocr.saveScanInfo(path, file, {
+        totalPages: 12,
+        scannedPages: [1, 2, 5, 6, 7, 8, 9, 10, 11, 12],
+      })
+      await job.runOnce()
+      // the limit of 9 counts the pages that need OCR: the first nine of them, none of 3 and 4
+      expect(present(path)).toEqual([1, 2, 5, 6, 7, 8, 9, 10, 11])
+      expect(engine.calls).toBe(9)
+      await reindexNow(path)
+      const done = await job.runOnce()
+      expect(done).toMatchObject({ files: 0, pages: 0 })
+    })
+
+    it('reads a scan whose scan info lists every page, up to the limit', async () => {
+      const path = invoicePdf('book.pdf', 12)
+      enrollEmpty(path)
+      const engine = new ScriptedEngine(['good'])
+      const job = makeJob(engine, { light: 2, maxPages: 7 })
+      await job.runOnce()
+      await reindexNow(path)
+      store.ocr.saveScanInfo(path, stat(path), {
+        totalPages: 12,
+        scannedPages: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12],
+      })
+      await job.runOnce()
+      expect(present(path)).toEqual([1, 2, 3, 4, 5, 6, 7])
+      await reindexNow(path)
+      expect(await job.runOnce()).toMatchObject({ pages: 0 })
+    })
+
+    it('goes on with the slow pass when the only file of the quick queue is in a paused folder', async () => {
+      const read = invoicePdf('read.pdf', 8)
+      enrollEmpty(read)
+      const engine = new ScriptedEngine(['good'])
+      const job = makeJob(engine, { light: 2, maxPages: 8 })
+      await job.runOnce()
+      await reindexNow(read)
+      const { mkdirSync } = await import('node:fs')
+      const { folderPauses } = await import('../src/main/document-memory/folder-pause')
+      mkdirSync(join(dir, 'sub'))
+      const waiting = invoicePdf('sub/unread.pdf', 4)
+      enrollEmpty(waiting)
+      folderPauses.replace([join(dir, 'sub')])
+      try {
+        // the quick queue holds one file, which is not to be read now: it must not hold back the rest
+        const run = await job.runOnce()
+        expect(run.pages).toBeGreaterThan(0)
+        expect(present(read).length).toBeGreaterThan(2)
+        expect(present(waiting)).toEqual([])
+      } finally {
+        folderPauses.replace([])
+      }
+    })
+
+    it('goes on with the slow pass when the file of the quick queue is on a drive that is away', async () => {
+      const read = invoicePdf('read.pdf', 8)
+      enrollEmpty(read)
+      const away = invoicePdf('away.pdf', 4)
+      enrollEmpty(away)
+      const engine = new ScriptedEngine(['good'])
+      // only `read` can be reached: the quick pass reads its first pages, `away` waits for its drive
+      const job = makeJob(engine, {
+        light: 2,
+        maxPages: 8,
+        sourceAvailable: async (p) => p === read,
+      })
+      await job.runOnce()
+      await reindexNow(read)
+      expect((await job.runOnce()).pages).toBeGreaterThan(0)
+      expect(present(read).length).toBeGreaterThan(2)
+      expect(present(away)).toEqual([])
+    })
+
+    it('visits at most two files per run, so that a new file waits for no more than that', async () => {
+      const paths = ['a', 'b', 'c', 'd'].map((n) => invoicePdf(`${n}.pdf`, 10))
+      for (const path of paths) enrollEmpty(path)
+      const engine = new ScriptedEngine(['good'])
+      const job = makeJob(engine, { light: 2, maxPages: 10 })
+      await job.runOnce()
+      for (const path of paths) await reindexNow(path)
+      const run = await job.runOnce()
+      expect(run.files).toBe(REST_VISITS_PER_RUN)
+      expect(paths.filter((p) => present(p).length > 2)).toHaveLength(REST_VISITS_PER_RUN)
+    })
+
+    it('does not run on battery, but the quick pass is not held back', async () => {
+      const path = invoicePdf('battery.pdf', 8)
+      enrollEmpty(path)
+      let onBattery = true
+      const engine = new ScriptedEngine(['good'])
+      const job = makeJob(engine, { light: 2, maxPages: 8, onBattery: () => onBattery })
+      expect(await job.runOnce()).toMatchObject({ pages: 2 }) // quick pass: as before
+      await reindexNow(path)
+      expect(await job.runOnce()).toMatchObject({ pages: 0 })
+      expect(present(path)).toEqual([1, 2])
+      onBattery = false
+      expect((await job.runOnce()).pages).toBeGreaterThan(0)
+    })
+
+    it('stops between two pages when the charger is pulled out', async () => {
+      const path = invoicePdf('unplug.pdf', 10)
+      enrollEmpty(path)
+      let onBattery = false
+      const engine = new ScriptedEngine(['good'])
+      const job = makeJob(engine, { light: 2, maxPages: 10, onBattery: () => onBattery })
+      await job.runOnce()
+      await reindexNow(path)
+      const base = engine.calls
+      const recognize = engine.recognizePage.bind(engine)
+      engine.recognizePage = async () => {
+        const r = await recognize()
+        if (engine.calls - base === 1) onBattery = true
+        return r
+      }
+      const run = await job.runOnce()
+      expect(run.stoppedBecause).toBe('gate:on-battery')
+      expect(present(path)).toEqual([1, 2, 3])
+    })
+
+    it('stops between two pages on an abort during the slow pass', async () => {
+      const path = invoicePdf('abort-mid.pdf', 10)
+      enrollEmpty(path)
+      const engine = new ScriptedEngine(['good'])
+      const job = makeJob(engine, { light: 2, maxPages: 10 })
+      await job.runOnce()
+      await reindexNow(path)
+      const controller = new AbortController()
+      const base = engine.calls
+      const recognize = engine.recognizePage.bind(engine)
+      engine.recognizePage = async () => {
+        const r = await recognize()
+        if (engine.calls - base === 2) controller.abort()
+        return r
+      }
+      const run = await job.runOnce({ signal: controller.signal })
+      expect(run.stoppedBecause).toBe('aborted')
+      expect(present(path)).toEqual([1, 2, 3, 4])
+    })
+
+    it('leaves a file above the size limit alone in the slow pass too, once', async () => {
+      const path = invoicePdf('big.pdf', 6)
+      enrollEmpty(path)
+      const engine = new ScriptedEngine(['good'])
+      await makeJob(engine, { light: 2, maxPages: 6 }).runOnce()
+      await reindexNow(path)
+      const calls = engine.calls
+      const small = makeJob(engine, { light: 2, maxPages: 6, maxPdfBytes: 10 })
+      expect(await small.runOnce()).toMatchObject({ skipped: 1, pages: 0 })
+      expect(engine.calls).toBe(calls)
+      expect(await small.runOnce()).toMatchObject({ files: 0, skipped: 0 })
+    })
+
+    it('does not run a slow pass when the limit is not above the quick pass', async () => {
+      const path = invoicePdf('off.pdf', 6)
+      enrollEmpty(path)
+      const engine = new ScriptedEngine(['good'])
+      const job = makeJob(engine, { light: 2, maxPages: 2 })
+      expect(job.restPages()).toBe(2)
+      await job.runOnce()
+      await reindexNow(path)
+      await job.runOnce()
+      expect(present(path)).toEqual([1, 2])
+      expect(engine.calls).toBe(2)
+    })
+
+    it('never reads past the indexer page limit, and a small machine reads at most ten pages', () => {
+      const engine = new ScriptedEngine(['good'])
+      expect(makeJob(engine, { maxPages: 100, pdfPageLimit: () => 4 }).restPages()).toBe(4)
+      expect(makeJob(engine, { maxPages: 100 }).restPages()).toBe(30) // the indexer default
+      // text of pages after the 50th is never put in the index, so it is not read
+      expect(makeJob(engine, { maxPages: 100, pdfPageLimit: () => 400 }).restPages()).toBe(50)
+      expect(makeJob(engine, { maxPages: 45, pdfPageLimit: () => 400 }).restPages()).toBe(45)
+      expect(
+        makeJob(engine, { maxPages: 100, pdfPageLimit: () => 400, ramMB: 4096 }).restPages(),
+      ).toBe(10)
+      // a limit below the quick pass never shrinks the quick pass
+      expect(makeJob(engine, { light: 3, maxPages: 1 }).restPages()).toBe(3)
+      expect(makeJob(engine, { ramMB: 4096, maxPages: 1 }).restPages()).toBe(1)
+    })
+
+    it('waits for the quick pass: a file with unread first pages is served before the rest of an older one', async () => {
+      const old = invoicePdf('old book.pdf', 8)
+      enrollEmpty(old)
+      const engine = new ScriptedEngine(['good'])
+      const job = makeJob(engine, { light: 2, maxPages: 8 })
+      await job.runOnce()
+      await reindexNow(old)
+      const fresh = invoicePdf('new scan.pdf', 8)
+      enrollEmpty(fresh)
+
+      const run = await job.runOnce()
+      expect(run).toMatchObject({ files: 1, pages: 2 })
+      expect(present(fresh)).toEqual([1, 2])
+      expect(present(old)).toEqual([1, 2]) // its later pages are for a run with an empty quick queue
+      await reindexNow(fresh)
+      await job.runOnce()
+      expect(present(old).length).toBeGreaterThan(2)
+    })
+
+    it('stops at the next page when the gate closes, and picks up where it stopped', async () => {
+      const path = invoicePdf('gate.pdf', 10)
+      enrollEmpty(path)
+      const engine = new ScriptedEngine(['good'])
+      const job = makeJob(engine, { light: 2, maxPages: 10 })
+      await job.runOnce()
+      await reindexNow(path)
+      const base = engine.calls
+      const recognize = engine.recognizePage.bind(engine)
+      engine.recognizePage = async () => {
+        const r = await recognize()
+        if (engine.calls - base === 2) gateState = { ok: false, reason: 'user-active' }
+        return r
+      }
+      const stopped = await job.runOnce()
+      expect(stopped.stoppedBecause).toBe('gate:user-active')
+      expect(present(path)).toEqual([1, 2, 3, 4])
+      gateState = { ok: true }
+      engine.recognizePage = recognize
+      await reindexNow(path)
+      await job.runOnce()
+      expect(present(path).length).toBeGreaterThan(4)
+    })
+
+    it('stops at once on an aborted signal', async () => {
+      const path = invoicePdf('abort.pdf', 10)
+      enrollEmpty(path)
+      const engine = new ScriptedEngine(['good'])
+      const job = makeJob(engine, { light: 2, maxPages: 10 })
+      await job.runOnce()
+      await reindexNow(path)
+      const controller = new AbortController()
+      controller.abort()
+      const run = await job.runOnce({ signal: controller.signal })
+      expect(run).toMatchObject({ pages: 0, stoppedBecause: 'aborted' })
+      expect(present(path)).toEqual([1, 2])
+    })
+
+    it('pauses twice after each page, once more than the quick pass (one pause is capped by the duty cycle)', async () => {
+      const path = invoicePdf('pause.pdf', 8)
+      enrollEmpty(path)
+      const engine = new ScriptedEngine(['good'])
+      const durations: number[] = []
+      const job = makeJob(engine, {
+        light: 2,
+        maxPages: 8,
+        coolDown: async (ms) => void durations.push(ms),
+      })
+      // a clock that moves 10 ms at every reading: the time of a page is the same in both passes
+      let clock = 0
+      const spy = vi.spyOn(performance, 'now').mockImplementation(() => (clock += 10))
+      try {
+        await job.runOnce()
+        const quick = durations.splice(0)
+        await reindexNow(path)
+        await job.runOnce()
+        expect(quick).toHaveLength(2)
+        expect(REST_COOL_FACTOR).toBe(2)
+        expect(durations).toHaveLength(5 * REST_COOL_FACTOR)
+        // (the first page of a visit also counts the time of the render, so the second page is compared)
+        expect(durations[2]).toBe(quick[1]!)
+        expect(durations[3]).toBe(quick[1]!)
+      } finally {
+        spy.mockRestore()
+      }
+    })
+
+    it('flags a poorly read later page for the cloud like a page of the quick pass, and keeps the sensitive-text rule', async () => {
+      const path = invoicePdf('mixed.pdf', 6)
+      enrollEmpty(path)
+      const engine = new ScriptedEngine(['good', 'good', 'bad', 'id', 'good'])
+      const job = makeJob(engine, { light: 2, maxPages: 6 })
+      await job.runOnce()
+      await reindexNow(path)
+      await job.runOnce()
+      const { mtimeMs, sizeBytes } = stat(path)
+      expect(store.ocr.escalatedPages(path, mtimeMs, sizeBytes)).toEqual([3]) // 'id' text never goes to the cloud
+      expect(present(path)).toEqual([1, 2, 3, 4, 5, 6])
+    })
+  })
+
   it('cloud selection is exactly the escalated page; its text replaces the local text', async () => {
     const path = invoicePdf('scan 0002.pdf', 5)
     enrollEmpty(path)
@@ -662,7 +993,7 @@ describe('LocalOcrJob on scanned PDFs (real SQLite, real PDFium render, engine d
     const path = invoicePdf('Công ty ABC secret name.pdf', 2)
     enrollEmpty(path)
     const off = makeJob(new ScriptedEngine(['good']), {
-      settings: () => ({ enabled: false, lightPages: 2, engine: 'auto' }),
+      settings: () => ({ enabled: false, lightPages: 2, maxPages: 2, engine: 'auto' }),
     })
     expect((await off.runOnce()).stoppedBecause).toBe('disabled')
     const engine = new ScriptedEngine(['good', 'bad'])

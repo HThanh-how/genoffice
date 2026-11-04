@@ -111,7 +111,7 @@ const en: ActivityCopy = {
     },
     'no-text': {
       title: 'Waiting for OCR',
-      hint: 'Scanned PDFs and photos have no text yet. Press the star to read one now with Antigravity.',
+      hint: 'Scanned PDFs, photos and documents made of pictures have no text yet. Press the star to read a PDF now with Antigravity.',
     },
     empty: {
       title: 'Blank',
@@ -194,7 +194,7 @@ const vi: ActivityCopy = {
     },
     'no-text': {
       title: 'Chờ OCR',
-      hint: 'PDF dạng ảnh hoặc ảnh chụp chưa có chữ. Bấm hình tia sáng để đọc ngay bằng Antigravity.',
+      hint: 'PDF dạng ảnh, ảnh chụp và tài liệu chỉ có ảnh chưa có chữ. Bấm hình tia sáng để đọc ngay một PDF bằng Antigravity.',
     },
     empty: {
       title: 'Trống',
@@ -258,7 +258,7 @@ const zh: ActivityCopy = {
     password: { title: '受密码保护', hint: '移除密码后才能收录此文件，然后重试。' },
     'no-text': {
       title: '等待 OCR',
-      hint: '扫描版 PDF 和照片还没有文字。点击星形按钮可用 Antigravity 立即读取。',
+      hint: '扫描版 PDF、照片和只有图片的文档还没有文字。点击星形按钮可用 Antigravity 立即读取 PDF。',
     },
     empty: { title: '空白', hint: '这些文件里没有文字，所以没有可搜索的内容。' },
     'too-large': { title: '文件过大', hint: '超过 128 MB 的文件不会被索引。' },
@@ -313,7 +313,7 @@ const zhTW: ActivityCopy = {
     password: { title: '受密碼保護', hint: '移除密碼後才能收錄此檔案，然後重試。' },
     'no-text': {
       title: '等待 OCR',
-      hint: '掃描版 PDF 和照片還沒有文字。點擊星形按鈕可用 Antigravity 立即讀取。',
+      hint: '掃描版 PDF、照片和只有圖片的文件還沒有文字。點擊星形按鈕可用 Antigravity 立即讀取 PDF。',
     },
     empty: { title: '空白', hint: '這些檔案裡沒有文字，所以沒有可搜尋的內容。' },
     'too-large': { title: '檔案過大', hint: '超過 128 MB 的檔案不會被索引。' },
