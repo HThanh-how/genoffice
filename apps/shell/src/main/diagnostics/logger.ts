@@ -243,6 +243,8 @@ export class DiagnosticsLogger {
   private lastOrphanMs = 0
   /** an asynchronous write is running; a new flush waits for it instead of piling up behind it */
   private draining = false
+  /** a write is already queued behind the previous one but has not started yet */
+  private writeQueued = false
   private drainAgain = false
   private dirReady = false
   private orphansPruned = false
@@ -449,7 +451,7 @@ export class DiagnosticsLogger {
     this.timer = setTimeout(() => {
       this.timer = undefined
       this.timerDelay = Infinity
-      void this.flush()
+      void this.flush(false)
     }, delay)
     this.timer.unref?.()
   }
@@ -467,14 +469,22 @@ export class DiagnosticsLogger {
    * write is running a second call does not queue another one behind it (that would pile up
    * without end on a drive that never answers): it asks the running write for one more pass.
    */
-  flush(): Promise<void> {
+  flush(force = true): Promise<void> {
     this.clearTimer()
-    if (this.draining) {
+    // the timer does not start a write inside the pause that follows a failed one; a caller that
+    // asks for a flush itself (closing, tests) is not held back
+    if (!force && Date.now() < this.retryNotBefore) {
+      this.scheduleFlush(this.retryNotBefore - Date.now())
+      return this.chain
+    }
+    if (this.draining || this.writeQueued) {
       this.drainAgain = true
       return this.chain
     }
+    this.writeQueued = true
     this.chain = this.chain
       .then(async () => {
+        this.writeQueued = false
         this.draining = true
         try {
           do {
@@ -486,6 +496,7 @@ export class DiagnosticsLogger {
         }
       })
       .catch((error) => {
+        this.writeQueued = false
         this.draining = false
         this.report('flush failed', error)
       })
@@ -729,17 +740,24 @@ export class DiagnosticsLogger {
     }
     this.activeSize = 0
     const oldest = this.files - 1
-    await this.removeQuietly(this.rotated(oldest))
+    let shifted = true
     for (let index = oldest - 1; index >= 1; index--) {
-      await this.moveQuietly(this.rotated(index), this.rotated(index + 1))
+      if (!(await this.moveQuietly(this.rotated(index), this.rotated(index + 1)))) {
+        // a slot is held by someone else: stop here, the files below it stay where they are
+        shifted = false
+        break
+      }
     }
-    try {
-      await this.removeIfExists(this.rotated(1))
-      await this.fs.rename(aside, this.rotated(1))
-    } catch (error) {
-      this.report(`could not put ${aside} in the first slot`, error)
-      await this.pruneOrphans(2)
+    if (shifted) {
+      try {
+        await this.fs.rename(aside, this.rotated(1))
+        return
+      } catch (error) {
+        this.report(`could not put ${aside} in the first slot`, error)
+      }
     }
+    // the file stays where it is, as a `name.<ms>.jsonl` file
+    await this.pruneOrphans(2)
   }
 
   private async removeIfExists(path: string): Promise<void> {
@@ -758,13 +776,19 @@ export class DiagnosticsLogger {
     }
   }
 
-  private async moveQuietly(from: string, to: string): Promise<void> {
+  /**
+   * Moves `from` over `to` (a rename replaces the target, so nothing is deleted first: a target
+   * that cannot be replaced stays as it is). Returns false when it could not; the caller then stops
+   * shifting the chain, since going on would leave a hole and lose a file.
+   */
+  private async moveQuietly(from: string, to: string): Promise<boolean> {
     try {
-      await this.removeIfExists(to)
       await this.fs.rename(from, to)
+      return true
     } catch (error) {
-      if ((error as NodeJS.ErrnoException).code === 'ENOENT') return
+      if ((error as NodeJS.ErrnoException).code === 'ENOENT') return true // nothing to move
       this.report(`could not move log ${from} to ${to}`, error)
+      return false
     }
   }
 

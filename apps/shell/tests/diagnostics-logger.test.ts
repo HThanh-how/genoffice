@@ -12,7 +12,9 @@ const tmp = (): string => {
   return d
 }
 afterEach(() => {
-  for (const d of dirs.splice(0)) rmSync(d, { recursive: true, force: true })
+  for (const d of dirs.splice(0)) {
+    rmSync(d, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 })
+  }
 })
 
 const lines = (dir: string, file = 'genoffice.jsonl'): any[] =>
@@ -752,6 +754,74 @@ describe('DiagnosticsLogger on a drive that does not answer', () => {
   })
 })
 
+describe('DiagnosticsLogger rotation with a stuck slot', () => {
+  it('stops shifting at the first slot that cannot be replaced, so no file is lost', async () => {
+    const dir = tmp()
+    for (let i = 1; i <= 4; i++) writeFileSync(join(dir, `genoffice.${i}.jsonl`), `old-${i}\n`)
+    writeFileSync(join(dir, 'genoffice.jsonl'), 'x'.repeat(400) + '\n')
+    const fs: LogFs = {
+      ...realLogFs,
+      rename: async (from, to) => {
+        // the last slot is held by another program
+        if (to.endsWith('genoffice.4.jsonl'))
+          throw Object.assign(new Error('EBUSY'), { code: 'EBUSY' })
+        return realLogFs.rename(from, to)
+      },
+    }
+    const log = new DiagnosticsLogger({
+      dir,
+      fs,
+      maxBytes: 300,
+      files: 5,
+      sleep: async () => undefined,
+      onInternalError: () => undefined,
+    })
+    log.info('a', 'one')
+    await log.flush()
+    // .3 was not unlinked or overwritten, and nothing below it moved
+    for (let i = 1; i <= 4; i++) {
+      expect(readFileSync(join(dir, `genoffice.${i}.jsonl`), 'utf8')).toBe(`old-${i}\n`)
+    }
+    // the file that was live is kept as a set-aside file, not dropped
+    const aside = readdirSync(dir).filter((f) => /^genoffice\.\d{10,}\.jsonl$/.test(f))
+    expect(aside).toHaveLength(1)
+    expect(readFileSync(join(dir, aside[0]!), 'utf8')).toBe('x'.repeat(400) + '\n')
+  })
+})
+
+describe('DiagnosticsLogger backoff under a permanent write failure', () => {
+  it('tries to write only a few times in a second while lines keep arriving (timer-driven)', async () => {
+    let attempts = 0
+    const fs: LogFs = {
+      ...realLogFs,
+      mkdir: async () => undefined,
+      size: async () => 0,
+      list: async () => [],
+      appendFile: async () => {
+        attempts++
+        throw Object.assign(new Error('EPERM'), { code: 'EPERM' })
+      },
+    }
+    const log = new DiagnosticsLogger({
+      dir: '/d',
+      fs,
+      retryDelaysMs: [],
+      retryBackoffMs: 500,
+      switchAfterFailures: 1000,
+      flushIntervalMs: 5,
+      flushLines: 1,
+      onInternalError: () => undefined,
+    })
+    const until = Date.now() + 1_200
+    while (Date.now() < until) {
+      log.error('a', 'more')
+      await new Promise((r) => setTimeout(r, 5))
+    }
+    // one try at the start, then at most one per 500 ms
+    expect(attempts).toBeLessThanOrEqual(4)
+  })
+})
+
 describe('DiagnosticsLogger retry and exit races', () => {
   it('waits the backoff after a failed batch: new lines do not start a retry before it', async () => {
     const dir = tmp()
@@ -920,12 +990,31 @@ describe('DiagnosticsLogger with a real lock held by another process (Windows on
   const waitLocked = (child: ChildProcess): Promise<void> =>
     new Promise((resolve, reject) => {
       const timer = setTimeout(() => reject(new Error('lock holder did not start')), 15_000)
+      child.once('error', (error) => {
+        clearTimeout(timer)
+        reject(error)
+      })
       child.stdout!.on('data', (chunk: Buffer) => {
         if (chunk.toString().includes('locked')) {
           clearTimeout(timer)
           resolve()
         }
       })
+    })
+
+  /** Lets go of the file and waits until the holder has really exited, so the folder can be removed. */
+  const release = (child: ChildProcess): Promise<void> =>
+    new Promise((resolve) => {
+      if (child.exitCode !== null) return resolve()
+      const timer = setTimeout(() => {
+        child.kill()
+        resolve()
+      }, 5_000)
+      child.once('exit', () => {
+        clearTimeout(timer)
+        resolve()
+      })
+      child.stdin!.end('\n')
     })
 
   it.runIf(process.platform === 'win32')(
@@ -958,8 +1047,7 @@ describe('DiagnosticsLogger with a real lock held by another process (Windows on
         )
         for (let i = 0; i < 6; i++) expect(all).toContain(`event-${i}`)
       } finally {
-        child.stdin!.end('\n')
-        child.kill()
+        await release(child)
       }
     },
     60_000,
@@ -998,8 +1086,7 @@ describe('DiagnosticsLogger with a real lock held by another process (Windows on
         // the held file itself was not emptied
         expect(readFileSync(live, 'utf8').startsWith('xxxx')).toBe(true)
       } finally {
-        child.stdin!.end('\n')
-        child.kill()
+        await release(child)
       }
     },
     60_000,
