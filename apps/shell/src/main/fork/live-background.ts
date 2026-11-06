@@ -101,6 +101,7 @@ export function registerLiveBackground(deps: LiveBackgroundDeps): LiveBackground
     enabled: false,
   }
   let revision = 0
+  let homeMedia: LiveBackgroundMedia | null = null
   const sources = new Map<
     string,
     { main: string; poster: string | null; media: LiveBackgroundMedia }
@@ -111,7 +112,7 @@ export function registerLiveBackground(deps: LiveBackgroundDeps): LiveBackground
     path: string,
     index = 0,
   ): Promise<LiveBackgroundMedia | null> => {
-    if (!/^[a-z0-9_-]{1,64}$/.test(key) || key === 'file') return null
+    if (!/^[a-z0-9_-]{1,64}$/.test(key) || key === 'file' || key === 'home') return null
     const generation = (generations.get(key) ?? 0) + 1
     generations.set(key, generation)
     sources.delete(key)
@@ -134,10 +135,12 @@ export function registerLiveBackground(deps: LiveBackgroundDeps): LiveBackground
 
   const build = async (prefs: LiveBackgroundPrefs): Promise<LiveBackgroundState> => {
     if (!prefs.enabled) {
+      homeMedia = null
       served = { main: null, poster: null, enabled: false }
       return emptyLiveBackgroundState(prefs)
     }
     if (!prefs.sourcePath) {
+      homeMedia = null
       served = { main: null, poster: null, enabled: true }
       return { ...emptyLiveBackgroundState(prefs), status: 'no-source' }
     }
@@ -156,6 +159,15 @@ export function registerLiveBackground(deps: LiveBackgroundDeps): LiveBackground
     }
     const url = (name: 'main' | 'poster') =>
       `${LIVE_BACKGROUND_SCHEME}://file/${name}?v=${revision}`
+    homeMedia = shown
+      ? {
+          kind: shown.kind,
+          url: url('main'),
+          posterUrl: resolved.item?.poster ? url('poster') : null,
+          title: shown.title,
+          origin: shown.origin,
+        }
+      : null
     return {
       prefs,
       status: resolved.status,
@@ -163,15 +175,7 @@ export function registerLiveBackground(deps: LiveBackgroundDeps): LiveBackground
       title: resolved.title,
       count: resolved.count,
       skipped: resolved.skipped,
-      media: shown
-        ? {
-            kind: shown.kind,
-            url: url('main'),
-            posterUrl: resolved.item?.poster ? url('poster') : null,
-            title: shown.title,
-            origin: shown.origin,
-          }
-        : null,
+      media: homeMedia,
     }
   }
 
@@ -224,8 +228,9 @@ export function registerLiveBackground(deps: LiveBackgroundDeps): LiveBackground
 
   return {
     setSelectedSource,
-    getSelectedSource: (key) => sources.get(key)?.media ?? null,
+    getSelectedSource: (key) => (key === 'home' ? homeMedia : (sources.get(key)?.media ?? null)),
     installProtocol() {
+      void refresh()
       protocol.handle(LIVE_BACKGROUND_SCHEME, async (request) => {
         // Match the raw URL before URL parsing can normalize traversal segments.
         const match = /^genoffice-bg:\/\/([a-z0-9_-]{1,64})\/(main|poster)(?:\?v=[0-9]+)?$/.exec(

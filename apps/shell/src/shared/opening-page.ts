@@ -1,3 +1,4 @@
+import type { LiveBackgroundMedia } from './fork/live-background'
 import type { OpeningCardDefinition } from './opening-card-types'
 import { buildMaterialCss } from './opening-card-css'
 import { DEFAULT_SCENE_FOR_APP, sceneMeta, type OpeningApp } from './opening-scenes-meta'
@@ -184,6 +185,7 @@ export function openingPageHtml(
   layout: 'window' | 'card' = 'window',
   cardDef?: OpeningCardDefinition,
   mediaDataUrl?: string,
+  mediaSource?: LiveBackgroundMedia | null,
 ): string {
   const parts = openingPageParts(
     words,
@@ -195,9 +197,10 @@ export function openingPageHtml(
     cardDef,
     mediaDataUrl,
     'document',
+    mediaSource,
   )
   return `<!doctype html><html><head><meta charset="utf-8"><title>${escapeHtml(parts.title)}</title>
-<meta http-equiv="Content-Security-Policy" content="default-src 'none'; img-src data:; style-src 'unsafe-inline'; script-src 'unsafe-inline'">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; img-src data:${mediaSource ? ' genoffice-bg:' : ''};${mediaSource ? ' media-src genoffice-bg:;' : ''} style-src 'unsafe-inline'; script-src 'unsafe-inline'">
 <style>
 ${parts.css}
 </style></head>
@@ -218,12 +221,13 @@ export function openingPageParts(
   cardDef?: OpeningCardDefinition,
   mediaDataUrl?: string,
   target: OpeningPageTarget = 'document',
+  mediaSource?: LiveBackgroundMedia | null,
 ): OpeningPageParts {
   const theme = SPLASH_THEMES[appName]
   const rgb = rgbOf(theme.color)
   const isCanvasScene = !cardDef || cardDef.contentKind === 'canvas-scene'
   const sceneId = cardDef?.sceneId ?? scene ?? DEFAULT_SCENE_FOR_APP[appName]
-  const script =
+  let script =
     !isCanvasScene || tier === 'minimal' ? '' : `<script>${SCENE_LIB}${SCENE_BOOT}</script>`
   const [bg1, bg2] = sceneMeta(sceneId).bg
 
@@ -242,6 +246,30 @@ export function openingPageParts(
     if (/^data:image\/(?:png|jpeg|webp|gif);base64,[A-Za-z0-9+/=]+$/.test(mediaDataUrl)) {
       mediaStyle = `.stage { background-image: linear-gradient(rgba(0,0,0,${dim}), rgba(0,0,0,${dim})), url('${mediaDataUrl}') !important; background-size: ${fit} !important; background-position: center !important; }`
     }
+  }
+
+  // Accept only URLs issued by the source registry.
+  const safeUrl = (url: string | null | undefined): url is string =>
+    typeof url === 'string' &&
+    /^genoffice-bg:\/\/[a-z0-9_-]{1,64}\/(?:main|poster)\?v=[0-9]+$/.test(url)
+  const sourceUrl = safeUrl(mediaSource?.url) ? mediaSource.url : null
+  const posterUrl =
+    mediaSource?.kind === 'image'
+      ? sourceUrl
+      : safeUrl(mediaSource?.posterUrl)
+        ? mediaSource.posterUrl
+        : null
+  let mediaHtml = ''
+  if (target === 'document' && sourceUrl) {
+    const fit = cardDef?.mediaFit === 'contain' ? 'contain' : 'cover'
+    const dim =
+      typeof cardDef?.mediaDim === 'number' && Number.isFinite(cardDef.mediaDim)
+        ? Math.max(0, Math.min(0.9, cardDef.mediaDim))
+        : 0.25
+    mediaHtml = `${posterUrl ? `<img class="external-poster" src="${posterUrl}" alt="">` : ''}${mediaSource?.kind === 'video' && tier !== 'minimal' ? `<video class="external-video" muted loop playsinline autoplay preload="auto" src="${sourceUrl}"></video>` : ''}<div class="external-dim"></div>`
+    mediaStyle += `.external-poster,.external-video,.external-dim{position:absolute;inset:0;width:100%;height:100%;object-fit:${fit};pointer-events:none}.external-video{opacity:0}.external-video.ready{opacity:1}.external-dim{background:rgba(0,0,0,${dim})}`
+    if (mediaSource?.kind === 'video' && tier !== 'minimal')
+      script += `<script>(function(){var v=document.querySelector('.external-video');if(!v)return;v.addEventListener('loadeddata',function(){v.classList.add('ready')});v.addEventListener('error',function(){v.classList.remove('ready')})})()</script>`
   }
 
   const R = target === 'shadow' ? ':host' : ':root'
@@ -293,6 +321,7 @@ ${target === 'shadow' ? '.pg{position:relative;width:100%;height:100%}' : ''}`
     bodyAttrs: ` data-app="${appName}" data-scene="${sceneId}" data-tier="${tier}" data-rgb="${rgb}" data-lt="${lighterRgbOf(theme.color)}"`,
     bodyInner: `${layout === 'card' ? backdropHtml(appName) : ''}
 <div class="stage">
+${mediaHtml}
 ${isCanvasScene ? '<canvas id="sea" aria-hidden="true"></canvas><div class="glow"></div>' : ''}
 <span class="bubble b1"></span><span class="bubble b2"></span><span class="bubble b3"></span>
 <div class="badge" aria-hidden="true">${escapeHtml(theme.letter)}</div>

@@ -9078,6 +9078,7 @@ async function startShell(): Promise<void> {
         return null
       }
     },
+    mediaSource: (key) => liveBackground?.getSelectedSource(key) ?? null,
     mediaDataUrl: (assetId) => {
       try {
         return getAssetDataUrl(app.getPath('userData'), assetId)

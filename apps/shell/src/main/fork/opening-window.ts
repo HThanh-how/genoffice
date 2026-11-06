@@ -1,3 +1,4 @@
+import type { LiveBackgroundMedia } from '../../shared/fork/live-background'
 import { cpus, totalmem } from 'node:os'
 import { BrowserWindow, app, powerMonitor } from 'electron'
 import { CUSTOM_SCENE, DEFAULT_OPENING_PREFS } from '../../shared/opening-scenes-meta'
@@ -28,6 +29,7 @@ export interface OpeningConfig {
   customHtml(app: SplashApp): string | null
   /** data URL getter for personal media assets */
   mediaDataUrl?(assetId: string): string | null
+  mediaSource?(key: string): LiveBackgroundMedia | null
   /** getter for managed HTML card assets ({ html, css }) */
   htmlCardContent?(assetId: string): { html: string; css: string } | null
 }
@@ -129,15 +131,23 @@ export function buildOpeningPage(options: {
     if (url) mediaDataUrl = url
   }
 
+  let onBattery = false
+  try {
+    onBattery = powerMonitor.isOnBatteryPower()
+  } catch {
+    /* Power information unavailable. */
+  }
+  const mediaSource = cardDef?.mediaRef && config.mediaSource?.(cardDef.mediaRef.sourceKey)
   return openingPageHtml(
     words,
     options.fileName,
     options.app,
-    tier,
+    onBattery && mediaSource?.kind === 'video' ? 'minimal' : tier,
     chosen === CUSTOM_SCENE ? undefined : chosen,
     options.layout,
     cardDef,
     mediaDataUrl,
+    mediaSource,
   )
 }
 
