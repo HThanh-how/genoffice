@@ -1,0 +1,73 @@
+/* Optional live background behind Home (feature off by default; nothing here applies unless body.live-bg-on). */
+.app-frame-content {
+  position: relative;
+}
+
+.live-bg {
+  position: absolute;
+  /* below the 40px tab strip, which keeps its own surface */
+  inset: 40px 0 0 0;
+  z-index: 0;
+  overflow: hidden;
+  pointer-events: none;
+  contain: strict;
+}
+
+.live-bg-media {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  opacity: 0;
+  transition: opacity 0.4s ease;
+}
+
+.live-bg-media.ready {
+  opacity: 1;
+}
+
+/* the theme surface laid over the picture; strength comes from the dim setting */
+.live-bg-scrim {
+  position: absolute;
+  inset: 0;
+  background: var(--surface);
+}
+
+body.live-bg-on .home {
+  position: relative;
+  z-index: 1;
+}
+
+body.live-bg-on .home .content {
+  background: transparent;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .live-bg-media {
+    transition: none;
+  }
+}
+
+/* Settings card */
+.live-bg-actions {
+  display: flex;
+  flex-direction: column;
+  flex-shrink: 0;
+  gap: 8px;
+  align-items: stretch;
+}
+
+.live-bg-range {
+  flex-shrink: 0;
+  width: 160px;
+  accent-color: var(--accent, currentColor);
+}
+
+.live-bg-path {
+  overflow-wrap: anywhere;
+}
+
+.live-bg-problem {
+  color: var(--text);
+}

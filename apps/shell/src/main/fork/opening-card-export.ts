@@ -184,6 +184,22 @@ export function validateCardDefinition(raw: unknown): {
     }
   }
 
+  // External references name a locally approved source, never a path or URL.
+  let mediaRef: OpeningCardDefinition['mediaRef']
+  if (obj.mediaRef !== undefined) {
+    const ref = obj.mediaRef as Record<string, unknown> | null
+    if (
+      !ref ||
+      typeof ref !== 'object' ||
+      Array.isArray(ref) ||
+      typeof ref.sourceKey !== 'string' ||
+      !/^[a-z0-9_-]{1,64}$/.test(ref.sourceKey)
+    ) {
+      return { ok: false, error: 'Invalid media reference' }
+    }
+    mediaRef = { sourceKey: ref.sourceKey }
+  }
+
   // Validate optional htmlAssetId
   let htmlAssetId: string | undefined
   if (obj.htmlAssetId !== undefined) {
@@ -240,6 +256,7 @@ export function validateCardDefinition(raw: unknown): {
     material,
     ...(sceneId ? { sceneId } : {}),
     ...(mediaAssetId ? { mediaAssetId } : {}),
+    ...(mediaRef ? { mediaRef } : {}),
     ...(htmlAssetId ? { htmlAssetId } : {}),
     ...(obj.mediaFit ? { mediaFit } : {}),
     ...(mediaDim !== undefined ? { mediaDim } : {}),
@@ -265,6 +282,8 @@ export function createOpeningCardExportBundle(
   const exportedCards: OpeningCardDefinition[] = []
 
   for (const card of cards) {
+    // Local source keys are not portable and must never leave in a bundle.
+    if (card.mediaRef) continue
     const validation = validateCardDefinition(card)
     if (!validation.ok || !validation.card) continue
 
@@ -448,6 +467,8 @@ export async function importCardsFromExportBundle(
   // Pre-validate all card definitions first
   const validatedCards: OpeningCardDefinition[] = []
   for (const raw of rawCards) {
+    // A bundle cannot authorize access to an existing local source.
+    if (raw && typeof raw === 'object' && 'mediaRef' in raw) continue
     const check = validateCardDefinition(raw)
     if (check.ok && check.card) {
       validatedCards.push(check.card)

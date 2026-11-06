@@ -73,6 +73,8 @@ export interface OpeningCardDefinition {
   sceneId?: string
   /** ID or filename of personal media asset in app storage (when contentKind === 'personal-media' or 'ai-declarative') */
   mediaAssetId?: string
+  /** Opaque key for a locally selected source; never a filesystem path or portable asset. */
+  mediaRef?: { sourceKey: string }
   /** ID of managed HTML asset in app storage (when contentKind === 'ai-html' or 'custom-html') */
   htmlAssetId?: string
   /** How media fits within the card: cover, contain, or center */
