@@ -33,6 +33,26 @@ export const DIM_MIN = 0
 export const DIM_MAX = 90
 export const BLUR_MAX = 24
 
+/** Playback must stop whenever Home cannot be seen, regardless of the battery preference. */
+export function shouldPlayLiveBackground(input: {
+  isVideo: boolean
+  homeActive: boolean
+  hidden: boolean
+  focused: boolean
+  reducedMotion: boolean
+  saver: boolean
+  onBattery: boolean
+}): boolean {
+  return (
+    input.isVideo &&
+    input.homeActive &&
+    !input.hidden &&
+    input.focused &&
+    !input.reducedMotion &&
+    !(input.saver && input.onBattery)
+  )
+}
+
 export interface LiveBackgroundPrefs {
   /** off by default: nothing is read or decoded until the user switches it on */
   enabled: boolean

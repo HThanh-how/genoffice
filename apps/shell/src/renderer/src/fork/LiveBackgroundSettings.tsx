@@ -129,6 +129,14 @@ export function LiveBackgroundSettings({ lang }: { lang: string }) {
               >
                 {c.chooseFolder}
               </button>
+              <button
+                type="button"
+                className="set-btn"
+                disabled={busy || !prefs.sourcePath}
+                onClick={() => void patch({ sourcePath: '', enabled: false })}
+              >
+                {c.clear}
+              </button>
             </div>
           </SettingsRow>
 

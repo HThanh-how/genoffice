@@ -12,6 +12,7 @@ const COPY = {
     showHint: 'Uses the file where it is. Nothing is copied into GenOffice.',
     chooseFile: 'Choose picture or video…',
     chooseFolder: 'Choose folder…',
+    clear: 'Clear source',
     source: 'Source',
     none: 'Nothing chosen yet',
     folderHint:
@@ -53,6 +54,7 @@ const COPY = {
     showHint: 'Dùng tệp ngay tại chỗ, không sao chép vào GenOffice.',
     chooseFile: 'Chọn ảnh hoặc video…',
     chooseFolder: 'Chọn thư mục…',
+    clear: 'Xoá nguồn',
     source: 'Nguồn',
     none: 'Chưa chọn',
     folderHint:

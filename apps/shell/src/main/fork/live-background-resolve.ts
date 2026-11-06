@@ -116,7 +116,14 @@ async function resolveWallpaperEngineItem(
     mediaKindOfName(project.file) !== 'video' ||
     !(await exists(fs, join(dir, project.file)))
   ) {
-    return { item: null, still: null, reason: 'we-invalid', title }
+    return {
+      item: null,
+      still: poster
+        ? { path: poster, kind: 'image', title, poster: null, origin: 'wallpaper-engine' }
+        : null,
+      reason: 'we-invalid',
+      title,
+    }
   }
   return {
     item: {

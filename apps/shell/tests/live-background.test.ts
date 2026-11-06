@@ -9,6 +9,7 @@ import {
   normalizeLiveBackgroundPrefs,
   normalizeLiveBackgroundState,
   parseWallpaperEngineProject,
+  shouldPlayLiveBackground,
   wallpaperEngineTypeReason,
 } from '../src/shared/fork/live-background'
 import {
@@ -17,6 +18,29 @@ import {
 } from '../src/main/fork/live-background-resolve'
 
 describe('live background prefs', () => {
+  it('pauses when Home is inactive, obscured or unfocused, and respects battery and motion settings', () => {
+    const active = {
+      isVideo: true,
+      homeActive: true,
+      hidden: false,
+      focused: true,
+      reducedMotion: false,
+      saver: true,
+      onBattery: false,
+    }
+    expect(shouldPlayLiveBackground(active)).toBe(true)
+    for (const change of [
+      { isVideo: false },
+      { homeActive: false },
+      { hidden: true },
+      { focused: false },
+      { reducedMotion: true },
+      { onBattery: true },
+    ])
+      expect(shouldPlayLiveBackground({ ...active, ...change })).toBe(false)
+    expect(shouldPlayLiveBackground({ ...active, saver: false, onBattery: true })).toBe(true)
+    expect(shouldPlayLiveBackground({ ...active, saver: false, focused: false })).toBe(false)
+  })
   it('is off by default and clamps garbage', () => {
     expect(DEFAULT_LIVE_BACKGROUND_PREFS.enabled).toBe(false)
     expect(normalizeLiveBackgroundPrefs(undefined)).toEqual(DEFAULT_LIVE_BACKGROUND_PREFS)
@@ -179,9 +203,14 @@ describe('resolveLiveBackgroundSource', () => {
 
   it('a video item pointing at a non-video, or at a missing file, is invalid', async () => {
     const a = item('666', { type: 'video', file: 'x.txt' }, ['x.txt'])
-    const b = item('777', { type: 'video', file: 'gone.mp4' }, [])
+    const b = item('777', { type: 'video', file: 'gone.mp4', preview: 'preview.jpg' }, [
+      'preview.jpg',
+    ])
     expect((await resolveLiveBackgroundSource(a, 0)).reason).toBe('we-invalid')
     expect((await resolveLiveBackgroundSource(b, 0)).reason).toBe('we-invalid')
+    expect((await resolveLiveBackgroundSource(b, 0)).fallbackStill?.path).toBe(
+      join(b, 'preview.jpg'),
+    )
   })
 
   it('a corrupt project.json is invalid, not a crash', async () => {

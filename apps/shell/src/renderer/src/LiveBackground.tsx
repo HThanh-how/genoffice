@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import {
   normalizeLiveBackgroundState,
+  shouldPlayLiveBackground,
   type LiveBackgroundState,
 } from '../../shared/fork/live-background'
 import './live-background.css'
@@ -106,8 +107,15 @@ export function LiveBackground({ homeActive }: { homeActive: boolean }) {
     return () => query.removeEventListener('change', sync)
   }, [])
 
-  const shouldPlay =
-    isVideo && homeActive && !hidden && !reduceMotion && (!saver || (focused && !onBattery))
+  const shouldPlay = shouldPlayLiveBackground({
+    isVideo,
+    homeActive,
+    hidden,
+    focused,
+    reducedMotion: reduceMotion,
+    saver,
+    onBattery,
+  })
 
   useEffect(() => {
     const video = videoRef.current
@@ -130,11 +138,14 @@ export function LiveBackground({ homeActive }: { homeActive: boolean }) {
 
   return (
     <div className="live-bg" aria-hidden="true" data-kind={media.kind}>
+      {media.kind === 'video' && media.posterUrl && (
+        <img className="live-bg-media ready" style={blurStyle} src={media.posterUrl} alt="" />
+      )}
       {isVideo ? (
         <video
           ref={videoRef}
           key={media.url}
-          className={'live-bg-media' + (ready ? ' ready' : '')}
+          className={'live-bg-media' + (ready && (shouldPlay || !media.posterUrl) ? ' ready' : '')}
           style={blurStyle}
           src={media.url}
           poster={media.posterUrl ?? undefined}
@@ -147,7 +158,7 @@ export function LiveBackground({ homeActive }: { homeActive: boolean }) {
           onLoadedData={() => setReadyUrl(media.url)}
           onError={() => setFailedUrl(media.url)}
         />
-      ) : (
+      ) : media.kind === 'image' ? (
         <img
           key={media.url}
           className={'live-bg-media' + (ready ? ' ready' : '')}
@@ -158,7 +169,7 @@ export function LiveBackground({ homeActive }: { homeActive: boolean }) {
           onLoad={() => setReadyUrl(media.url)}
           onError={() => setFailedUrl(media.url)}
         />
-      )}
+      ) : null}
       <div className="live-bg-scrim" style={{ opacity: prefs.dim / 100 }} />
     </div>
   )
