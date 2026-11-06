@@ -10,6 +10,7 @@ import {
   VIDEO_EXTENSIONS,
   emptyLiveBackgroundState,
   normalizeLiveBackgroundPrefs,
+  type LiveBackgroundMedia,
   type LiveBackgroundPrefs,
   type LiveBackgroundState,
 } from '../../shared/fork/live-background'
@@ -62,6 +63,9 @@ export interface LiveBackgroundDeps {
 export interface LiveBackgroundController {
   /** wires the genoffice-bg:// handler; call after app ready */
   installProtocol(): void
+  /** Resolve a user-selected source asynchronously, before any opening operation. */
+  setSelectedSource(key: string, path: string, index?: number): Promise<LiveBackgroundMedia | null>
+  getSelectedSource(key: string): LiveBackgroundMedia | null
 }
 
 function readPrefs(settingsPath: string): LiveBackgroundPrefs {
@@ -97,6 +101,36 @@ export function registerLiveBackground(deps: LiveBackgroundDeps): LiveBackground
     enabled: false,
   }
   let revision = 0
+  const sources = new Map<
+    string,
+    { main: string; poster: string | null; media: LiveBackgroundMedia }
+  >()
+  const generations = new Map<string, number>()
+  const setSelectedSource = async (
+    key: string,
+    path: string,
+    index = 0,
+  ): Promise<LiveBackgroundMedia | null> => {
+    if (!/^[a-z0-9_-]{1,64}$/.test(key) || key === 'file') return null
+    const generation = (generations.get(key) ?? 0) + 1
+    generations.set(key, generation)
+    sources.delete(key)
+    if (!path) return null
+    const result = await resolveLiveBackgroundSource(path, index)
+    if (generations.get(key) !== generation) return null
+    const item = result.item ?? result.fallbackStill
+    if (!item) return null
+    const version = ++revision
+    const media: LiveBackgroundMedia = {
+      kind: item.kind,
+      url: `${LIVE_BACKGROUND_SCHEME}://${key}/main?v=${version}`,
+      posterUrl: item.poster ? `${LIVE_BACKGROUND_SCHEME}://${key}/poster?v=${version}` : null,
+      title: item.title,
+      origin: item.origin,
+    }
+    sources.set(key, { main: item.path, poster: item.poster, media })
+    return media
+  }
 
   const build = async (prefs: LiveBackgroundPrefs): Promise<LiveBackgroundState> => {
     if (!prefs.enabled) {
@@ -189,23 +223,17 @@ export function registerLiveBackground(deps: LiveBackgroundDeps): LiveBackground
   })
 
   return {
+    setSelectedSource,
+    getSelectedSource: (key) => sources.get(key)?.media ?? null,
     installProtocol() {
       protocol.handle(LIVE_BACKGROUND_SCHEME, async (request) => {
-        let name: string
-        try {
-          const url = new URL(request.url)
-          if (url.host !== 'file') return new Response(null, { status: 404 })
-          name = url.pathname.replace(/^\/+/, '')
-        } catch {
-          return new Response(null, { status: 400 })
-        }
-        const path = served.enabled
-          ? name === 'main'
-            ? served.main
-            : name === 'poster'
-              ? served.poster
-              : null
-          : null
+        // Match the raw URL before URL parsing can normalize traversal segments.
+        const match = /^genoffice-bg:\/\/([a-z0-9_-]{1,64})\/(main|poster)(?:\?v=[0-9]+)?$/.exec(
+          request.url,
+        )
+        const source =
+          match?.[1] === 'file' ? (served.enabled ? served : null) : sources.get(match?.[1] ?? '')
+        const path = match && source ? source[match[2] as 'main' | 'poster'] : null
         if (!path) return new Response(null, { status: 404 })
         const type = MIME[extname(path).toLowerCase()]
         if (!type) return new Response(null, { status: 404 })
