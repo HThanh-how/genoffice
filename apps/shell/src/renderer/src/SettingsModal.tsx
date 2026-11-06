@@ -9,6 +9,8 @@ import {
   type UpdateSource,
 } from '../../shared/update-source'
 import { OpeningEffectsSettings } from './fork/OpeningEffectsSettings'
+import { LiveBackgroundSettings } from './fork/LiveBackgroundSettings'
+import { liveBackgroundCopy } from './fork/live-background-strings'
 import { AiInstructionsSettings, aiInstructionsTitle } from './fork/AiInstructionsSettings'
 import {
   AI_CUSTOM_FONT_MAX_PX,
@@ -2299,6 +2301,13 @@ export function SettingsModal({
                       }}
                     />
                   </SettingsRow>
+                </SetGroup>
+                <SetGroup
+                  title={liveBackgroundCopy(lang).group}
+                  subtitle={liveBackgroundCopy(lang).groupHint}
+                  icon="appearance"
+                >
+                  <LiveBackgroundSettings lang={lang} />
                 </SetGroup>
                 <SetGroup
                   title={aiInstructionsTitle(lang).title}

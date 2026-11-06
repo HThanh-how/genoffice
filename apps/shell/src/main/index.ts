@@ -424,6 +424,11 @@ import { registerDbLocationIpc } from './fork/db-location-ipc'
 import { initClipboardSuggest, registerClipboardSuggest } from './fork/clipboard-suggest-ipc'
 import { initClipboardHistory, registerClipboardHistory } from './fork/clipboard-history-ipc'
 import { registerIndexingMode } from './fork/indexing-mode-ipc'
+import {
+  LIVE_BACKGROUND_SCHEME_PRIVILEGE,
+  registerLiveBackground,
+  type LiveBackgroundController,
+} from './fork/live-background'
 import { registerStorageStartup, type StorageStartupTracker } from './fork/storage-startup'
 import { registerAiInstructions } from './fork/ai-instructions-ipc'
 import { registerAgyOcr } from './fork/agy-ocr-ipc'
@@ -729,7 +734,7 @@ configureHtmlRuntime({
   openGeneratedPath: (path) => openGeneratedDocument(path),
 })
 // privileged-scheme registration is only legal before app ready
-registerPrivilegedSchemes()
+registerPrivilegedSchemes([LIVE_BACKGROUND_SCHEME_PRIVILEGE])
 
 // ---- UI language ----
 // Persisted in userData/app-settings.json so the editor modules can read the
@@ -4860,6 +4865,7 @@ function registerDroppedFilesIpc(): void {
 }
 
 let documentMemory: DocumentMemoryManager | null = null
+let liveBackground: LiveBackgroundController | null = null
 /** Progress of the index storage check / upgrade that runs off the main thread while the window is open. */
 const storageStartup: StorageStartupTracker = registerStorageStartup({
   ipcMain,
@@ -5810,6 +5816,15 @@ function registerHomeIpc(): void {
     historyPath: () => join(app.getPath('userData'), 'clipboard-history.json'),
   })
   registerIndexingMode({ ipcMain, settingsPath: APP_SETTINGS_PATH })
+  liveBackground = registerLiveBackground({
+    ipcMain,
+    settingsPath: APP_SETTINGS_PATH,
+    parentWindow: () => shellWindow,
+    broadcast: (channel, state) => {
+      for (const win of BrowserWindow.getAllWindows())
+        if (!win.isDestroyed()) win.webContents.send(channel, state)
+    },
+  })
   registerAiInstructions({ ipcMain, settingsPath: APP_SETTINGS_PATH })
   registerAgyChat({
     ipcMain,
@@ -8992,6 +9007,8 @@ async function startShell(): Promise<void> {
     // the manual shares the shell's own renderer bundle (help mode)
     help: join(__dirname, '../renderer'),
   })
+  // optional live background media (serves only the file the user chose in Settings)
+  liveBackground?.installProtocol()
   if (headlessArgv.kind !== 'none') {
     await runHeadlessExportEntry(headlessArgv)
     return

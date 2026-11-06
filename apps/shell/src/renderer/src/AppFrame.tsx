@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react'
 import { Home } from './Home'
+import { LiveBackground } from './LiveBackground'
 import { Onboarding } from './Onboarding'
 import { StarPromptCard } from './StarPromptCard'
 import { StorageStartupBanner } from './StorageStartupBanner'
@@ -63,6 +64,7 @@ export function AppFrame({ initialOnboardingSeen }: AppFrameProps) {
       {/* docs/sheets tabs render as WebContentsView children of this window, positioned
        * by the main process to cover this area — only Home paints its own content here. */}
       <div className="app-frame-content" style={{ visibility: homeActive ? 'visible' : 'hidden' }}>
+        <LiveBackground homeActive={homeActive} />
         <Home />
       </div>
       {/* editor WebContentsViews paint above ALL shell DOM, so the overlay only
