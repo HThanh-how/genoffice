@@ -330,7 +330,14 @@ const isSafeCardDefinition = (c: unknown): c is OpeningCardDefinition => {
 export function normalizeOpeningPrefs(stored: unknown): OpeningPrefs {
   const value = (stored && typeof stored === 'object' ? stored : {}) as Record<string, unknown>
   const customCards = Array.isArray(value.customCards)
-    ? value.customCards.filter(isSafeCardDefinition)
+    ? value.customCards.filter(isSafeCardDefinition).map((card) => {
+        const ref = card.mediaRef
+        const sourceKey = ref && typeof ref === 'object' ? ref.sourceKey : undefined
+        const { mediaRef: _discarded, ...rest } = card
+        return typeof sourceKey === 'string' && /^[a-z0-9_-]{1,64}$/.test(sourceKey)
+          ? { ...rest, mediaRef: { sourceKey } }
+          : rest
+      })
     : undefined
 
   const validationPrefs: OpeningPrefs = {
