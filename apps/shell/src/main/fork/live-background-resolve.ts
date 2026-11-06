@@ -139,6 +139,43 @@ async function resolveWallpaperEngineItem(
   }
 }
 
+/** Enumerate Workshop projects without reading media; unsupported projects retain their preview. */
+export async function scanWallpaperEngine(
+  root: string,
+  fs: ResolveFs = nodeResolveFs,
+): Promise<
+  Array<{
+    path: string
+    title: string
+    reason: LiveBackgroundReason | null
+    preview: string | null
+  }>
+> {
+  let names: string[]
+  try {
+    names = (await fs.readdir(root)).slice(0, MAX_FOLDER_ENTRIES)
+  } catch {
+    return []
+  }
+  const results = await Promise.all(
+    names.map(async (name) => {
+      const path = join(root, name)
+      const project = await readProject(fs, path)
+      if (!project.present) return null
+      const outcome = await resolveWallpaperEngineItem(fs, path, project.project)
+      return {
+        path,
+        title: outcome.title,
+        reason: outcome.reason,
+        preview: outcome.item?.poster ?? outcome.still?.path ?? null,
+      }
+    }),
+  )
+  return results
+    .filter((item): item is NonNullable<typeof item> => item !== null)
+    .sort((a, b) => NATURAL.compare(a.title, b.title))
+}
+
 /**
  * Turns the path the user chose into something the renderer can show. A path may be
  *  - a picture or video file;

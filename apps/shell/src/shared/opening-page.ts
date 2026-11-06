@@ -225,7 +225,8 @@ export function openingPageParts(
 ): OpeningPageParts {
   const theme = SPLASH_THEMES[appName]
   const rgb = rgbOf(theme.color)
-  const isCanvasScene = !cardDef || cardDef.contentKind === 'canvas-scene'
+  const isCanvasScene =
+    (!cardDef || cardDef.contentKind === 'canvas-scene') && !(target === 'document' && mediaSource)
   const sceneId = cardDef?.sceneId ?? scene ?? DEFAULT_SCENE_FOR_APP[appName]
   let script =
     !isCanvasScene || tier === 'minimal' ? '' : `<script>${SCENE_LIB}${SCENE_BOOT}</script>`

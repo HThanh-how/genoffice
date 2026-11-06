@@ -7,6 +7,7 @@ import {
   emptyLiveBackgroundState,
   type LiveBackgroundPrefs,
   type LiveBackgroundState,
+  type WallpaperEngineListing,
 } from '../../../shared/fork/live-background'
 import { liveBackgroundCopy, liveBackgroundProblem } from './live-background-strings'
 
@@ -15,6 +16,9 @@ export function LiveBackgroundSettings({ lang }: { lang: string }) {
   const c = liveBackgroundCopy(lang)
   const api = window.aiOffice
   const [state, setState] = useState<LiveBackgroundState>(() => emptyLiveBackgroundState())
+  const [workshop, setWorkshop] = useState<WallpaperEngineListing[]>([])
+  const [scanning, setScanning] = useState(true)
+  const [failedUrl, setFailedUrl] = useState('')
   const [busy, setBusy] = useState(false)
   // sliders move freely; the value is saved shortly after the last change
   const [dim, setDim] = useState<number | null>(null)
@@ -24,6 +28,15 @@ export function LiveBackgroundSettings({ lang }: { lang: string }) {
 
   useEffect(() => {
     let alive = true
+    void api
+      .scanLiveBackgroundWorkshop()
+      .then((items) => {
+        if (alive) setWorkshop(items)
+      })
+      .catch(() => undefined)
+      .finally(() => {
+        if (alive) setScanning(false)
+      })
     void api.getLiveBackground?.().then((next) => {
       if (alive && next) setState(next)
     })
@@ -90,7 +103,23 @@ export function LiveBackgroundSettings({ lang }: { lang: string }) {
         />
       </SettingsRow>
 
-      {prefs.enabled && (
+      <SettingsRow className="set-field">
+        <div className="set-field-text">
+          <div className="set-field-label">{c.opening}</div>
+          <div className="set-field-desc">{c.openingHint}</div>
+        </div>
+        <button
+          type="button"
+          className="set-switch"
+          role="switch"
+          aria-checked={prefs.openingEnabled}
+          aria-label={c.opening}
+          disabled={busy}
+          onClick={() => void patch({ openingEnabled: !prefs.openingEnabled })}
+        />
+      </SettingsRow>
+
+      {(prefs.enabled || prefs.openingEnabled) && (
         <>
           <SettingsRow className="set-field">
             <div className="set-field-text">
@@ -107,6 +136,19 @@ export function LiveBackgroundSettings({ lang }: { lang: string }) {
                 )}
                 {state.skipped > 0 && (
                   <div className="set-field-desc">{c.skipped(state.skipped)}</div>
+                )}
+                {state.media?.kind === 'video' && (
+                  <video
+                    key={state.media.url}
+                    src={state.media.url}
+                    muted
+                    preload="auto"
+                    style={{ display: 'none' }}
+                    onError={() => setFailedUrl(state.media?.url ?? '')}
+                  />
+                )}
+                {state.media?.url && failedUrl === state.media.url && (
+                  <div className="set-field-desc live-bg-problem">{c.decodeError}</div>
                 )}
                 {problem && <div className="set-field-desc live-bg-problem">{problem}</div>}
                 <div className="set-field-desc">{c.folderHint}</div>
@@ -133,10 +175,50 @@ export function LiveBackgroundSettings({ lang }: { lang: string }) {
                 type="button"
                 className="set-btn"
                 disabled={busy || !prefs.sourcePath}
-                onClick={() => void patch({ sourcePath: '', enabled: false })}
+                onClick={() => void patch({ sourcePath: '' })}
               >
                 {c.clear}
               </button>
+            </div>
+          </SettingsRow>
+
+          <SettingsRow className="set-field">
+            <div className="set-field-text">
+              <div className="set-field-label">{c.workshop}</div>
+              <div className="set-field-desc">
+                {scanning ? c.scanning : workshop.length ? c.workshopHint : c.workshopEmpty}
+              </div>
+              <div
+                style={{
+                  display: 'flex',
+                  flexWrap: 'wrap',
+                  gap: 8,
+                  maxHeight: 260,
+                  overflowY: 'auto',
+                }}
+              >
+                {workshop.map((item, index) => (
+                  <button
+                    type="button"
+                    className="set-btn"
+                    key={index}
+                    disabled={busy || !!item.reason}
+                    title={item.reason ? c.reasons[item.reason] : item.title}
+                    onClick={() => void run(() => api.selectLiveBackgroundWorkshop(index))}
+                    style={{ width: 140, whiteSpace: 'normal' }}
+                  >
+                    {item.previewUrl && (
+                      <img
+                        src={item.previewUrl}
+                        alt=""
+                        style={{ width: '100%', height: 70, objectFit: 'cover' }}
+                      />
+                    )}
+                    <span>{item.title}</span>
+                    {item.reason && <span> ? {c.reasons[item.reason]}</span>}
+                  </button>
+                ))}
+              </div>
             </div>
           </SettingsRow>
 

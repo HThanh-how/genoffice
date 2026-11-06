@@ -13,6 +13,8 @@ export const LIVE_BACKGROUND_CHANNELS = {
   setPrefs: 'live-background:set-prefs',
   pickSource: 'live-background:pick-source',
   changed: 'live-background:changed',
+  scan: 'live-background:scan',
+  selectWorkshop: 'live-background:select-workshop',
 } as const
 
 /** Privileged scheme that serves ONLY the currently configured file (see main/fork/live-background.ts). */
@@ -56,6 +58,8 @@ export function shouldPlayLiveBackground(input: {
 export interface LiveBackgroundPrefs {
   /** off by default: nothing is read or decoded until the user switches it on */
   enabled: boolean
+  /** Apply the same selected source to opening cards. */
+  openingEnabled: boolean
   /** a media file, a folder of media, or a Wallpaper Engine item folder (the user's own path) */
   sourcePath: string
   /** 0..90: how strongly the theme's surface colour is laid over the picture so text stays readable */
@@ -70,6 +74,7 @@ export interface LiveBackgroundPrefs {
 
 export const DEFAULT_LIVE_BACKGROUND_PREFS: LiveBackgroundPrefs = {
   enabled: false,
+  openingEnabled: false,
   sourcePath: '',
   dim: 55,
   blur: 0,
@@ -88,6 +93,7 @@ export function normalizeLiveBackgroundPrefs(value: unknown): LiveBackgroundPref
   const d = DEFAULT_LIVE_BACKGROUND_PREFS
   return {
     enabled: raw.enabled === true,
+    openingEnabled: raw.openingEnabled === true,
     sourcePath:
       typeof raw.sourcePath === 'string' && raw.sourcePath.length <= 1024 ? raw.sourcePath : '',
     dim: clampInt(raw.dim, DIM_MIN, DIM_MAX, d.dim),
@@ -150,7 +156,15 @@ export interface LiveBackgroundState {
   skipped: number
 }
 
+export interface WallpaperEngineListing {
+  title: string
+  reason: LiveBackgroundReason | null
+  previewUrl: string | null
+}
+
 export interface LiveBackgroundApi {
+  scanLiveBackgroundWorkshop(): Promise<WallpaperEngineListing[]>
+  selectLiveBackgroundWorkshop(index: number): Promise<LiveBackgroundState>
   getLiveBackground(): Promise<LiveBackgroundState>
   setLiveBackgroundPrefs(patch: Partial<LiveBackgroundPrefs>): Promise<LiveBackgroundState>
   /** native chooser; `mode` 'file' picks a picture/video, 'folder' a folder (media folder or Wallpaper Engine item) */

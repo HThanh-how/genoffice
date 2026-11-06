@@ -8,6 +8,14 @@ import {
 /** Preload half of the optional live background (spread into the home API object). */
 export function createLiveBackgroundPreloadApi(ipcRenderer: IpcRenderer): LiveBackgroundApi {
   return {
+    async scanLiveBackgroundWorkshop() {
+      return ipcRenderer.invoke(LIVE_BACKGROUND_CHANNELS.scan)
+    },
+    async selectLiveBackgroundWorkshop(index) {
+      return normalizeLiveBackgroundState(
+        await ipcRenderer.invoke(LIVE_BACKGROUND_CHANNELS.selectWorkshop, index),
+      )
+    },
     async getLiveBackground() {
       return normalizeLiveBackgroundState(
         await ipcRenderer.invoke(LIVE_BACKGROUND_CHANNELS.getState),

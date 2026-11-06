@@ -137,7 +137,9 @@ export function buildOpeningPage(options: {
   } catch {
     /* Power information unavailable. */
   }
-  const mediaSource = cardDef?.mediaRef && config.mediaSource?.(cardDef.mediaRef.sourceKey)
+  const mediaSource = cardDef?.mediaRef
+    ? config.mediaSource?.(cardDef.mediaRef.sourceKey)
+    : config.mediaSource?.('opening')
   return openingPageHtml(
     words,
     options.fileName,

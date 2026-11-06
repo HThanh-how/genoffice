@@ -17,6 +17,7 @@ import {
 import {
   parseByteRange,
   resolveLiveBackgroundSource,
+  scanWallpaperEngine,
   type ResolvedSource,
 } from './live-background-resolve'
 
@@ -100,6 +101,7 @@ export function registerLiveBackground(deps: LiveBackgroundDeps): LiveBackground
     poster: null,
     enabled: false,
   }
+  let workshop: Awaited<ReturnType<typeof scanWallpaperEngine>> = []
   let revision = 0
   let homeMedia: LiveBackgroundMedia | null = null
   const sources = new Map<
@@ -134,7 +136,7 @@ export function registerLiveBackground(deps: LiveBackgroundDeps): LiveBackground
   }
 
   const build = async (prefs: LiveBackgroundPrefs): Promise<LiveBackgroundState> => {
-    if (!prefs.enabled) {
+    if (!prefs.enabled && !prefs.openingEnabled) {
       homeMedia = null
       served = { main: null, poster: null, enabled: false }
       return emptyLiveBackgroundState(prefs)
@@ -188,6 +190,34 @@ export function registerLiveBackground(deps: LiveBackgroundDeps): LiveBackground
     return state
   }
 
+  deps.ipcMain.handle(LIVE_BACKGROUND_CHANNELS.scan, async () => {
+    const root = await workshopHint()
+    workshop = root ? await scanWallpaperEngine(root) : []
+    for (const key of sources.keys()) if (key.startsWith('workshop-preview-')) sources.delete(key)
+    return workshop.map((item, index) => {
+      const key = `workshop-preview-${index}`
+      const url = `${LIVE_BACKGROUND_SCHEME}://${key}/main?v=${++revision}`
+      if (item.preview)
+        sources.set(key, {
+          main: item.preview,
+          poster: null,
+          media: {
+            kind: 'image',
+            url,
+            posterUrl: null,
+            title: item.title,
+            origin: 'wallpaper-engine',
+          },
+        })
+      return { title: item.title, reason: item.reason, previewUrl: item.preview ? url : null }
+    })
+  })
+  deps.ipcMain.handle(LIVE_BACKGROUND_CHANNELS.selectWorkshop, (_event, index: unknown) => {
+    const item = typeof index === 'number' && Number.isInteger(index) ? workshop[index] : undefined
+    if (!item || item.reason) return refresh()
+    return save({ ...readPrefs(deps.settingsPath()), sourcePath: item.path, index: 0 })
+  })
+
   deps.ipcMain.handle(LIVE_BACKGROUND_CHANNELS.getState, () => refresh())
 
   deps.ipcMain.handle(LIVE_BACKGROUND_CHANNELS.setPrefs, (_event, patch: unknown) => {
@@ -223,12 +253,15 @@ export function registerLiveBackground(deps: LiveBackgroundDeps): LiveBackground
     const chosen = result.canceled ? undefined : result.filePaths[0]
     if (!chosen) return refresh()
     // choosing a source is an explicit request to use it
-    return save({ ...current, enabled: true, sourcePath: chosen, index: 0 })
+    return save({ ...current, sourcePath: chosen, index: 0 })
   })
 
   return {
     setSelectedSource,
-    getSelectedSource: (key) => (key === 'home' ? homeMedia : (sources.get(key)?.media ?? null)),
+    getSelectedSource: (key) => {
+      if (key === 'opening') return readPrefs(deps.settingsPath()).openingEnabled ? homeMedia : null
+      return key === 'home' ? homeMedia : (sources.get(key)?.media ?? null)
+    },
     installProtocol() {
       void refresh()
       protocol.handle(LIVE_BACKGROUND_SCHEME, async (request) => {

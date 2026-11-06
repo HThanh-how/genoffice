@@ -15,6 +15,7 @@ import {
 import {
   parseByteRange,
   resolveLiveBackgroundSource,
+  scanWallpaperEngine,
 } from '../src/main/fork/live-background-resolve'
 
 describe('live background prefs', () => {
@@ -43,6 +44,10 @@ describe('live background prefs', () => {
   })
   it('is off by default and clamps garbage', () => {
     expect(DEFAULT_LIVE_BACKGROUND_PREFS.enabled).toBe(false)
+    expect(DEFAULT_LIVE_BACKGROUND_PREFS.openingEnabled).toBe(false)
+    expect(
+      normalizeLiveBackgroundPrefs({ sourcePath: 'x', openingEnabled: true }).openingEnabled,
+    ).toBe(true)
     expect(normalizeLiveBackgroundPrefs(undefined)).toEqual(DEFAULT_LIVE_BACKGROUND_PREFS)
     expect(normalizeLiveBackgroundPrefs('x')).toEqual(DEFAULT_LIVE_BACKGROUND_PREFS)
     const p = normalizeLiveBackgroundPrefs({
@@ -53,7 +58,15 @@ describe('live background prefs', () => {
       saver: 'no',
       index: 1.6,
     })
-    expect(p).toEqual({ enabled: false, sourcePath: '', dim: 90, blur: 0, saver: true, index: 2 })
+    expect(p).toEqual({
+      enabled: false,
+      openingEnabled: false,
+      sourcePath: '',
+      dim: 90,
+      blur: 0,
+      saver: true,
+      index: 2,
+    })
   })
 
   it('only trusts genoffice-bg:// media urls coming over IPC', () => {
@@ -237,6 +250,17 @@ describe('resolveLiveBackgroundSource', () => {
     expect((await resolveLiveBackgroundSource(root, 2)).item?.title).toBe('loose.webm')
     expect((await resolveLiveBackgroundSource(root, 3)).item?.title).toBe('B')
     expect((await resolveLiveBackgroundSource(root, -1)).item?.title).toBe('loose.webm')
+  })
+
+  it('lists video and unsupported projects with still previews', async () => {
+    item('1', { type: 'video', file: 'a.mp4', title: 'A', preview: 'p.jpg' }, ['a.mp4', 'p.jpg'])
+    item('2', { type: 'scene', title: 'B', preview: 'p.jpg' }, ['p.jpg'])
+    const list = await scanWallpaperEngine(root)
+    expect(list.map(({ title, reason }) => ({ title, reason }))).toEqual([
+      { title: 'A', reason: null },
+      { title: 'B', reason: 'we-scene' },
+    ])
+    expect(list.every((entry) => entry.preview?.endsWith('p.jpg'))).toBe(true)
   })
 
   it('a folder with only scenes is empty and says why', async () => {
