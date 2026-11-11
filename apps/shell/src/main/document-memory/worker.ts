@@ -86,6 +86,9 @@ import { mediaKindOfPath } from './media/media-kinds'
 import { prepareForTesseract } from './local-ocr/tesseract-prepare'
 import { readOcrRecoveryPage } from './storage/repositories/ocr-recovery-repository'
 import { orientTesseractImage } from './local-ocr/orientation-image'
+import { TrueOcrEngine } from './local-ocr/trueocr-engine'
+import type { LocalOcrRecognizeInput } from './runtime/local-ocr-engine'
+let trueOcrEngine: TrueOcrEngine | undefined
 import type { QuarterTurn } from './local-ocr/orientation'
 /** A Word, PowerPoint or Excel file with at least this much text is a document with pictures, not a scan. */
 export const OFFICE_TEXT_ENOUGH_CHARS = 200
@@ -424,6 +427,7 @@ onIndexRequest(
     maxPdfPages?: number
     ocr?: OcrRenderRequest
     bytes?: Uint8Array
+    input?: LocalOcrRecognizeInput
     dpi?: number
     maxEdge?: number
     degrees?: QuarterTurn
@@ -471,7 +475,16 @@ onIndexRequest(
           result = await withBackgroundBudget(async () =>
             readOcrRecoveryPage(getWorkerStore().rawDb, request.afterId ?? 0),
           )
-        else if (request.type === 'ocr-orient')
+        else if (request.type === 'ocr-trueocr')
+          result = await withBackgroundBudget(async () => {
+            trueOcrEngine ??= new TrueOcrEngine()
+            return trueOcrEngine.recognizePage(request.input!)
+          })
+        else if (request.type === 'ocr-trueocr-dispose') {
+          await trueOcrEngine?.dispose()
+          trueOcrEngine = undefined
+          result = true
+        } else if (request.type === 'ocr-orient')
           result = await withBackgroundBudget(async () =>
             orientTesseractImage(request.bytes!, request.degrees ?? 0, request.maxEdge),
           )

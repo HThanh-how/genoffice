@@ -27,6 +27,9 @@ export const RAPIDOCR_ESCALATION_THRESHOLD = 0.48
  */
 export const TESSERACT_ESCALATION_THRESHOLD = 0.25
 
+/** TrueOCR CTC confidence: sample calibration and its limitations are documented in docs/local-ocr-trueocr.md. */
+export const TRUEOCR_ESCALATION_THRESHOLD = 0.65
+
 /** Word confidence (0..100 scale of Tesseract) under which an invoice number is not trusted. */
 export const INVOICE_NUMBER_MIN_WORD_CONFIDENCE = 0.7
 
@@ -39,6 +42,7 @@ export const MIN_ALPHA_TOKENS = 3
 const THRESHOLDS: Readonly<Record<string, number>> = {
   'apple-vision': VISION_ESCALATION_THRESHOLD,
   'tesseract-vie': TESSERACT_ESCALATION_THRESHOLD,
+  'trueocr-vie': TRUEOCR_ESCALATION_THRESHOLD,
   'rapidocr-ppocrv6-tiny': RAPIDOCR_ESCALATION_THRESHOLD,
 }
 
@@ -75,7 +79,9 @@ function clamp01(value: number): number {
   return Number.isFinite(value) ? Math.min(1, Math.max(0, value)) : 0
 }
 
-export function scorePage(page: Pick<LocalOcrRecognition, 'text' | 'tokens' | 'meanConfidence'>): PageScore {
+export function scorePage(
+  page: Pick<LocalOcrRecognition, 'text' | 'tokens' | 'meanConfidence'>,
+): PageScore {
   const tokens = alphaTokens(page.text)
   const valid = tokens.reduce((n, token) => n + (isVietnameseSyllable(token) ? 1 : 0), 0)
   const V = tokens.length ? valid / tokens.length : 0
@@ -144,11 +150,7 @@ export function looksSensitiveContent(text: string): boolean {
 }
 
 export type EscalationReason =
-  | 'ok'
-  | 'low-score'
-  | 'too-little-text'
-  | 'invoice-number-low-confidence'
-  | 'sensitive-content'
+  'ok' | 'low-score' | 'too-little-text' | 'invoice-number-low-confidence' | 'sensitive-content'
 
 export interface EscalationVerdict {
   escalate: boolean

@@ -31,8 +31,8 @@ import {
 
 export const AGY_OCR_SETTINGS_KEY = 'agyOcr'
 
-/** Which local engine reads pages first; 'auto' = Apple Vision on macOS, Tesseract elsewhere. */
-export type LocalOcrEngineChoice = 'auto' | 'apple-vision' | 'tesseract-vie'
+/** 'auto' = Vision on macOS, then TrueOCR and Tesseract. Explicit Tesseract runs only Tesseract. */
+export type LocalOcrEngineChoice = 'auto' | 'apple-vision' | 'trueocr-vie' | 'tesseract-vie'
 
 /**
  * On-device "light index" OCR that runs BEFORE the cloud reader: the first `lightPages` pages of each
@@ -112,7 +112,12 @@ export const DEFAULT_AGY_OCR_SETTINGS: AgyOcrSettings = {
   localOcr: DEFAULT_LOCAL_OCR_SETTINGS,
 }
 
-const LOCAL_ENGINES: readonly LocalOcrEngineChoice[] = ['auto', 'apple-vision', 'tesseract-vie']
+const LOCAL_ENGINES: readonly LocalOcrEngineChoice[] = [
+  'auto',
+  'apple-vision',
+  'trueocr-vie',
+  'tesseract-vie',
+]
 
 /** The local OCR settings with defaults filled in; every field validated (stored input is untrusted). */
 export function mergeLocalOcrSettings(
@@ -133,7 +138,7 @@ export function mergeLocalOcrSettings(
     ),
     engine: LOCAL_ENGINES.includes(p.engine as LocalOcrEngineChoice)
       ? (p.engine as LocalOcrEngineChoice)
-      : from.engine,
+      : (from.engine ?? DEFAULT_LOCAL_OCR_SETTINGS.engine),
   }
 }
 

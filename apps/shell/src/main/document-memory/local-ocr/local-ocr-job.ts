@@ -41,7 +41,8 @@ import {
   postProcessVietnameseOcrText,
   type LocalOcrEngine,
 } from '../runtime/local-ocr-engine'
-import { shouldEscalate, type EscalationReason } from './escalation'
+import { looksSensitiveContent, shouldEscalate, type EscalationReason } from './escalation'
+import { recognizeWithLocalFallback } from './trueocr-fallback'
 import type { EngineSelection, LocalOcrEnginePreference } from './registry'
 import { detectImageFormat } from './tesseract-prepare'
 import { classifyOcrSourceError } from '../ocr-source-errors'
@@ -407,6 +408,7 @@ export class LocalOcrJob {
           engine,
           meta,
           summary,
+          signal,
         )
       } catch (error) {
         if (error instanceof LocalOcrUnavailableError) {
@@ -433,6 +435,7 @@ export class LocalOcrJob {
                 engine,
                 meta,
                 summary,
+                signal,
               )
             } catch (fallbackError) {
               if (fallbackError instanceof LocalOcrUnavailableError) {
@@ -570,6 +573,7 @@ export class LocalOcrJob {
         engine,
         meta,
         summary,
+        signal,
       )
     } catch (error) {
       if (error instanceof LocalOcrUnavailableError) return 'no-engine'
@@ -639,13 +643,22 @@ export class LocalOcrJob {
     engine: LocalOcrEngine,
     file: { hash: string; mtimeMs: number; sizeBytes: number; totalPages: number },
     summary: LocalOcrRunSummary,
+    signal?: AbortSignal,
   ): Promise<'saved' | 'denied'> {
     this.lastChars = 0
-    const recognition = await engine.recognizePage({ bytes, dpi, lang: 'vie' })
+    const result = await recognizeWithLocalFallback(
+      engine,
+      { bytes, dpi, lang: 'vie' },
+      this.deps.registry,
+      async () => (await this.guarded(signal)) === null,
+    )
+    const { recognition } = result
+    engine = result.engine
     const verdict = shouldEscalate(recognition, engine.id)
     // Identity / legal papers are never cloud work, whatever their score: the cloud list drops them by
     // name, and this drops the ones whose name said nothing.
-    const cloudAllowed = !isSensitiveName(basename(path), path)
+    const cloudAllowed =
+      !isSensitiveName(basename(path), path) && !looksSensitiveContent(result.sensitiveText)
     const escalate = verdict.escalate && cloudAllowed
     const text = cleanText(recognition.text)
     const saved = await this.deps.savePages(

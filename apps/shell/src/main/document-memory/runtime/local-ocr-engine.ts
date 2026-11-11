@@ -2,7 +2,7 @@
  * Local OCR contract and candidate metadata for GenOffice.
  *
  * Implemented engines (see ../local-ocr/): Apple Vision `accurate` on macOS (bundled Swift helper)
- * and Tesseract `vie` (tessdata_fast, tesseract.js WASM) everywhere else. The candidates below are
+ * then TrueOCR 0.1.1 `vie` (ONNX CPU) and Tesseract `vie` (tessdata_fast, WASM). The candidates below are
  * the OTHER models that were looked at; they stay `candidate_only` until an engine for them exists
  * (RapidOCR PP-OCRv6-tiny is phase 2: see ../local-ocr/rapidocr-descriptor.ts for its measured numbers).
  * Candidate `metrics` stay unknown here on purpose: measured figures live in the engine descriptors.
@@ -318,7 +318,7 @@ export function postProcessVietnameseOcrText(text: string): string {
 }
 
 // ---- the engine abstraction ---------------------------------------------------------------------
-// Implementations live in ./local-ocr/ (Apple Vision helper, Tesseract WASM); selection in
+// Implementations live in ./local-ocr/ (Apple Vision, TrueOCR, Tesseract); selection in
 // ./local-ocr/registry.ts. This file only holds the contract so every module can depend on it.
 
 /** One recognised word / line with the engine's own confidence (0..1). */

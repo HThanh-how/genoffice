@@ -1,12 +1,12 @@
 /**
  * Tier-aware engine selection.
  *
- *   macOS    : Apple Vision accurate, then Tesseract as the fallback
- *   elsewhere: Tesseract
+ *   macOS    : Apple Vision accurate, then TrueOCR, then Tesseract
+ *   elsewhere: TrueOCR, then Tesseract
  *   (RapidOCR is a descriptor only and is never selected)
  *
  * RAM guard: an engine is never started when free RAM is below the figure measured for it
- * (Vision ~0.55 GB, Tesseract ~0.3 GB). When the preferred engine is refused for RAM the next
+ * (Vision ~0.55 GB, TrueOCR ~0.4 GB, Tesseract ~0.3 GB). When the preferred engine is refused for RAM the next
  * one in the chain gets its turn; when none fits the answer is `null` and the job waits.
  */
 import { freemem, totalmem } from 'node:os'
@@ -14,13 +14,16 @@ import type { LocalOcrEngine, LocalOcrEngineDescriptor } from '../runtime/local-
 import { RAPIDOCR_DESCRIPTOR } from './rapidocr-descriptor'
 import { AppleVisionEngine, VISION_ENGINE_ID } from './vision-engine'
 import { TesseractEngine, TESSERACT_ENGINE_ID } from './tesseract-engine'
+import { TrueOcrEngine, TRUEOCR_ENGINE_ID } from './trueocr-engine'
 
-export type LocalOcrEnginePreference = 'auto' | typeof VISION_ENGINE_ID | typeof TESSERACT_ENGINE_ID
+export type LocalOcrEnginePreference =
+  'auto' | typeof VISION_ENGINE_ID | typeof TRUEOCR_ENGINE_ID | typeof TESSERACT_ENGINE_ID
 
 /** Descriptors of every engine, including the ones that cannot run (for diagnostics). */
 export function listEngineDescriptors(): LocalOcrEngineDescriptor[] {
   return [
     new AppleVisionEngine({ helperPath: null }).descriptor,
+    new TrueOcrEngine({ modelDir: null }).descriptor,
     new TesseractEngine({ langPath: null }).descriptor,
     RAPIDOCR_DESCRIPTOR,
   ]
@@ -31,8 +34,12 @@ export function engineChain(
   platform: NodeJS.Platform,
   preference: LocalOcrEnginePreference = 'auto',
 ): string[] {
-  const natural = platform === 'darwin' ? [VISION_ENGINE_ID, TESSERACT_ENGINE_ID] : [TESSERACT_ENGINE_ID]
+  const natural =
+    platform === 'darwin'
+      ? [VISION_ENGINE_ID, TRUEOCR_ENGINE_ID, TESSERACT_ENGINE_ID]
+      : [TRUEOCR_ENGINE_ID, TESSERACT_ENGINE_ID]
   if (preference === 'auto') return natural
+  if (preference === TESSERACT_ENGINE_ID) return [TESSERACT_ENGINE_ID]
   // an explicit choice goes first but the fallback stays behind it; Vision is macOS-only
   const chosen = preference === VISION_ENGINE_ID && platform !== 'darwin' ? [] : [preference]
   return [...chosen, ...natural.filter((id) => id !== preference)]
@@ -45,7 +52,9 @@ export function engineChain(
  */
 export function availableRamMB(): number {
   try {
-    const info = (process as { getSystemMemoryInfo?: () => { free: number } }).getSystemMemoryInfo?.()
+    const info = (
+      process as { getSystemMemoryInfo?: () => { free: number } }
+    ).getSystemMemoryInfo?.()
     if (info) return info.free / 1024 // kilobytes
   } catch {
     // fall through
@@ -78,6 +87,7 @@ export class LocalOcrEngineRegistry {
     this.freeRamMB = options.freeRamMB ?? availableRamMB
     this.factories = {
       [VISION_ENGINE_ID]: () => new AppleVisionEngine(),
+      [TRUEOCR_ENGINE_ID]: () => new TrueOcrEngine(),
       [TESSERACT_ENGINE_ID]: () => new TesseractEngine(),
       ...options.factories,
     }
@@ -105,7 +115,9 @@ export class LocalOcrEngineRegistry {
       // distinguish "would run if RAM allowed" from "cannot run here at all"
       skipped.push({
         id,
-        reason: engine.isAvailable(this.platform, Number.POSITIVE_INFINITY) ? 'low-ram' : 'unavailable',
+        reason: engine.isAvailable(this.platform, Number.POSITIVE_INFINITY)
+          ? 'low-ram'
+          : 'unavailable',
       })
     }
     return null

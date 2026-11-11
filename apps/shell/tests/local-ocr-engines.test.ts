@@ -236,16 +236,17 @@ describe('Vision helper output parsing', () => {
 describe('engine selection: tier-aware, RAM-guarded', () => {
   const factories = () => ({
     'apple-vision': () => fakeEngine('apple-vision', 550, ['darwin']),
+    'trueocr-vie': () => fakeEngine('trueocr-vie', 400, 'all'),
     'tesseract-vie': () => fakeEngine('tesseract-vie', 300, 'all'),
   })
 
-  it('macOS tries Vision then Tesseract; everything else gets Tesseract only', () => {
-    expect(engineChain('darwin')).toEqual(['apple-vision', 'tesseract-vie'])
-    expect(engineChain('win32')).toEqual(['tesseract-vie'])
-    expect(engineChain('linux')).toEqual(['tesseract-vie'])
+  it('macOS tries Vision then TrueOCR and Tesseract; elsewhere starts with TrueOCR', () => {
+    expect(engineChain('darwin')).toEqual(['apple-vision', 'trueocr-vie', 'tesseract-vie'])
+    expect(engineChain('win32')).toEqual(['trueocr-vie', 'tesseract-vie'])
+    expect(engineChain('linux')).toEqual(['trueocr-vie', 'tesseract-vie'])
     // an explicit choice goes first, but Vision cannot be forced onto a machine without it
-    expect(engineChain('darwin', 'tesseract-vie')).toEqual(['tesseract-vie', 'apple-vision'])
-    expect(engineChain('win32', 'apple-vision')).toEqual(['tesseract-vie'])
+    expect(engineChain('darwin', 'tesseract-vie')).toEqual(['tesseract-vie'])
+    expect(engineChain('win32', 'apple-vision')).toEqual(['trueocr-vie', 'tesseract-vie'])
   })
 
   it('picks by platform', () => {
@@ -260,7 +261,7 @@ describe('engine selection: tier-aware, RAM-guarded', () => {
       freeRamMB: () => 8000,
       factories: factories(),
     })
-    expect(win.select()!.engine.id).toBe('tesseract-vie')
+    expect(win.select()!.engine.id).toBe('trueocr-vie')
     expect(win.select()!.skipped).toEqual([]) // Vision is not even in the chain there
   })
 
@@ -272,10 +273,13 @@ describe('engine selection: tier-aware, RAM-guarded', () => {
       factories: factories(),
     })
     expect(registry.select()!.engine.id).toBe('apple-vision')
-    free = 400 // Vision needs ~550 MB, Tesseract ~300
+    free = 399 // Vision needs ~550 MB, TrueOCR 400, Tesseract ~300
     const fallback = registry.select()!
     expect(fallback.engine.id).toBe('tesseract-vie')
-    expect(fallback.skipped).toEqual([{ id: 'apple-vision', reason: 'low-ram' }])
+    expect(fallback.skipped).toEqual([
+      { id: 'apple-vision', reason: 'low-ram' },
+      { id: 'trueocr-vie', reason: 'low-ram' },
+    ])
     free = 250
     expect(registry.select()).toBeNull()
   })
@@ -289,6 +293,7 @@ describe('engine selection: tier-aware, RAM-guarded', () => {
     expect(RAPIDOCR_MEASUREMENTS.weightBytes).toBe(1_829_618 + 4_489_813)
     expect(listEngineDescriptors().map((d) => [d.id, d.available])).toEqual([
       ['apple-vision', true],
+      ['trueocr-vie', true],
       ['tesseract-vie', true],
       ['rapidocr-ppocrv6-tiny', false],
     ])
@@ -306,7 +311,7 @@ describe('engine selection: tier-aware, RAM-guarded', () => {
         }),
       },
     })
-    registry.select()
+    registry.select('tesseract-vie')
     await registry.disposeAll()
     expect(disposed).toBe(1)
   })

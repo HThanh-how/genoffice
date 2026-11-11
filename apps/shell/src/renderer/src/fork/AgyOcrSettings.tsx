@@ -11,6 +11,7 @@ import type {
 import { DEFAULT_LOCAL_OCR_SETTINGS, LOCAL_OCR_MAX_PAGES } from '../../../shared/fork/agy-ocr'
 import { activityLine, agyOcrString, formatCount, type AgyOcrStringKey } from './agy-ocr-strings'
 import { readIndexRequest } from './index-request'
+import { localOcrCopy } from '../i18n/strings-local-ocr'
 import './agy-ocr.css'
 
 const POLL_MS = 3000
@@ -219,6 +220,8 @@ function statusLines(
 /** Document memory -> read scanned PDFs through Antigravity: consent, model, quota reserves, live status. */
 export function AgyOcrSettings() {
   const { lang } = useI18n()
+  const localCopy = localOcrCopy(lang)
+  const isMac = navigator.platform.toLowerCase().includes('mac')
   const api = window.aiOffice
   const available = typeof api?.getAgyOcrStatus === 'function'
   const [status, refresh, statusFailed] = useAgyOcrStatus(api ?? {})
@@ -641,6 +644,67 @@ export function AgyOcrSettings() {
         >
           {lang === 'vi' ? 'Đặt lại mức chia sẻ mặc định' : 'Restore default sharing'}
         </button>
+        <SettingsRow className="set-field set-field-top">
+          <div className="set-field-text">
+            <div className="set-field-label">{localCopy.enable}</div>
+          </div>
+          <Switch
+            checked={(settings?.localOcr ?? DEFAULT_LOCAL_OCR_SETTINGS).enabled}
+            label={localCopy.enable}
+            disabled={disabled}
+            onToggle={() =>
+              settings &&
+              save({
+                localOcr: {
+                  ...(settings.localOcr ?? DEFAULT_LOCAL_OCR_SETTINGS),
+                  enabled: !(settings.localOcr ?? DEFAULT_LOCAL_OCR_SETTINGS).enabled,
+                },
+              })
+            }
+          />
+        </SettingsRow>
+
+        <SettingsRow className="set-field set-field-top">
+          <div className="set-field-text">
+            <div className="set-field-label">{localCopy.engine}</div>
+            <div className="set-field-desc">{localCopy.autoHint}</div>
+          </div>
+          <label className="set-select-wrap">
+            <span className="set-select-text">
+              {settings?.localOcr?.engine === 'tesseract-vie'
+                ? localCopy.tesseract
+                : settings?.localOcr?.engine === 'apple-vision'
+                  ? localCopy.vision
+                  : settings?.localOcr?.engine === 'trueocr-vie'
+                    ? 'TrueOCR'
+                    : localCopy.auto}
+            </span>
+            <select
+              className="set-select"
+              aria-label={localCopy.engine}
+              disabled={disabled}
+              value={(settings?.localOcr ?? DEFAULT_LOCAL_OCR_SETTINGS).engine}
+              onChange={(event) =>
+                settings &&
+                save({
+                  localOcr: {
+                    ...(settings.localOcr ?? DEFAULT_LOCAL_OCR_SETTINGS),
+                    engine: event.target
+                      .value as import('../../../shared/fork/agy-ocr').LocalOcrEngineChoice,
+                  },
+                })
+              }
+            >
+              <option value="auto">{localCopy.auto}</option>
+              <option value="tesseract-vie">{localCopy.tesseract}</option>
+              {isMac && <option value="apple-vision">{localCopy.vision}</option>}
+              {settings?.localOcr?.engine === 'trueocr-vie' && (
+                <option value="trueocr-vie">TrueOCR</option>
+              )}
+            </select>
+          </label>
+        </SettingsRow>
+
         <SettingsRow className="set-field set-field-top">
           <div className="set-field-text">
             <div className="set-field-stack">

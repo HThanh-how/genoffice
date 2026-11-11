@@ -1,6 +1,7 @@
 import { existsSync, readFileSync } from 'node:fs'
 import { createRequire } from 'node:module'
 import { join } from 'node:path'
+import { createHash } from 'node:crypto'
 import { describe, expect, it } from 'vitest'
 
 const root = join(__dirname, '..')
@@ -11,6 +12,29 @@ const builder = createRequire(__filename)(join(root, 'electron-builder.cjs')) as
 }
 
 describe('local OCR packaging', () => {
+  it('ships all TrueOCR models outside asar and declares/unpacks the existing native ONNX runtime', () => {
+    expect(builder.extraResources).toContainEqual({
+      from: 'resources/ocr/trueocr',
+      to: 'ocr/trueocr',
+    })
+    const dir = join(root, 'resources/ocr/trueocr')
+    const manifest = JSON.parse(readFileSync(join(dir, 'manifest.json'), 'utf8')) as Record<
+      string,
+      { bytes: number; sha256: string }
+    >
+    for (const file of ['det.onnx', 'rec.onnx', 'order.onnx', 'orient.onnx', 'meta.json']) {
+      const bytes = readFileSync(join(dir, file))
+      expect(bytes.length).toBe(manifest[file]!.bytes)
+      expect(createHash('sha256').update(bytes).digest('hex')).toBe(manifest[file]!.sha256)
+    }
+    expect(existsSync(join(dir, 'LICENSE'))).toBe(true)
+    expect(builder.asarUnpack).toContain('node_modules/onnxruntime-node/**')
+    const pkg = JSON.parse(readFileSync(join(root, 'package.json'), 'utf8'))
+    expect(pkg.dependencies['onnxruntime-node']).toBe('1.23.2')
+    expect(readFileSync(join(root, 'electron.vite.config.ts'), 'utf8')).toMatch(
+      /external:\s*\[[^\]]*'onnxruntime-node'/,
+    )
+  })
   it('ships the Vietnamese model to Resources/ocr/tessdata and keeps the Vision helper entry', () => {
     expect(builder.extraResources).toContainEqual({
       from: 'resources/ocr/tessdata',

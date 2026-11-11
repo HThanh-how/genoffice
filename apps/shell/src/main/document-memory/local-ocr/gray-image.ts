@@ -326,15 +326,15 @@ function decodeScan(
 
 // ---- PNG (8-bit gray / gray+alpha / RGB / RGBA, non-interlaced) -------------------------------
 
-export function decodePngGray(bytes: Uint8Array): GrayImage | null {
+export function decodePngGray(bytes: Uint8Array, compositeAlpha = false): GrayImage | null {
   try {
-    return decodePngGrayUnsafe(bytes)
+    return decodePngGrayUnsafe(bytes, compositeAlpha)
   } catch {
     return null
   }
 }
 
-function decodePngGrayUnsafe(bytes: Uint8Array): GrayImage | null {
+function decodePngGrayUnsafe(bytes: Uint8Array, compositeAlpha: boolean): GrayImage | null {
   const sig = [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]
   if (bytes.length < 33 || sig.some((b, i) => bytes[i] !== b)) return null
   const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength)
@@ -401,8 +401,15 @@ function decodePngGrayUnsafe(bytes: Uint8Array): GrayImage | null {
     }
     for (let x = 0; x < width; x++) {
       const o = x * channels
-      out[y * width + x] =
-        channels < 3 ? cur[o]! : (cur[o]! * 299 + cur[o + 1]! * 587 + cur[o + 2]! * 114) / 1000
+      if (compositeAlpha) {
+        const alpha = channels === 2 || channels === 4 ? cur[o + channels - 1]! / 255 : 1
+        const r = Math.round(cur[o]! * alpha + 255 * (1 - alpha))
+        const g = channels < 3 ? r : Math.round(cur[o + 1]! * alpha + 255 * (1 - alpha))
+        const b = channels < 3 ? r : Math.round(cur[o + 2]! * alpha + 255 * (1 - alpha))
+        out[y * width + x] = Math.round((r * 299 + g * 587 + b * 114) / 1000)
+      } else
+        out[y * width + x] =
+          channels < 3 ? cur[o]! : (cur[o]! * 299 + cur[o + 1]! * 587 + cur[o + 2]! * 114) / 1000
     }
     prev.set(cur)
   }
