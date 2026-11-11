@@ -1151,22 +1151,32 @@ describe('LocalOcrJob on scanned PDFs (real SQLite, real PDFium render, engine d
   })
 })
 
-describe('LocalOcrJob with the real Tesseract engine end to end', () => {
-  it('OCRs a rendered scanned PDF, stores it as a local row, and search finds the file by the text', async () => {
-    const path = invoicePdf('Viettel.pdf', 1)
-    enrollEmpty(path)
-    const registry = new LocalOcrEngineRegistry({ platform: 'linux', freeRamMB: () => 8000 })
-    const started = performance.now()
-    const summary = await makeJob(null, { registry }).runOnce()
-    const seconds = (performance.now() - started) / 1000
-    await registry.disposeAll()
-    expect(summary).toMatchObject({ files: 1, pages: 1, failed: 0 })
-    expect(store.ocr.pageTier(path, 1)).toMatchObject({ tier: 'local', engine: 'tesseract-vie' })
-    await reindexNow(path)
-    expect(store.searchLexical('Viettel Tien Giang').length).toBeGreaterThan(0)
-    expect(store.searchLexical('0433').length).toBeGreaterThan(0)
-    expect(seconds).toBeLessThan(30)
-  }, 60_000)
+describe('LocalOcrJob with real local engines end to end', () => {
+  it.each(['tesseract-vie', 'auto'] as const)(
+    'OCRs a rendered scanned PDF with preference %s, stores the engine and indexes the text',
+    async (preference) => {
+      const path = invoicePdf('Viettel.pdf', 1)
+      enrollEmpty(path)
+      const registry = new LocalOcrEngineRegistry({ platform: 'linux', freeRamMB: () => 8000 })
+      const started = performance.now()
+      const summary = await makeJob(null, {
+        registry,
+        settings: () => ({ enabled: true, lightPages: 2, maxPages: 2, engine: preference }),
+      }).runOnce()
+      const seconds = (performance.now() - started) / 1000
+      await registry.disposeAll()
+      expect(summary).toMatchObject({ files: 1, pages: 1, failed: 0 })
+      expect(store.ocr.pageTier(path, 1)).toMatchObject({
+        tier: 'local',
+        engine: preference === 'auto' ? 'trueocr-vie' : 'tesseract-vie',
+      })
+      await reindexNow(path)
+      expect(store.searchLexical('Viettel Tien Giang').length).toBeGreaterThan(0)
+      expect(store.searchLexical('0433').length).toBeGreaterThan(0)
+      expect(seconds).toBeLessThan(30)
+    },
+    60_000,
+  )
 })
 
 function hashOf(path: string): string {

@@ -30,6 +30,8 @@ export type WorkerRequest =
   | { type: 'embed'; texts: string[]; kind: 'query' | 'passage' }
   | { type: 'ocr-render'; path: string; ocr: OcrRenderRequest }
   | { type: 'ocr-prepare'; bytes: Uint8Array; dpi: number }
+  | { type: 'ocr-trueocr'; input: import('./runtime/local-ocr-engine').LocalOcrRecognizeInput }
+  | { type: 'ocr-trueocr-dispose' }
   | {
       type: 'ocr-orient'
       bytes: Uint8Array

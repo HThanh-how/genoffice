@@ -5,7 +5,8 @@
  * Why it is not wired yet: it needs a TypeScript port of DB text detection post-processing and
  * CTC decoding on top of onnxruntime-node, and its recogniser charset lacks ~92 of the 134
  * precomposed Vietnamese letters (it reads "Đơn vị" as "Đon vi"), so its text is only suitable
- * for the diacritic-folded lexical index, not for display or embeddings.
+ * for the diacritic-folded lexical index, not for display or embeddings. The shipped ONNX local
+ * engine is TrueOCR (trueocr-engine.ts); this candidate remains unavailable.
  */
 import type { LocalOcrEngineDescriptor } from '../runtime/local-ocr-engine'
 import { RAPIDOCR_ESCALATION_THRESHOLD } from './escalation'
@@ -14,8 +15,16 @@ export interface RapidOcrMeasurements {
   readonly weightBytes: number
   readonly onnxRuntimeDylibBytesMacArm64: number
   /** peak RSS by detector side cap (MB), 24 pages, one thread, 100 dpi */
-  readonly peakRssMB: { readonly limit640: number; readonly limit960: number; readonly uncapped: number }
-  readonly cpuSecondsPerPage100dpi: { readonly limit640: number; readonly limit960: number; readonly uncapped: number }
+  readonly peakRssMB: {
+    readonly limit640: number
+    readonly limit960: number
+    readonly uncapped: number
+  }
+  readonly cpuSecondsPerPage100dpi: {
+    readonly limit640: number
+    readonly limit960: number
+    readonly uncapped: number
+  }
   readonly invoiceNumberRecovery100dpi: number
   readonly consensusTokenRecall100dpi: number
 }

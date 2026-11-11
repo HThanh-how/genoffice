@@ -2,6 +2,7 @@
  * Where the bundled OCR resources live.
  *   packaged: <Resources>/ocr/vision-ocr (macOS helper, already shipped for the PDF app) and
  *             <Resources>/ocr/tessdata/vie.traineddata (electron-builder extraResources)
+ *             <Resources>/ocr/trueocr/{det,rec,order,orient}.onnx + meta.json
  *   dev/test: packages/pdf2docx/ocr-helper/vision-ocr and apps/shell/resources/ocr/tessdata,
  *             found by walking up from this file / the working directory.
  * Nothing is ever downloaded: a missing resource simply makes the engine unavailable.
@@ -37,6 +38,28 @@ function walkUp(relative: string): string | null {
     }
   }
   return null
+}
+
+export const TRUEOCR_MODEL_FILES = [
+  'det.onnx',
+  'rec.onnx',
+  'order.onnx',
+  'orient.onnx',
+  'meta.json',
+] as const
+
+export function trueOcrModelsPresent(dir: string): boolean {
+  return TRUEOCR_MODEL_FILES.every((file) => existsSync(join(dir, file)))
+}
+
+/** Directory of the frozen TrueOCR 0.1.1 page models. Never downloads resources. */
+export function findTrueOcrDir(): string | null {
+  for (const root of resourceRoots()) {
+    const candidate = join(root, 'trueocr')
+    if (trueOcrModelsPresent(candidate)) return candidate
+  }
+  const dev = walkUp(join('apps', 'shell', 'resources', 'ocr', 'trueocr'))
+  return dev && trueOcrModelsPresent(dev) ? dev : null
 }
 
 /** Path of the compiled macOS Vision helper, or null. */

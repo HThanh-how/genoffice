@@ -1,0 +1,22 @@
+{
+  "det.onnx": {
+    "bytes": 389948,
+    "sha256": "f2bd4cba23e9c328cf7ec824634e423e191a2c6aacbbf35c62bd79dd70f62f59"
+  },
+  "rec.onnx": {
+    "bytes": 4280974,
+    "sha256": "360b800dcbebd1099270f703ac35a43a6c86b40de049c4be78a130184b3bfef0"
+  },
+  "order.onnx": {
+    "bytes": 2973138,
+    "sha256": "a42db2e8b536ad3d84045a4b7f9b0a72667cf8be4aa02d63f7b38004719fb180"
+  },
+  "orient.onnx": {
+    "bytes": 371802,
+    "sha256": "20eaf670f55a7cf9facfe1bdd6c7b8e40be75bbf4d48a3df43f66aa3bbd874fd"
+  },
+  "meta.json": {
+    "bytes": 1905,
+    "sha256": "934c619f2b8579aa0fa0ead0ec20afc79fd92966be0255ebaf821142fe8740cd"
+  }
+}

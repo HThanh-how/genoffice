@@ -1,7 +1,7 @@
 /**
  * Glue between the document-memory manager and the local "light index" OCR pass (local-ocr/).
  *
- *  - one shared `LocalOcrEngineRegistry` (the Tesseract engine's CPU-heavy image preparation is sent to
+ *  - one shared `LocalOcrEngineRegistry` (the full TrueOCR pipeline and Tesseract image preparation go to
  *    the index worker as an `ocr-prepare` request; Apple Vision already runs in its own helper process
  *    and Tesseract.js recognises in a worker thread, so the main thread only reads files and writes rows);
  *  - the cloud host (`createOcrHost`) with `localFirst` = "a local engine is on and can run right now";
@@ -26,6 +26,8 @@ import {
 } from '../local-ocr/local-ocr-job'
 import { LocalOcrEngineRegistry } from '../local-ocr/registry'
 import { TesseractEngine, TESSERACT_ENGINE_ID } from '../local-ocr/tesseract-engine'
+import { TrueOcrEngine, TRUEOCR_ENGINE_ID } from '../local-ocr/trueocr-engine'
+import type { LocalOcrRecognition, LocalOcrRecognizeInput } from './local-ocr-engine'
 import { createOcrHost, type OcrHostInput } from '../ocr-host'
 import type { QuarterTurn } from '../local-ocr/orientation'
 
@@ -38,6 +40,8 @@ const PREPARE_TIMEOUT_MS = 60_000
 type WorkerAsk = (
   request:
     | { type: 'ocr-prepare'; bytes: Uint8Array; dpi: number }
+    | { type: 'ocr-trueocr'; input: LocalOcrRecognizeInput }
+    | { type: 'ocr-trueocr-dispose' }
     | { type: 'ocr-orient'; bytes: Uint8Array; degrees: QuarterTurn; maxEdge?: number },
   timeoutMs?: number,
 ) => Promise<unknown>
@@ -203,6 +207,21 @@ export function createLocalOcrWiring(deps: LocalOcrWiringDeps): LocalOcrWiring {
     deps.registry ??
     new LocalOcrEngineRegistry({
       factories: {
+        [TRUEOCR_ENGINE_ID]: () =>
+          new TrueOcrEngine({
+            recognize: async (input) => {
+              const reply = (await deps.ask(
+                { type: 'ocr-trueocr', input },
+                input.timeoutMs ?? 120_000,
+              )) as { result?: LocalOcrRecognition; error?: string } | null
+              if (!reply?.result || reply.error)
+                throw new Error(reply?.error ?? 'TrueOCR worker unavailable')
+              return reply.result
+            },
+            release: async () => {
+              await deps.ask({ type: 'ocr-trueocr-dispose' }, PREPARE_TIMEOUT_MS)
+            },
+          }),
         [TESSERACT_ENGINE_ID]: () =>
           new TesseractEngine({
             // decode / shrink / flatten run in the index worker, not on the UI thread

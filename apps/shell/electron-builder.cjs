@@ -108,6 +108,9 @@ function assertExtraResourceSources() {
     '../pdf/node_modules/harfbuzzjs/hb-subset.wasm',
     // local OCR (Tesseract): the Vietnamese model and the one core variant family the engine loads
     'resources/ocr/tessdata/vie.traineddata',
+    ...['det.onnx', 'rec.onnx', 'order.onnx', 'orient.onnx', 'meta.json', 'LICENSE'].map(
+      (file) => `resources/ocr/trueocr/${file}`,
+    ),
     '../../node_modules/tesseract.js-core/tesseract-core-lstm.wasm',
     '../../node_modules/@rhwp/core/rhwp_bg.wasm',
   ]) {
@@ -550,6 +553,7 @@ const config = {
     'node_modules/wasm-feature-detect/**',
   ],
   extraResources: [
+    { from: 'resources/ocr/trueocr', to: 'ocr/trueocr' },
     {
       from: 'build/THIRD-PARTY-NOTICES.txt',
       to: 'THIRD-PARTY-NOTICES.txt',
