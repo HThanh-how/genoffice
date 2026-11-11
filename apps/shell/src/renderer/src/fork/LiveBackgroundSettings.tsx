@@ -17,7 +17,7 @@ export function LiveBackgroundSettings({ lang }: { lang: string }) {
   const api = window.aiOffice
   const [state, setState] = useState<LiveBackgroundState>(() => emptyLiveBackgroundState())
   const [workshop, setWorkshop] = useState<WallpaperEngineListing[]>([])
-  const [scanning, setScanning] = useState(true)
+  const [scanning, setScanning] = useState(!!api.scanLiveBackgroundWorkshop)
   const [failedUrl, setFailedUrl] = useState('')
   const [busy, setBusy] = useState(false)
   // sliders move freely; the value is saved shortly after the last change
@@ -28,10 +28,10 @@ export function LiveBackgroundSettings({ lang }: { lang: string }) {
 
   useEffect(() => {
     let alive = true
-    void api
-      .scanLiveBackgroundWorkshop()
-      .then((items) => {
-        if (alive) setWorkshop(items)
+    const scan = api.scanLiveBackgroundWorkshop?.()
+    void scan
+      ?.then((items) => {
+        if (alive) setWorkshop(items ?? [])
       })
       .catch(() => undefined)
       .finally(() => {
@@ -39,7 +39,7 @@ export function LiveBackgroundSettings({ lang }: { lang: string }) {
       })
     void api.getLiveBackground?.().then((next) => {
       if (alive && next) setState(next)
-    })
+    }).catch(() => undefined)
     const off = api.onLiveBackgroundChanged?.((next) => {
       if (alive) setState(next)
     })
@@ -98,7 +98,7 @@ export function LiveBackgroundSettings({ lang }: { lang: string }) {
           role="switch"
           aria-checked={prefs.enabled}
           aria-label={c.show}
-          disabled={busy}
+          disabled={busy || !api.setLiveBackgroundPrefs}
           onClick={() => void patch({ enabled: !prefs.enabled })}
         />
       </SettingsRow>
@@ -114,7 +114,7 @@ export function LiveBackgroundSettings({ lang }: { lang: string }) {
           role="switch"
           aria-checked={prefs.openingEnabled}
           aria-label={c.opening}
-          disabled={busy}
+          disabled={busy || !api.setLiveBackgroundPrefs}
           onClick={() => void patch({ openingEnabled: !prefs.openingEnabled })}
         />
       </SettingsRow>
@@ -158,7 +158,7 @@ export function LiveBackgroundSettings({ lang }: { lang: string }) {
               <button
                 type="button"
                 className="set-btn"
-                disabled={busy}
+                disabled={busy || !api.pickLiveBackgroundSource}
                 onClick={() => void run(() => api.pickLiveBackgroundSource('file'))}
               >
                 {c.chooseFile}
@@ -166,7 +166,7 @@ export function LiveBackgroundSettings({ lang }: { lang: string }) {
               <button
                 type="button"
                 className="set-btn"
-                disabled={busy}
+                disabled={busy || !api.pickLiveBackgroundSource}
                 onClick={() => void run(() => api.pickLiveBackgroundSource('folder'))}
               >
                 {c.chooseFolder}
@@ -174,7 +174,7 @@ export function LiveBackgroundSettings({ lang }: { lang: string }) {
               <button
                 type="button"
                 className="set-btn"
-                disabled={busy || !prefs.sourcePath}
+                disabled={busy || !api.setLiveBackgroundPrefs || !prefs.sourcePath}
                 onClick={() => void patch({ sourcePath: '' })}
               >
                 {c.clear}
@@ -202,7 +202,7 @@ export function LiveBackgroundSettings({ lang }: { lang: string }) {
                     type="button"
                     className="set-btn"
                     key={index}
-                    disabled={busy || !!item.reason}
+                    disabled={busy || !api.selectLiveBackgroundWorkshop || !!item.reason}
                     title={item.reason ? c.reasons[item.reason] : item.title}
                     onClick={() => void run(() => api.selectLiveBackgroundWorkshop(index))}
                     style={{ width: 140, whiteSpace: 'normal' }}
@@ -231,7 +231,7 @@ export function LiveBackgroundSettings({ lang }: { lang: string }) {
                 <button
                   type="button"
                   className="set-btn"
-                  disabled={busy}
+                  disabled={busy || !api.setLiveBackgroundPrefs}
                   onClick={() =>
                     void patch({ index: (prefs.index + state.count - 1) % state.count })
                   }
@@ -241,7 +241,7 @@ export function LiveBackgroundSettings({ lang }: { lang: string }) {
                 <button
                   type="button"
                   className="set-btn"
-                  disabled={busy}
+                  disabled={busy || !api.setLiveBackgroundPrefs}
                   onClick={() => void patch({ index: (prefs.index + 1) % state.count })}
                 >
                   {c.next}
@@ -259,6 +259,7 @@ export function LiveBackgroundSettings({ lang }: { lang: string }) {
             </div>
             <input
               type="range"
+              disabled={!api.setLiveBackgroundPrefs}
               className="live-bg-range"
               min={DIM_MIN}
               max={DIM_MAX}
@@ -281,6 +282,7 @@ export function LiveBackgroundSettings({ lang }: { lang: string }) {
             </div>
             <input
               type="range"
+              disabled={!api.setLiveBackgroundPrefs}
               className="live-bg-range"
               min={0}
               max={BLUR_MAX}
@@ -307,7 +309,7 @@ export function LiveBackgroundSettings({ lang }: { lang: string }) {
               role="switch"
               aria-checked={prefs.saver}
               aria-label={c.saver}
-              disabled={busy}
+              disabled={busy || !api.setLiveBackgroundPrefs}
               onClick={() => void patch({ saver: !prefs.saver })}
             />
           </SettingsRow>
