@@ -60,6 +60,7 @@ import { createClipboardSuggestPreloadApi } from './fork/clipboard-suggest-api'
 import { createClipboardHistoryPreloadApi } from './fork/clipboard-history-api'
 import { createDocumentIndexPreloadApi } from './fork/document-index-api'
 import { createHomeChatPreloadApi } from './fork/home-chat-api'
+import { createLiveBackgroundPreloadApi } from './fork/live-background-api'
 
 const UI_LANGUAGES: readonly UiLanguage[] = [
   'zh',
@@ -174,6 +175,7 @@ const homeApi: HomeApi = {
   ...createClipboardHistoryPreloadApi(ipcRenderer),
   ...createDocumentIndexPreloadApi(ipcRenderer),
   ...createHomeChatPreloadApi(ipcRenderer),
+  ...createLiveBackgroundPreloadApi(ipcRenderer),
   async recents(query) {
     return asRecentPage(await ipcRenderer.invoke(HOME_CHANNELS.recents, query))
   },
