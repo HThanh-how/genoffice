@@ -77,6 +77,7 @@ describe('Antigravity CLI web search', () => {
       providers: {
         serper: { apiKey: '' },
         serply: { apiKey: '' },
+        searchapi: { apiKey: '' },
         tavily: { apiKey: '' },
         parallel: { apiKey: '' },
         exa: { apiKey: '' },

@@ -1728,6 +1728,37 @@ button.check-item:hover {
   font-size: 14px;
 }
 
+.workbook-opening-card {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 10px;
+  min-width: 240px;
+}
+
+.workbook-opening-bar {
+  width: 240px;
+  height: 6px;
+  border-radius: 3px;
+  background: var(--accent-soft);
+  overflow: hidden;
+}
+
+.workbook-opening-bar-fill {
+  height: 100%;
+  background: var(--accent);
+  transition: width 120ms linear;
+}
+
+.workbook-opening-percent {
+  color: var(--text-muted);
+  font-variant-numeric: tabular-nums;
+}
+
+.workbook-opening-cancel {
+  margin-top: 4px;
+}
+
 .csv-empty-notice {
   position: absolute;
   z-index: 20;
@@ -5807,6 +5838,22 @@ textarea:focus {
   color-scheme: dark;
 }
 
+/* The right-click menu must never be taller than the window (genoffice#2603).
+ * Univer caps its panel with an inline `max-height` that React writes once,
+ * and a second hook (`useScrollYOverContainer`) erases that inline value the
+ * first time any menu fits — a row/column header menu, or the cell menu in a
+ * tall window. React never writes it back, so the next long cell menu renders
+ * at full height: pinned to the top edge, running off the bottom, with nothing
+ * to scroll. Holding the cap in the stylesheet makes it independent of that
+ * inline value; `!important` also outranks the hook's own fallback, which
+ * measures against the workbook area instead of the window the popup is
+ * positioned in. The panel already scrolls (`overflow-y: auto`) once capped,
+ * and Univer places the popup from the capped height, so it stays on screen.
+ * 16px matches Univer's own 8px viewport padding on each side. */
+.univer-popup > section > .univer-overflow-y-auto {
+  max-height: calc(100vh - 16px) !important;
+}
+
 .ai-msg-undelivered {
   margin-top: 6px;
   display: flex;
@@ -5890,6 +5937,10 @@ textarea:focus {
 
 .app-toast.success .app-toast-icon {
   color: var(--sheets-toast-ok);
+}
+
+.app-toast.info .app-toast-icon {
+  color: var(--accent);
 }
 
 /* Shape gallery dropdown (slides/docs parity: grouped, outline-icon grid) */
@@ -7435,12 +7486,14 @@ body:has(.note-pictures-pane) .threaded-comments-pane {
   color: var(--accent);
 }
 
-.note-pictures-pane .np-author {
+.note-pictures-pane .np-author,
+.note-hover-card .np-author {
   color: var(--text-muted);
   font-size: 12px;
 }
 
-.note-pictures-pane .np-remove {
+.note-pictures-pane .np-remove,
+.note-hover-card .np-remove {
   margin-left: auto;
   border: 0;
   background: transparent;
@@ -7452,19 +7505,22 @@ body:has(.note-pictures-pane) .threaded-comments-pane {
   cursor: pointer;
 }
 
-.note-pictures-pane .np-remove:hover {
+.note-pictures-pane .np-remove:hover,
+.note-hover-card .np-remove:hover {
   background: var(--hover);
   color: var(--text);
 }
 
-.note-pictures-pane .np-image {
+.note-pictures-pane .np-image,
+.note-hover-card .np-image {
   display: block;
   width: 100%;
   height: auto;
   border-radius: 6px;
 }
 
-.note-pictures-pane .np-image-missing {
+.note-pictures-pane .np-image-missing,
+.note-hover-card .np-image-missing {
   margin: 0;
   padding: 10px;
   border: 1px dashed var(--border);
@@ -7474,10 +7530,36 @@ body:has(.note-pictures-pane) .threaded-comments-pane {
   text-align: center;
 }
 
-.note-pictures-pane .np-text {
+.note-pictures-pane .np-text,
+.note-hover-card .np-text {
   margin: 0;
   color: var(--text-muted);
   font-size: 12px;
   white-space: pre-wrap;
   overflow-wrap: anywhere;
+}
+
+/* The card under Univer's note popup for a note that carries a picture: it
+   hangs below the popup's own box so author, picture and text read as one
+   note. Reuses the pane's np-* pieces above. */
+.note-hover-card {
+  position: fixed;
+  z-index: 130;
+  width: 260px;
+  max-height: 50vh;
+  overflow: hidden;
+  display: grid;
+  gap: 8px;
+  padding: 10px;
+  border: 1px solid var(--border-strong);
+  border-radius: 10px;
+  background: var(--surface);
+  box-shadow: var(--shadow-modal);
+}
+
+.note-hover-card > header {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
 }

@@ -111,6 +111,14 @@ export {
   validCliPath,
   type SettingsWriteDecision,
 } from './ai-settings-guard'
+export {
+  isThinkingEffort,
+  resolveThinkingEffort,
+  thinkingShapeFor,
+  THINKING_LEVELS,
+  type ThinkingEffort,
+  type ThinkingShape,
+} from './thinking-effort'
 export { chatForProvider } from './chat'
 export { listGeminiModels } from './gemini-models'
 export type { GeminiModelInfo } from './gemini-models'

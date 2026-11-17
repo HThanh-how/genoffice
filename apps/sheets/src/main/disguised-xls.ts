@@ -4,7 +4,8 @@
  * only understands the real format, so those would fail with "Invalid OLE".
  */
 import { copyFile, open, readFile, stat, writeFile } from 'node:fs/promises'
-import { csvToXlsxBufferForOpen, decodeCsvBuffer } from '@genoffice/xlsx-gateway/gateway/csv-import'
+import { decodeCsvBuffer } from '@genoffice/xlsx-gateway/gateway/csv-import'
+import { csvToXlsxBufferForOpen } from '@genoffice/xlsx-gateway/gateway/csv-import-xlsx'
 
 export type XlsKind = 'ole' | 'xlsx' | 'html' | 'text'
 

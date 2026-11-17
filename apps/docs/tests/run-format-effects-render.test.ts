@@ -105,7 +105,10 @@ describe('editor run rendering', () => {
     const spans = await renderSpans(
       '<w:p><w:r><w:rPr><w:position w:val="-8"/></w:rPr><w:t>low</w:t></w:r></w:p>',
     )
-    expect(spans.find((s) => s.textContent === 'low')!.style.verticalAlign).toBe('-4pt')
+    const low = spans.find((s) => s.textContent === 'low')!
+    expect(low.style.position).toBe('relative')
+    expect(low.style.top).toBe('4pt')
+    expect(low.style.verticalAlign).toBe('')
   })
 })
 
@@ -135,5 +138,21 @@ describe('Hyperlink style rendering', () => {
       }) as never,
     ).dom as HTMLElement
     expect(dom.querySelector('.doc-toc-title')?.getAttribute('data-style')).toBe('Hyperlink')
+  })
+
+  it('sizes a TOC line by the union of the title and page faces (Word probe 2026-11-07)', () => {
+    const render = (pageFontFamily?: string) =>
+      DOMSerializer.renderSpec(
+        document,
+        renderFieldSpec({
+          kind: 'tocLine',
+          left: 'Article 1',
+          right: '5',
+          fontFamily: 'Century Gothic',
+          ...(pageFontFamily ? { pageFontFamily } : {}),
+        }) as never,
+      ).dom as HTMLElement
+    expect(render('Calibri').style.getPropertyValue('--doc-line-factor')).toBe('1.2745')
+    expect(render().style.getPropertyValue('--doc-line-factor')).toBe('1.2261')
   })
 })

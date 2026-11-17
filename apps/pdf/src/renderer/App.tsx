@@ -79,6 +79,15 @@ const PRINT_DUPLEX_MODES: PrintDuplex[] = ['simplex', 'longEdge', 'shortEdge']
 /** Auto-detect stops here so a long scanned form cannot flood the document with fields */
 const DETECT_FIELD_CAP = 300
 
+const REDACT_PATTERN_LABELS: Record<RedactPattern, StringKey> = {
+  phone: 'redactPatternPhone',
+  email: 'redactPatternEmail',
+  'credit-card': 'redactPatternCreditCard',
+  ssn: 'redactPatternSsn',
+  date: 'redactPatternDate',
+  iban: 'redactPatternIban',
+}
+
 /** Field names still taken once pending widget removals are applied (a fully removed field frees its name) */
 function liveFieldNames(
   catalog: FormCatalog | null,
@@ -120,7 +129,9 @@ import { rowOfVisIdx, spreadRows, stepPage } from './spread'
 import {
   captureViewState,
   captureZoomAnchor,
+  loadLastZoom,
   loadViewState,
+  saveLastZoom,
   saveViewState,
   zoomAnchorY,
 } from './view-state'
@@ -138,9 +149,17 @@ import {
   remapOutlinePages,
   remapOutlineTree,
 } from './heading-outline'
-import { filterPageParity, printPdf, type PageParity } from './print'
-import type { PdfEncryptionInput, PdfPermissions, PrintDuplex, PrinterInfo } from '../shared/ipc'
+import { filterPageParity, maySpoolOriginal, printPdf, type PageParity } from './print'
+import { readFileBytes } from './file-bytes'
+import type {
+  PdfEncryptionInput,
+  PdfPermissions,
+  PrintDuplex,
+  PrinterInfo,
+  PrinterOption,
+} from '../shared/ipc'
 import { mayChangeProtection } from './protection-gate'
+import { MAX_REDACTION_REGIONS } from '../shared/ipc'
 import { PasswordDialog } from './PasswordDialog'
 import { PropertiesDialog } from './PropertiesDialog'
 import { LinkDialog, type LinkDraft } from './LinkDialog'
@@ -162,7 +181,9 @@ import {
 import { StampDialog } from './StampDialog'
 import { buildStamps } from './stamps'
 import type { HeaderFooterConfig, WatermarkConfig } from './stamps'
-import { createSearchIndexCache, searchInIndex } from './search'
+import { createSearchIndexCache, findPatternsInIndex, patternMarks, searchInIndex } from './search'
+import { REDACT_PATTERNS } from './redact-patterns'
+import type { RedactPattern } from './redact-patterns'
 import type { SearchIndex, SearchMatch } from './search'
 import { mapDocFont, type DocFontStyle } from './doc-font'
 import { groupPageBlocks, reflowOverflows, type TextBlock } from './text-block'
@@ -196,6 +217,7 @@ import {
   useAiSidebarEnabled,
 } from '@genoffice/ui'
 import { useI18n } from './i18n/locale'
+import type { StringKey } from './i18n/locale'
 import { useAutosave } from './useAutosave'
 import type {
   AnnotDeleteInput,
@@ -270,6 +292,8 @@ import {
   textEditPreviewParts,
   textEditPreviewContent,
   seedDraftColors,
+  draftOwnedEditIds,
+  previewsTextEdit,
   paperCss,
   textEraseKey,
   textEraseProbe,
@@ -328,7 +352,6 @@ import {
   IconFieldPreview,
   IconFormCheck,
   IconFormCross,
-  IconExportImg,
   IconConvertPdf,
   IconInsertImage,
   IconEditImage,
@@ -401,6 +424,18 @@ const RIBBON_TABS = [
   { id: 'view', labelKey: 'ribbonTabView' },
 ] as const
 type RibbonTab = (typeof RIBBON_TABS)[number]['id'] | 'fillForm' | 'formDesign'
+
+/** The file's bytes before and after a change written to it at once */
+interface WrittenStep {
+  before: Uint8Array
+  after: Uint8Array
+}
+interface WrittenSteps {
+  undo: WrittenStep[]
+  redo: WrittenStep[]
+}
+/** Each step holds the whole file twice: a long history of them would hold that much memory */
+const MAX_WRITTEN_STEPS = 10
 
 export default function App() {
   const { lang, t } = useI18n()
@@ -549,10 +584,11 @@ export default function App() {
   const [savedNotes, setSavedNotes] = useState<Map<number, SavedNoteAnnot[]>>(new Map())
   /** Active comment thread: its margin card is expanded and linked to its pin */
   const [activeNote, setActiveNote] = useState<{ origIdx: number; rootKey: string } | null>(null)
-  /** OS account name; the default author of new note comments */
+  /** Settings → General user name; the default author of new note comments */
   const [noteAuthor, setNoteAuthor] = useState('')
   useEffect(() => {
     window.pdfApi.getUsername().then(setNoteAuthor, () => {})
+    return window.pdfApi.onUsernameChanged(setNoteAuthor)
   }, [])
   const [highlightColor, setHighlightColor] = useState<[number, number, number]>(
     MARKUP_COLORS.highlight,
@@ -591,6 +627,10 @@ export default function App() {
     if (drawTool !== 'measure') measureRecalibrateRef.current = false
   }, [drawTool])
   const [redactions, setRedactions] = useState<LocalRedaction[]>([])
+  const redactionsRef = useRef(redactions)
+  redactionsRef.current = redactions
+  const [redactFindOpen, setRedactFindOpen] = useState(false)
+  const redactFindWrapRef = useRef<HTMLDivElement | null>(null)
   const redactionApplyConfirmedRef = useRef(false)
   const redactionRequestInFlightRef = useRef(false)
   const [redactionCopyInFlight, setRedactionCopyInFlight] = useState(false)
@@ -1082,6 +1122,16 @@ export default function App() {
   const [printing, setPrinting] = useState(false)
   const [undoStack, setUndoStack] = useState<EditSnapshot[]>([])
   const [redoStack, setRedoStack] = useState<EditSnapshot[]>([])
+  /** The file around each change written to it at once (Replace pages, Page size, Crop, Insert
+      PDF): Undo with no pending edit left writes it back as it was, Redo as the change left it */
+  const writtenRef = useRef<WrittenSteps>({ undo: [], redo: [] })
+  /** Their counts, for the Undo and Redo buttons */
+  const [written, setWrittenCounts] = useState({ undo: 0, redo: 0 })
+  const setWritten = (steps: WrittenSteps) => {
+    writtenRef.current = steps
+    setWrittenCounts({ undo: steps.undo.length, redo: steps.redo.length })
+  }
+  const writtenStepBusyRef = useRef(false)
   const [pwInput, setPwInput] = useState('')
   const [pwWrong, setPwWrong] = useState(false)
   const [extractDlg, setExtractDlg] = useState(false)
@@ -1110,6 +1160,14 @@ export default function App() {
   const [printCopies, setPrintCopies] = useState(1)
   const [printCollate, setPrintCollate] = useState(true)
   const [printDuplex, setPrintDuplex] = useState<PrintDuplex>('simplex')
+  // the chosen printer's driver option groups (quality, color, media type) and
+  // what the user picked from them; empty for the system dialog and on
+  // platforms where the CUPS route does not run
+  const [driverOptions, setDriverOptions] = useState<PrinterOption[]>([])
+  // bumped on every printer switch: a slow printerOptions() answer from an
+  // earlier queue must not overwrite the current queue's groups
+  const driverOptionsRequest = useRef(0)
+  const [driverChoices, setDriverChoices] = useState<Record<string, string>>({})
   /** Page-crop dialog: rendered page bitmap + which page it shows */
   const [pageCropDlg, setPageCropDlg] = useState<{ png: string; origIdx: number } | null>(null)
   const [cropAllPages, setCropAllPages] = useState(false)
@@ -1276,8 +1334,7 @@ export default function App() {
       saved?: SavedSnapshot,
       waitForPageNos: number[] = [],
     ) => {
-      const data = await window.pdfApi.readFile(path)
-      const bytes = new Uint8Array(data)
+      const bytes = await readFileBytes(window.pdfApi, path)
       setFormHasXfa(hasXfaMarker(bytes))
       if (!saved) {
         setFormCatalog(null)
@@ -1654,11 +1711,12 @@ export default function App() {
           return mapped.every((n, i) => n === i) ? null : mapped
         })
       }
-      setFileSize(data.byteLength)
+      setFileSize(bytes.byteLength)
       setSelected(null)
       setDeleteToast(false)
       setUndoStack([])
       setRedoStack([])
+      setWritten({ undo: [], redo: [] })
       outlineDocRef.current = loaded
       // A save-reload keeps the current tree (page indices already remapped
       // above) visible while headings rescan
@@ -1689,6 +1747,13 @@ export default function App() {
     [],
   )
 
+  /** A fit mode is recomputed at 'ready'; a custom zoom must be in place before it so
+   *  the initial fit-width recompute does not take over */
+  const applyOpeningZoom = useCallback((zoom: { scale: number; fitMode: FitMode }) => {
+    fitModeRef.current = zoom.fitMode
+    if (zoom.fitMode === null) setScale(Math.min(MAX_SCALE, Math.max(MIN_SCALE, zoom.scale)))
+  }, [])
+
   const openPath = useCallback(
     async (path: string) => {
       try {
@@ -1703,9 +1768,11 @@ export default function App() {
         const savedView = loadViewState(path)
         if (savedView) {
           pendingViewRestoreRef.current = savedView
-          fitModeRef.current = savedView.fitMode
-          if (savedView.fitMode === null)
-            setScale(Math.min(MAX_SCALE, Math.max(MIN_SCALE, savedView.scale)))
+          applyOpeningZoom(savedView)
+        } else {
+          const pref = await window.pdfApi.getDefaultZoom().catch(() => 'width' as const)
+          const zoom = pref === 'last' ? loadLastZoom() : null
+          applyOpeningZoom(zoom ?? { scale: 1, fitMode: pref === 'page' ? 'page' : 'width' })
         }
         setStatus('ready')
       } catch (err) {
@@ -1714,7 +1781,7 @@ export default function App() {
           // reports it like a password failure, and the answer has to name the
           // real reason instead of looping the prompt
           try {
-            const raw = new Uint8Array(await window.pdfApi.readFile(path))
+            const raw = await readFileBytes(window.pdfApi, path)
             const probe = await window.pdfApi.decryptPdf(raw, '')
             if (!probe.ok && probe.reason === 'certificate-encryption') {
               showNotice(t('pwCertEncrypted'))
@@ -1735,7 +1802,7 @@ export default function App() {
         setStatus('error')
       }
     },
-    [loadDoc],
+    [loadDoc, applyOpeningZoom],
   )
 
   useEffect(() => {
@@ -1946,6 +2013,7 @@ export default function App() {
           fitMode: fitModeRef.current,
         }),
       )
+      saveLastZoom({ scale, fitMode: fitModeRef.current })
     }
     const schedule = () => {
       window.clearTimeout(timer)
@@ -2266,6 +2334,7 @@ export default function App() {
     const snap = snapshot()
     setUndoStack((prev) => [...prev.slice(-49), snap])
     setRedoStack([])
+    if (writtenRef.current.redo.length > 0) setWritten({ ...writtenRef.current, redo: [] })
   }
 
   const newId = () => `d${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`
@@ -2450,7 +2519,7 @@ export default function App() {
 
   const undo = () => {
     const top = undoStack[undoStack.length - 1]
-    if (!top) return
+    if (!top) return void stepWritten('undo')
     // Taken before applySnapshot rewrites the refs; the updater may run after it
     const cur = snapshot()
     setRedoStack((r) => [...r, cur])
@@ -2461,7 +2530,7 @@ export default function App() {
 
   const redo = () => {
     const top = redoStack[redoStack.length - 1]
-    if (!top) return
+    if (!top) return void stepWritten('redo')
     const cur = snapshot()
     setUndoStack((u) => [...u, cur])
     setRedoStack((r) => r.slice(0, -1))
@@ -4577,6 +4646,7 @@ export default function App() {
     fields: LocalFormField[] = savableFormFields,
   ) => ({
     markups: markups.map(({ id: _id, ...rest }) => rest),
+    ...(noteAuthor ? { annotationAuthor: noteAuthor } : {}),
     annotDeletes: annotDeletes.map((d): AnnotDeleteInput => ({
       pageIndex: d.annot.pageIndex,
       objNum: d.annot.objNum,
@@ -4931,6 +5001,51 @@ export default function App() {
     // still pending, so a saved-confirmation next to the unsaved badge would lie
     setSaveState('idle')
     return true
+  }
+
+  // The ref is written in the same turn so back-to-back calls see the true count against the cap
+  const appendRedactions = (
+    marks: readonly { pageIndex: number; rect: [number, number, number, number] }[],
+  ) => {
+    if (marks.length === 0) return
+    const next = [...redactionsRef.current, ...marks.map((m) => ({ ...m, id: newId() }))]
+    redactionsRef.current = next
+    setRedactions(next)
+  }
+
+  /** Queue redaction marks over every hit of the patterns; the user still reviews and applies */
+  const markSensitive = async (
+    patterns: readonly RedactPattern[],
+  ): Promise<{ hits: number; areas: number; rotated: number; capped: boolean } | null> => {
+    const indexPromise = getSearchIndex()
+    if (!indexPromise) return null
+    const index = await indexPromise
+    const room = MAX_REDACTION_REGIONS - redactionsRef.current.length
+    const found = patternMarks(
+      findPatternsInIndex(index, patterns, (i) => deletedRef.current.has(i)),
+      room,
+    )
+    appendRedactions(found.marks)
+    return {
+      hits: found.hits,
+      areas: found.marks.length,
+      rotated: found.rotated,
+      capped: found.capped,
+    }
+  }
+
+  const runRedactFind = (patterns: readonly RedactPattern[]) => {
+    setRedactFindOpen(false)
+    void markSensitive(patterns).then(
+      (r) => {
+        if (!r) return
+        const notes = [r.hits > 0 ? t('redactFound', { count: r.hits }) : t('redactFoundNone')]
+        if (r.rotated > 0) notes.push(t('redactFoundRotated', { count: r.rotated }))
+        if (r.capped) notes.push(t('redactFoundCapped', { count: r.areas }))
+        showNotice(notes.join(' '))
+      },
+      (err: unknown) => opFailed(err instanceof Error ? err.message : String(err)),
+    )
   }
 
   const requestRedactionSaveAs = () => {
@@ -6035,7 +6150,7 @@ export default function App() {
   /** Pending edits the open draft stands in for (reopened / folded): the draft's probe
       erases their run, so they take the draft's erased state */
   const draftOwnedIds = useMemo(
-    () => new Set(textDraft ? [textDraft.editId, ...(textDraft.foldedIds ?? [])] : []),
+    () => draftOwnedEditIds(textDraft),
     // eslint-disable-next-line react-hooks/exhaustive-deps -- same: identity fields only
     [textDraft?.editId, textDraft?.foldedIds],
   )
@@ -6464,12 +6579,59 @@ export default function App() {
     else if ('canceled' in result) return { ok: true, canceled: true, flushed }
     return result as Exclude<R, { canceled: true }>
   }
+  /** Reloads the file a change just wrote, and keeps the file from *before* it as an Undo step */
+  const reloadWritten = async (before: Uint8Array): Promise<number> => {
+    const kept = writtenRef.current.undo
+    const pageCount = await loadDoc(filePath, doc)
+    const after = await readFileBytes(window.pdfApi, filePath)
+    setWritten({ undo: [...kept.slice(-(MAX_WRITTEN_STEPS - 1)), { before, after }], redo: [] })
+    return pageCount
+  }
+
+  /** Undo or Redo of a change written at once, once no pending edit is left; false when there is none */
+  const stepWritten = (direction: 'undo' | 'redo'): boolean => {
+    const { undo: undoable, redo: redoable } = writtenRef.current
+    const steps = direction === 'undo' ? undoable : redoable
+    const step = steps[steps.length - 1]
+    if (!step || dirty || writtenStepBusyRef.current) return false
+    writtenStepBusyRef.current = true
+    void (async () => {
+      try {
+        const bytes = direction === 'undo' ? step.before : step.after
+        const result = await window.pdfApi.restoreFile({
+          path: filePath,
+          bytes: bytes.slice().buffer as ArrayBuffer,
+        })
+        if (!result.ok) {
+          opFailed(result.error)
+          return
+        }
+        await loadDoc(filePath, doc)
+        setWritten(
+          direction === 'undo'
+            ? { undo: undoable.slice(0, -1), redo: [...redoable, step] }
+            : { undo: [...undoable, step], redo: redoable.slice(0, -1) },
+        )
+      } finally {
+        writtenStepBusyRef.current = false
+      }
+    })()
+    return true
+  }
+
   const rewriteInPlace = async (
     run: () => Promise<{ ok: true } | { ok: true; canceled: true } | { ok: false; error: string }>,
   ): Promise<FileOpResult> => {
-    const result = await runFileOp(run)
+    const held: { before?: Uint8Array } = {}
+    const result = await runFileOp(async () => {
+      held.before = await readFileBytes(window.pdfApi, filePath)
+      return run()
+    })
     if (!result.ok || 'canceled' in result) return result
-    return { ok: true, pageCount: await loadDoc(filePath, doc) }
+    return {
+      ok: true,
+      pageCount: held.before ? await reloadWritten(held.before) : await loadDoc(filePath, doc),
+    }
   }
   const baseName = () => fileName.replace(/\.pdf$/i, '')
 
@@ -6552,12 +6714,13 @@ export default function App() {
     // the flush bakes the visible order into the file, so the anchor becomes its visible position
     const afterPageIndex = visListOf(orderRef.current).indexOf(afterOrigIdx)
     return flushThen(async () => {
+      const before = await readFileBytes(window.pdfApi, filePath)
       const result = await window.pdfApi.insertPdf({ path: filePath, afterPageIndex })
       if (!result.ok) {
         opFailed(result.error)
         return
       }
-      if (!('canceled' in result)) await loadDoc(filePath, doc)
+      if (!('canceled' in result)) await reloadWritten(before)
     })
   }
 
@@ -6725,13 +6888,29 @@ export default function App() {
             copies: printCopies,
             collate: printCollate,
             duplex: printDuplex,
+            driverOptions: driverOptions
+              .filter(
+                (g) =>
+                  driverChoices[g.name] !== undefined && driverChoices[g.name] !== g.defaultValue,
+              )
+              .map((g) => ({ name: g.name, value: driverChoices[g.name]! })),
           }
     try {
       await flushThen(async () => {
         setPrinting(true)
         try {
-          const data = await window.pdfApi.readFile(filePath)
-          const pdoc = await getDocument({ data: new Uint8Array(data), ...DOC_OPTS }).promise
+          if (job && IS_MAC && maySpoolOriginal(diskPasswordRef.current)) {
+            // macOS named printer: lp spools the flushed file itself — the
+            // vector original reaches the driver untouched, instead of a
+            // 150-200 DPI raster pass (genoffice#2347's route, quality half).
+            // An encrypted file stays encrypted on disk, which CUPS' pdftopdf
+            // cannot open, so those fall through to the raster path below.
+            const r = await window.pdfApi.printFile({ ...job, pages, path: filePath })
+            if (!r.ok && r.error) opFailed(r.error)
+            return
+          }
+          const data = await readFileBytes(window.pdfApi, filePath)
+          const pdoc = await getDocument({ data, ...DOC_OPTS }).promise
           try {
             await printPdf(pdoc, pages, job)
           } finally {
@@ -6919,6 +7098,8 @@ export default function App() {
     },
     outline: () => outline,
     searchIndex: getSearchIndex,
+    redactionCount: () => redactionsRef.current.length,
+    addRedactions: appendRedactions,
     isDeleted: (i) => deletedRef.current.has(i),
     gotoPage: (p) => {
       if (orderRef.current !== order) {
@@ -7336,6 +7517,9 @@ export default function App() {
     const top = Math.max(0, Math.min(formMenu.y, window.innerHeight - r.height - 4))
     if (left !== formMenu.x || top !== formMenu.y) setFormMenu({ ...formMenu, x: left, y: top })
   }, [formMenu])
+  useDismissablePopover(redactFindOpen, () => setRedactFindOpen(false), {
+    inside: () => [redactFindWrapRef.current],
+  })
   useDismissablePopover(arrangeOpen, () => setArrangeOpen(false), {
     inside: () => [arrangeWrapRef.current],
   })
@@ -8102,7 +8286,7 @@ export default function App() {
             className="qa-btn"
             data-tip={`${t('undo')} (${platformShortcuts('⌘Z')})`}
             aria-label={`${t('undo')} (${platformShortcuts('⌘Z')})`}
-            disabled={undoStack.length === 0}
+            disabled={undoStack.length === 0 && written.undo === 0}
             onClick={undo}
           >
             <IconUndo />
@@ -8111,7 +8295,7 @@ export default function App() {
             className="qa-btn"
             data-tip={`${t('redo')} (${platformShortcuts('⇧⌘Z')})`}
             aria-label={`${t('redo')} (${platformShortcuts('⇧⌘Z')})`}
-            disabled={redoStack.length === 0}
+            disabled={redoStack.length === 0 && written.redo === 0}
             onClick={redo}
           >
             <IconRedo />
@@ -8242,14 +8426,14 @@ export default function App() {
                     <button
                       className={`rb-big${convertOpen ? ' active' : ''}`}
                       data-tip={t('convertPdfTip')}
-                      disabled={convertBusy}
+                      disabled={convertBusy || exporting !== null}
                       onClick={() => setConvertOpen((v) => !v)}
                     >
                       <span className="rb-big-icon">
                         <IconConvertPdf />
                         <RbCaret />
                       </span>
-                      <span>{t('convertPdf')}</span>
+                      <span>{exporting ? t('exporting') : t('convertPdf')}</span>
                     </button>
                     {convertOpen && (
                       <div className="rb-drop rb-menu">
@@ -8262,6 +8446,25 @@ export default function App() {
                           {t('convertToMarkdown')}
                         </button>
                         <button onClick={() => void convertTo('html')}>{t('convertToHtml')}</button>
+                        <div className="rb-menu-sep" />
+                        <button
+                          title={t('exportImagesAll')}
+                          onClick={() => {
+                            setConvertOpen(false)
+                            void exportImages(true)
+                          }}
+                        >
+                          {t('exportImages')}
+                        </button>
+                        <button
+                          title={t('exportImagesAllJpg')}
+                          onClick={() => {
+                            setConvertOpen(false)
+                            void exportImages(true, 'jpg')
+                          }}
+                        >
+                          {t('exportImagesJpg')}
+                        </button>
                       </div>
                     )}
                   </div>
@@ -8283,28 +8486,6 @@ export default function App() {
                       <IconPrint />
                     </span>
                     <span>{printing ? t('printPreparing') : t('print')}</span>
-                  </button>
-                  <button
-                    className="rb-big"
-                    data-tip={t('exportImagesAll')}
-                    disabled={exporting !== null}
-                    onClick={() => void exportImages(true)}
-                  >
-                    <span className="rb-big-icon">
-                      <IconExportImg />
-                    </span>
-                    <span>{exporting === 'png' ? t('exporting') : t('exportImages')}</span>
-                  </button>
-                  <button
-                    className="rb-big"
-                    data-tip={t('exportImagesAllJpg')}
-                    disabled={exporting !== null}
-                    onClick={() => void exportImages(true, 'jpg')}
-                  >
-                    <span className="rb-big-icon">
-                      <IconExportImg />
-                    </span>
-                    <span>{exporting === 'jpg' ? t('exporting') : t('exportImagesJpg')}</span>
                   </button>
                   <button
                     className="rb-big"
@@ -8401,6 +8582,33 @@ export default function App() {
                     </span>
                     <span>{t('redact')}</span>
                   </button>
+                  <div className="rb-drop-wrap" ref={redactFindWrapRef}>
+                    <button
+                      className={`rb-big${redactFindOpen ? ' active' : ''}`}
+                      disabled={readOnly || redactionCopyInFlight}
+                      data-tip={t('redactFindHint')}
+                      onClick={() => setRedactFindOpen((v) => !v)}
+                    >
+                      <span className="rb-big-icon">
+                        <IconSearch />
+                        <RbCaret />
+                      </span>
+                      <span>{t('redactFind')}</span>
+                    </button>
+                    {redactFindOpen && (
+                      <div className="rb-drop rb-menu">
+                        {REDACT_PATTERNS.map((p) => (
+                          <button key={p} onClick={() => runRedactFind([p])}>
+                            {t(REDACT_PATTERN_LABELS[p])}
+                          </button>
+                        ))}
+                        <div className="rb-menu-sep" />
+                        <button onClick={() => runRedactFind(REDACT_PATTERNS)}>
+                          {t('redactFindAll')}
+                        </button>
+                      </div>
+                    )}
+                  </div>
                   {redactions.length > 0 && (
                     <>
                       <button
@@ -9872,7 +10080,7 @@ export default function App() {
                                 })}
                               {/* Pending text edits: cover the original run and preview the replacement */}
                               {textEdits
-                                .filter((te) => te.input.pageIndex === origIdx)
+                                .filter((te) => previewsTextEdit(te, origIdx, draftOwnedIds))
                                 .map((te) => {
                                   const { style, coverStyle } = textEditPreviewParts(
                                     te,
@@ -11541,7 +11749,22 @@ export default function App() {
                     <select
                       className="pdf-modal-input"
                       value={printDevice}
-                      onChange={(e) => setPrintDevice(e.target.value)}
+                      onChange={(e) => {
+                        const request = ++driverOptionsRequest.current
+                        setPrintDevice(e.target.value)
+                        setDriverChoices({})
+                        setDriverOptions([])
+                        if (e.target.value && IS_MAC)
+                          void window.pdfApi
+                            .printerOptions(e.target.value)
+                            .then((options) => {
+                              if (request === driverOptionsRequest.current)
+                                setDriverOptions(options)
+                            })
+                            .catch(() => {
+                              if (request === driverOptionsRequest.current) setDriverOptions([])
+                            })
+                      }}
                     >
                       <option value="">{t('printDefaultPrinter')}</option>
                       {printers.map((p) => (
@@ -11600,6 +11823,24 @@ export default function App() {
                       ))}
                     </select>
                   </label>
+                  {driverOptions.map((group) => (
+                    <label key={group.name} className="pdf-modal-row pdf-print-field">
+                      <span>{group.translation}</span>
+                      <select
+                        className="pdf-modal-input"
+                        value={driverChoices[group.name] ?? group.defaultValue ?? group.values[0]}
+                        onChange={(e) =>
+                          setDriverChoices((c) => ({ ...c, [group.name]: e.target.value }))
+                        }
+                      >
+                        {group.values.map((v) => (
+                          <option key={v} value={v}>
+                            {v}
+                          </option>
+                        ))}
+                      </select>
+                    </label>
+                  ))}
                   <div className="pdf-print-divider" />
                   <label className="pdf-modal-row">
                     <input

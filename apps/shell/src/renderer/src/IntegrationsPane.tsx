@@ -196,7 +196,6 @@ export function IntegrationsPane({
     status.skillNeedsCli &&
     status.cli.version &&
     compare(status.cli.version, status.skillNeedsCli) < 0
-  const anyInstalled = status.agents.some((a) => a.state.status !== 'missing')
   const launch = mcpLaunch(status.cli)
   // a link in ~/.local/bin that the shell does not search is not "ready": show the PATH line instead of the sudo command
   const cliOnPath = status.cli.status === 'present' && !status.cli.pathHint
@@ -255,6 +254,11 @@ export function IntegrationsPane({
                 <div className="set-field-text">
                   <div className="set-field-stack">
                     <div className="set-field-label">{row.label}</div>
+                    {row.readers && (
+                      <div className="set-field-desc">
+                        {t('intgSharedReaders', { list: row.readers.join(', ') })}
+                      </div>
+                    )}
                     <div className="set-field-desc set-intg-state" data-tip={state.path}>
                       {stateText(t, state, bundled)}
                     </div>
@@ -381,13 +385,6 @@ export function IntegrationsPane({
           )}
         </details>
 
-        <h5 className="set-intg-sub">{t('intgStep2Title')}</h5>
-        <div className="set-field-desc set-intg-lead">
-          {anyInstalled ? t('intgStep2Desc') : t('intgStep2DescBefore')}
-        </div>
-        {examples}
-        <div className="set-field-desc set-intg-lead">{t('intgStep2Note')}</div>
-
         <details className="set-intg-details set-intg-cli">
           <summary>{t('intgCliTitle')}</summary>
           <div className="set-field-desc set-intg-lead">
@@ -485,7 +482,7 @@ export function IntegrationsPane({
         <h5 className="set-intg-sub">{t('intgStep2Title')}</h5>
         <div className="set-field-desc set-intg-lead">{t('intgStep2Desc')}</div>
         {examples}
-        <div className="set-field-desc set-intg-lead">{t('intgMcpTryNote')}</div>
+        <div className="set-field-desc set-intg-lead">{t('intgStep2Note')}</div>
       </SettingsCard>
     </>
   )

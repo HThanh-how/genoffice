@@ -60,8 +60,9 @@ export interface MergeOutputFile {
   data: ArrayBuffer
 }
 
-/** where the merged documents go: one file for all records, or one per record */
-export type MergeOutputMode = 'single' | 'perRecord'
+/** where the merged documents go: one file for all records, one per record, a
+ * label sheet, or one envelope per record */
+export type MergeOutputMode = 'single' | 'perRecord' | 'labels' | 'envelopes'
 
 export interface MergeOutputRequest {
   mode: MergeOutputMode
@@ -95,6 +96,7 @@ import type {
 import type { HeadlessExportTarget } from '@genoffice/electron-utils/headless-export'
 import type { FaceVerticalMetrics } from '@genoffice/font-metrics'
 import type { AiPanelPrefs } from '@genoffice/ui'
+import type { SaveAsExportFormat } from './save-as-format'
 
 export type { FaceVerticalMetrics }
 
@@ -575,6 +577,8 @@ export interface DesktopApi extends FileManagementBridge {
     ok: boolean
     path?: string
     error?: string
+    /** the dialog picked another format: nothing was written, export to `path` instead */
+    exportAs?: SaveAsExportFormat
     passwordIntentPending?: boolean
     dataUrl?: string
   }>
@@ -606,6 +610,10 @@ export interface DesktopApi extends FileManagementBridge {
   writeMergeOutput(request: MergeOutputRequest): Promise<MergeOutputResponse>
   /** vertical metrics of an installed family (exact name match), null when missing */
   fontMetrics(family: string): Promise<FaceVerticalMetrics | null>
+  /** the other spellings of the installed faces behind these names: a localized
+   *  (CJK) family name yields the English spelling the browser resolves.
+   *  Only the names that have an alias are answered (genoffice#2449). */
+  fontAliases(names: readonly string[]): Promise<Record<string, readonly string[]>>
   getAiSettings(): Promise<AiSettings>
   getGeminiModels(): Promise<GeminiModelInfo[]>
   setAiSettings(settings: AiSettings): Promise<void>

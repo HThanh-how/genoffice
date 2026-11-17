@@ -95,7 +95,10 @@ import type {
   ExportImagesOp,
   SavePictureOp,
   ExportPdfOp,
+  VideoFileWrite,
   PrintSlidesOp,
+  PrinterInfo,
+  PrinterOption,
   MenuCommand,
   OpenResult,
   SlidesApi,
@@ -349,9 +352,54 @@ const api: SlidesApi = {
   exportImages: (op: ExportImagesOp) => ipcRenderer.invoke('slides:export-images', op),
   pickExportPdfPath: (defaultName: string) =>
     ipcRenderer.invoke('slides:pick-export-pdf-path', defaultName),
+  pickExportVideoPath: (defaultName: string) =>
+    ipcRenderer.invoke('slides:pick-export-video-path', defaultName),
+  videoFileOpen: (path: string) => ipcRenderer.invoke('slides:video-file-open', path),
+  videoFileWrite: (op: VideoFileWrite) => ipcRenderer.invoke('slides:video-file-write', op),
+  videoFileClose: (id: number, discard: boolean) =>
+    ipcRenderer.invoke('slides:video-file-close', id, discard),
   savePicture: (op: SavePictureOp) => ipcRenderer.invoke('slides:save-picture', op),
   exportPdf: (op: ExportPdfOp) => ipcRenderer.invoke('slides:export-pdf', op),
   printSlides: (op: PrintSlidesOp) => ipcRenderer.invoke('slides:print', op),
+  listPrinters: async () => {
+    const result: unknown = await ipcRenderer.invoke('slides:printers')
+    if (!Array.isArray(result)) throw new Error('Invalid printers response.')
+    return result.map((entry): PrinterInfo => {
+      if (
+        typeof entry !== 'object' ||
+        entry === null ||
+        typeof (entry as Record<string, unknown>).name !== 'string' ||
+        typeof (entry as Record<string, unknown>).displayName !== 'string'
+      ) {
+        throw new Error('Invalid printers entry.')
+      }
+      const { name, displayName } = entry as Record<string, string>
+      return { name, displayName }
+    })
+  },
+  printerOptions: async (queue: string) => {
+    const result: unknown = await ipcRenderer.invoke('slides:printer-options', queue)
+    if (!Array.isArray(result)) throw new Error('Invalid printer-options response.')
+    return result.map((entry): PrinterOption => {
+      const shape = entry as Record<string, unknown>
+      if (
+        typeof entry !== 'object' ||
+        entry === null ||
+        typeof shape.name !== 'string' ||
+        typeof shape.translation !== 'string' ||
+        !Array.isArray(shape.values) ||
+        !shape.values.every((v) => typeof v === 'string')
+      ) {
+        throw new Error('Invalid printer-option entry.')
+      }
+      return {
+        name: shape.name,
+        translation: shape.translation,
+        values: shape.values,
+        ...(typeof shape.defaultValue === 'string' ? { defaultValue: shape.defaultValue } : {}),
+      }
+    })
+  },
   save: () => ipcRenderer.invoke('slides:save'),
   saveAs: (defaultName: string) => ipcRenderer.invoke('slides:save-as', defaultName),
   onCloseSaveRequest: (handler: () => void) => {

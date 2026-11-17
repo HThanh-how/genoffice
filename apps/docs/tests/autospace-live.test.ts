@@ -1,18 +1,21 @@
 /**
  * CJK-Latin autospace pads: Chromium's text-autospace delivers 1/8em of Word's
  * ~1/4em autoSpaceDE/DN gap; the character after each boundary is wrapped in a
- * .doc-autospace-pad span whose start margin supplies the rest, and the pads
+ * .doc-autospace-pad span whose ::before collapsible space supplies the rest, and the pads
  * must follow live edits.
  */
 import { readFileSync } from 'node:fs'
+import { join } from 'node:path'
+import { inlineSegments } from '../src/renderer/text-layout/inline-segments'
 import { Editor } from '@tiptap/core'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import type { Run } from '@genoffice/docx-engine'
-import { autospaceRanges, editorExtensions } from '../src/renderer/editor/extensions'
+import { editorExtensions, paragraphInlineSegments } from '../src/renderer/editor/extensions'
 import {
   renderTableSpec,
   renderTextboxSpec,
   runSpanSpecs,
+  runSpansWithPads,
   setStaticAsciiResolver,
 } from '../src/renderer/editor/protected-render'
 import { DOMSerializer } from '@tiptap/pm/model'
@@ -20,10 +23,10 @@ import type { TableModel, TextboxDisplay } from '@genoffice/docx-engine'
 import {
   autospacePadScale,
   codePointLengthAt,
-  latinAutospaceGapEm,
-  hangulSpaceWideningFor,
-  setHangulSpaceWidening,
+  balancedSpaceWideningFor,
 } from '../src/renderer/line-metrics'
+import { latinAutospaceGapEm } from '../src/renderer/text-layout/font-rules'
+import { setOpenDocumentText } from '../src/renderer/text-layout/open-document'
 
 const pads = (editor: Editor): string[] =>
   Array.from(editor.view.dom.querySelectorAll('.doc-autospace-pad'), (el) => el.textContent ?? '')
@@ -121,43 +124,57 @@ describe('autospace pad decorations', () => {
   })
 })
 
-describe('hangul-space decorations', () => {
+describe('balanced-space decorations', () => {
   const H = '\ud55c\uae00'
   const spaces = (editor: Editor) =>
-    Array.from(editor.view.dom.querySelectorAll('.doc-hangul-space'), (el) => el.textContent)
-  beforeAll(() => setHangulSpaceWidening(true))
-  afterAll(() => setHangulSpaceWidening(false))
+    Array.from(editor.view.dom.querySelectorAll('.doc-balanced-space'), (el) => el.textContent)
+  beforeAll(() => setOpenDocumentText({ balancedSpaces: true }))
+  afterAll(() => setOpenDocumentText({ balancedSpaces: false }))
 
   it('wraps nothing without balanceSingleByteDoubleByteWidth', () => {
-    setHangulSpaceWidening(false)
+    setOpenDocumentText({ balancedSpaces: false })
     const editor = makeEditor(paragraphDoc(`${H} ${H} A B, ${H}`))
     expect(spaces(editor)).toEqual([])
     editor.destroy()
-    setHangulSpaceWidening(true)
+    setOpenDocumentText({ balancedSpaces: true })
   })
 
-  it('wraps nothing when only one of balanceSingleByteDoubleByteWidth / useFELayout is set', () => {
-    for (const settings of [{ balanceDbcsSpacing: true }, { useFELayout: true }]) {
-      setHangulSpaceWidening(hangulSpaceWideningFor(settings))
+  it('wraps nothing under useFELayout alone or the flag with a Latin document East Asian face', () => {
+    for (const [settings, face] of [
+      [{ useFELayout: true }, '\u5b8b\u4f53'],
+      [{ balanceDbcsSpacing: true }, 'Calibri'],
+    ] as const) {
+      setOpenDocumentText({ balancedSpaces: balancedSpaceWideningFor(settings, face) })
       const editor = makeEditor(paragraphDoc(`${H} abc ${H}`))
       expect(spaces(editor)).toEqual([])
       editor.destroy()
     }
-    setHangulSpaceWidening(hangulSpaceWideningFor({ balanceDbcsSpacing: true, useFELayout: true }))
-    const editor = makeEditor(paragraphDoc(`${H} abc ${H}`))
-    expect(spaces(editor)).toEqual([' ', ' '])
-    editor.destroy()
+    for (const [settings, face] of [
+      [{ balanceDbcsSpacing: true, useFELayout: true }, 'Calibri'],
+      [{ balanceDbcsSpacing: true }, '\u5b8b\u4f53'],
+    ] as const) {
+      setOpenDocumentText({ balancedSpaces: balancedSpaceWideningFor(settings, face) })
+      const editor = makeEditor(paragraphDoc(`${H} abc ${H}`))
+      expect(spaces(editor)).toEqual([' ', ' '])
+      editor.destroy()
+    }
   })
 
-  it('wraps only spaces with a hangul neighbour', () => {
+  it('wraps spaces with an East Asian neighbour and runs of spaces, not a lone Latin one', () => {
     const editor = makeEditor(paragraphDoc(`${H} ${H} A B, ${H}`))
     expect(spaces(editor)).toEqual([' ', ' ', ' '])
     expect(editor.view.dom.textContent).toBe(`${H} ${H} A B, ${H}`)
     editor.destroy()
+    const han = makeEditor(paragraphDoc('\u7532\uff1a  \u4e59 A B  C'))
+    expect(spaces(han)).toEqual([' ', ' ', ' ', ' ', ' '])
+    han.destroy()
+    const kana = makeEditor(paragraphDoc('\u3042 \u3044'))
+    expect(spaces(kana)).toEqual([' '])
+    kana.destroy()
   })
 
-  it('adds none in Latin, Japanese or Han text', () => {
-    for (const text of ['A B', '\u3042 \u3044', '\u6f22 \u5b57', `${H}, A`]) {
+  it('adds none in Latin text with single spaces', () => {
+    for (const text of ['A B', 'a.b, c;d: e', `${H}, A`]) {
       const editor = makeEditor(paragraphDoc(text))
       expect(spaces(editor)).toEqual([])
       editor.destroy()
@@ -196,52 +213,72 @@ describe('static-render autospace pads', () => {
   const run = (text: string): Run => ({ text }) as Run
 
   it('wraps the character after each boundary', () => {
-    expect(runSpanSpecs(run('累计产生357次'))).toEqual([
+    expect(runSpansWithPads([run('\u7d2f\u8ba1\u4ea7\u751f357\u6b21')])).toEqual([
       [
         'span',
         {},
-        '累计产生',
+        '\u7d2f\u8ba1\u4ea7\u751f',
         ['span', { class: 'doc-autospace-pad' }, '3'],
         '57',
-        ['span', { class: 'doc-autospace-pad' }, '次'],
+        ['span', { class: 'doc-autospace-pad' }, '\u6b21'],
       ],
     ])
   })
 
-  it('leadPad wraps the first character of a run that continues a seam', () => {
-    expect(runSpanSpecs(run('286名'), undefined, true)).toEqual([
+  it('a run continuing a CJK-Latin seam pads its first character', () => {
+    expect(runSpansWithPads([run('\u7d2f\u8ba1'), run('286\u540d')])).toEqual([
+      ['span', {}, '\u7d2f\u8ba1'],
       [
         'span',
         {},
         ['span', { class: 'doc-autospace-pad' }, '2'],
         '86',
-        ['span', { class: 'doc-autospace-pad' }, '名'],
+        ['span', { class: 'doc-autospace-pad' }, '\u540d'],
       ],
     ])
-    expect(runSpanSpecs(run('286名'), false, true)).toEqual([
-      ['span', { style: 'text-autospace:no-autospace' }, '286名'],
+    expect(runSpansWithPads([run('\u7d2f\u8ba1'), run('286\u540d')], false)).toEqual([
+      ['span', { style: 'text-autospace:no-autospace' }, '\u7d2f\u8ba1'],
+      ['span', { style: 'text-autospace:no-autospace' }, '286\u540d'],
     ])
   })
 
-  it('wraps hangul-context spaces, reading neighbours from the adjacent runs', () => {
-    setHangulSpaceWidening(true)
-    const H = '\ud55c\uae00'
-    expect(runSpanSpecs(run(`${H} A B`))).toEqual([
-      ['span', {}, H, ['span', { class: 'doc-hangul-space' }, ' '], 'A B'],
-    ])
-    expect(runSpanSpecs(run('A '), undefined, false, { next: H })).toEqual([
-      ['span', {}, 'A', ['span', { class: 'doc-hangul-space' }, ' ']],
-    ])
-    expect(runSpanSpecs(run(' A'), false, false, { prev: H })).toEqual([
+  it('a run rendered on its own (field result, stray line) still gets its pads', () => {
+    setOpenDocumentText({ balancedSpaces: true })
+    expect(runSpanSpecs(run('\u7d2f\u8ba1357\u6b21 A'))).toEqual([
       [
         'span',
-        { style: 'text-autospace:no-autospace' },
-        ['span', { class: 'doc-hangul-space' }, ' '],
+        {},
+        '\u7d2f\u8ba1',
+        ['span', { class: 'doc-autospace-pad' }, '3'],
+        '57',
+        ['span', { class: 'doc-autospace-pad' }, '\u6b21'],
+        ['span', { class: 'doc-balanced-space' }, ' '],
         'A',
       ],
     ])
-    expect(runSpanSpecs(run('A '), undefined, false, { next: 'B' })).toEqual([['span', {}, 'A ']])
-    setHangulSpaceWidening(false)
+    setOpenDocumentText({ balancedSpaces: false })
+  })
+
+  it('wraps balanced spaces, reading neighbours from the adjacent runs', () => {
+    setOpenDocumentText({ balancedSpaces: true })
+    const H = '\ud55c\uae00'
+    expect(runSpansWithPads([run(`${H} A B`)])).toEqual([
+      ['span', {}, H, ['span', { class: 'doc-balanced-space' }, ' '], 'A B'],
+    ])
+    expect(runSpansWithPads([run('A '), run(H)])[0]).toEqual([
+      'span',
+      {},
+      'A',
+      ['span', { class: 'doc-balanced-space' }, ' '],
+    ])
+    expect(runSpansWithPads([run(H), run(' A')], false)[1]).toEqual([
+      'span',
+      { style: 'text-autospace:no-autospace' },
+      ['span', { class: 'doc-balanced-space' }, ' '],
+      'A',
+    ])
+    expect(runSpansWithPads([run('A '), run('B')])[0]).toEqual(['span', {}, 'A '])
+    setOpenDocumentText({ balancedSpaces: false })
   })
 
   it('measures astral code points as two UTF-16 units', () => {
@@ -250,17 +287,16 @@ describe('static-render autospace pads', () => {
   })
 })
 
-describe('hangul-space advance', () => {
+describe('balanced-space advance', () => {
   const read = (rel: string) => readFileSync(new URL(rel, import.meta.url), 'utf8')
 
   it('draws the wrapped space from the fixed half-width (0.5em) space face', () => {
-    const rule = /\.doc-hangul-space\s*\{([^}]*)\}/.exec(read('../src/renderer/styles.css'))
-    expect(rule?.[1]).toContain("font-family: 'GenOffice Hangul Space'")
-    const face = /font-family: 'GenOffice Hangul Space';([^}]*)\}/.exec(
+    const rule = /\.doc-balanced-space\s*\{([^}]*)\}/.exec(read('../src/renderer/styles.css'))
+    expect(rule?.[1]).toContain("font-family: 'GenOffice Balanced Space'")
+    const face = /font-family: 'GenOffice Balanced Space';([^}]*)\}/.exec(
       read('../src/renderer/fonts/fonts.css'),
     )
-    // GenOfficeCheLatinKR advances every glyph 0.5em (tools/build-kr-che-latin-font.py)
-    expect(face?.[1]).toContain('GenOfficeCheLatinKR.woff2')
+    expect(face?.[1]).toContain('GenOfficeBalancedSpace.woff2')
     expect(face?.[1]).toContain('unicode-range: U+0020;')
   })
 })
@@ -271,19 +307,24 @@ describe('Latin-first pad scale follows the inherited ascii face', () => {
     new Map([
       ['Normal', { isDefault: true, type: 'paragraph', display: { fontAscii: ascii } }],
     ]) as never
-  const scale = (ascii: string) => String(autospacePadScale(latinAutospaceGapEm(ascii), true))
+  const scale = (ascii: string) => String(autospacePadScale(latinAutospaceGapEm(ascii)))
 
-  it('autospaceRanges recomputes when the style table changes the inherited face', () => {
+  it('paragraph segments recompute when the style table changes the inherited face', () => {
     const editor = makeEditor(paragraphDoc(`C${KR}`))
     const node = editor.state.doc.firstChild!
-    const first = autospaceRanges(node, true, () => 'Cambria')
-    expect(first[0].scale).toBeCloseTo(autospacePadScale(latinAutospaceGapEm('Cambria'), true), 6)
-    expect(autospaceRanges(node, true, () => 'Cambria')).toBe(first)
-    const second = autospaceRanges(node, true, () => 'Times New Roman')
+    const eaOf = () => null
+    const scaleOf = (s: { style?: string }) => Number(/:([\d.]+)$/.exec(s.style ?? '')?.[1])
+    const first = paragraphInlineSegments(node, eaOf, () => 'Cambria')
+    expect(scaleOf(first.segments[0])).toBeCloseTo(
+      autospacePadScale(latinAutospaceGapEm('Cambria')),
+      3,
+    )
+    expect(paragraphInlineSegments(node, eaOf, () => 'Cambria')).toBe(first)
+    const second = paragraphInlineSegments(node, eaOf, () => 'Times New Roman')
     expect(second).not.toBe(first)
-    expect(second[0].scale).toBeCloseTo(
-      autospacePadScale(latinAutospaceGapEm('Times New Roman'), true),
-      6,
+    expect(scaleOf(second.segments[0])).toBeCloseTo(
+      autospacePadScale(latinAutospaceGapEm('Times New Roman')),
+      3,
     )
     editor.destroy()
   })
@@ -371,7 +412,7 @@ describe('Korean no-break word-joiners', () => {
       const dom = render(renderTextboxSpec(box))
       const pad = dom.querySelector('.doc-autospace-pad-le') as HTMLElement
       expect(pad.style.getPropertyValue('--doc-autospace-pad-le').trim()).toBe(
-        String(autospacePadScale(latinAutospaceGapEm('Arial'), true)),
+        String(autospacePadScale(latinAutospaceGapEm('Arial'))),
       )
       expect(dom.querySelectorAll('.doc-kr-wj')).toHaveLength(0)
     } finally {
@@ -394,5 +435,56 @@ describe('Korean no-break word-joiners', () => {
     })
     expect(editor.view.dom.querySelectorAll('.doc-kr-wj')).toHaveLength(1)
     editor.destroy()
+  })
+
+  it('the pad gap is a collapsible ::before space carrying the whole gap; hangul seams keep the margin (Word drops the gap at a line break; corpus 2026-11-10)', () => {
+    const css = readFileSync(join(__dirname, '../src/renderer/styles.css'), 'utf8')
+    const rule = (sel: string) => {
+      const m = new RegExp(`${sel.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\s*\\{([^}]*)\\}`).exec(
+        css,
+      )
+      return m?.[1] ?? ''
+    }
+    expect(rule('@property --doc-autospace-gap')).toMatch(/syntax:\s*'<length>'/)
+    expect(rule('.doc-autospace-pad')).toMatch(
+      /--doc-autospace-gap:\s*calc\(var\(--doc-autospace-pad[^)]*\)\s*\*\s*var\(--doc-autospace-pad-le,\s*2\)\)/,
+    )
+    const before = rule('.doc-autospace-pad::before')
+    expect(before).toMatch(/content:\s*' '/)
+    expect(before).toMatch(/white-space:\s*normal/)
+    expect(before).toMatch(/font-size:\s*0\b/)
+    // a length line-height inherited by the empty pseudo grew every padded line (gate 2026-11-10)
+    expect(before).toMatch(/line-height:\s*0\b/)
+    expect(before).toMatch(/word-spacing:\s*var\(--doc-autospace-gap\)/)
+    expect(rule('.doc-autospace-pad-m::before')).toMatch(/content:\s*none/)
+    expect(rule('.doc-autospace-pad-m')).toMatch(/margin-inline-start:[\s\S]*- 1\s*\)/)
+    expect(css).not.toMatch(/(?<![\w.-])\.doc-autospace-pad(?:-full|-le)?\s*\{[^}]*margin/)
+    // the scale is the whole gap: Calibri's Latin -> CJK 0.26 em = 2.08 x the 1/8 em base
+    expect(autospacePadScale(0.26)).toBe(2.08)
+    expect(autospacePadScale(0.25)).toBe(2)
+  })
+
+  it('hangul seams take the margin form only under Korean word-wrap; with wordWrap off they take the space', () => {
+    const para = (wordWrap: boolean) =>
+      ({
+        runs: [{ text: 'PG\uc0ac 1\ud68c\uc6a9', offset: 0, size: 11, attrs: null }],
+        inheritedAscii: 'Calibri',
+        inheritedEa: 'Batang',
+        wordWrap,
+        balancedSpaces: false,
+        justified: false,
+        simsunGapLineHeight: null,
+        autospace: true,
+      }) as never
+    const classesOf = (wordWrap: boolean) =>
+      inlineSegments(para(wordWrap))
+        .segments.filter((s) => s.cls?.includes('doc-autospace-pad'))
+        .map((s) => s.cls!)
+    const on = classesOf(true)
+    expect(on.length).toBeGreaterThan(0)
+    for (const c of on) expect(c).toContain('doc-autospace-pad-m')
+    const off = classesOf(false)
+    expect(off.length).toBe(on.length)
+    for (const c of off) expect(c).not.toContain('doc-autospace-pad-m')
   })
 })

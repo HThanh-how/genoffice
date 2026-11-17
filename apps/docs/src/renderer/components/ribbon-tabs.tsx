@@ -53,6 +53,7 @@ import {
   IconMoon,
   IconNavPane,
   IconOutlineView,
+  IconStoryView,
   IconPageWidth,
   IconGridlines,
   IconNewWindow,
@@ -158,6 +159,26 @@ const DIRECT_PARA_ATTRS: Record<string, unknown> = {
 /** Word's Ctrl+Q: reset the paragraph to its style, keeping the text and its character formatting */
 export function clearParagraphFormatting(editor: Editor): void {
   setParaAttrs(editor, { ...DIRECT_PARA_ATTRS })
+}
+
+/**
+ * Word's Clear Formatting entry: direct character formatting off (a collapsed
+ * caret takes its whole paragraph), then the paragraphs back to the default
+ * style with their direct paragraph formatting dropped. A textbox sub-editor
+ * only clears the runs.
+ */
+export function clearAllFormatting(editor: Editor, sub: Editor | null, styles?: StyleMap): void {
+  const ed = sub ?? editor
+  const { $from, empty } = ed.state.selection
+  const chain = ed.chain().focus()
+  if (empty && $from.parent.isTextblock)
+    chain.setTextSelection({ from: $from.start(), to: $from.end() })
+  chain.unsetAllMarks()
+  if (empty) chain.setTextSelection($from.pos)
+  chain.run()
+  if (sub) return
+  applyParagraphStyleId(editor, defaultParagraphStyleId(styles) ?? null, null)
+  clearParagraphFormatting(editor)
 }
 
 /** Word's Quick Style gallery keys on the shortcuts (Opt+Cmd+0..3) */
@@ -1339,7 +1360,7 @@ export function ReviewTab({
 /* ================= View ================= */
 
 /** document rendering modes: Print Layout / Web Layout / Outline */
-export type ViewMode = 'print' | 'web' | 'outline'
+export type ViewMode = 'print' | 'web' | 'outline' | 'story'
 
 interface ViewTabProps {
   hasDoc: boolean
@@ -1445,6 +1466,17 @@ export function ViewTab({
               <IconOutlineView size={BIG} />
             </span>
             <span>{t('ribbonOutlineView')}</span>
+          </button>
+          <button
+            className={`rb-big ${viewMode === 'story' ? 'active' : ''}`}
+            disabled={!hasDoc}
+            data-tip={t('ribbonStoryViewTip')}
+            onClick={() => onViewMode(viewMode === 'story' ? 'print' : 'story')}
+          >
+            <span className="rb-big-icon">
+              <IconStoryView size={BIG} />
+            </span>
+            <span>{t('ribbonStoryView')}</span>
           </button>
           <button
             className={`rb-big ${readMode ? 'active' : ''}`}

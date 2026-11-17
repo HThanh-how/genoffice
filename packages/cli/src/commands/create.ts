@@ -85,6 +85,11 @@ export const createCommand: CommandDef = {
       description:
         'xlsx --from .csv: the decimal separator the file uses (default "."); with "," a "." is read as a thousands separator',
     },
+    {
+      name: 'no-generator-fields',
+      description:
+        'docx: drop the Application / AppVersion generator fields from docProps/app.xml (the Word-default Template stays)',
+    },
     { name: 'out', value: 'path', description: 'output file (required)' },
     { name: 'force', description: 'overwrite an existing output file' },
     {
@@ -405,6 +410,9 @@ async function createDocx(
     throw new CliError(EXIT.usage, 'docx needs --from <content.md|fragment.html>', undefined, {
       reason: 'missing_argument',
     })
+  const blankOptions = flagBool(args, 'no-generator-fields')
+    ? { omitGeneratorFields: true }
+    : undefined
   const source = resolveInput(from, ctx)
   const text = readFileSync(source, 'utf-8')
   const ext = extname(source).toLowerCase()
@@ -421,7 +429,11 @@ async function createDocx(
   const documentType = (rawType as DocumentType) || undefined
 
   if (ext === '.md' || ext === '.markdown') {
-    const bytes = await markdownToDocx(text, { file: source, ctx }, { documentType })
+    const bytes = await markdownToDocx(
+      text,
+      { file: source, ctx },
+      { documentType, ...blankOptions },
+    )
     const validation = await validateGeneratedDocx(bytes)
     if (!validation.ok) {
       throw new CliError(
@@ -438,8 +450,8 @@ async function createDocx(
   }
   if (ext === '.html' || ext === '.htm') {
     const profile = DOCUMENT_PROFILES[documentType || 'general']
-    const blankOptions = blankDocxOptionsFromProfile(profile)
-    const doc = await blankDocument(blankOptions)
+    const profileOptions = { ...blankDocxOptionsFromProfile(profile), ...blankOptions }
+    const doc = await blankDocument(profileOptions)
     try {
       const blocks = fillFromHtml(doc, text)
       const bytes = await saveDocument(doc)

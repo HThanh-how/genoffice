@@ -26,7 +26,8 @@ export const capabilitiesCommand: CommandDef = {
     const gsk = hasGskAuth() && cloudToolsEnabled(settings)
     const searchProvider = activeSearchProvider(settings)
     const search = true // Parallel Search MCP is available without an API key
-    const keyedImageSearch = searchProvider === 'serper' || searchProvider === 'serply'
+    const keyedImageSearch =
+      searchProvider === 'serper' || searchProvider === 'serply' || searchProvider === 'searchapi'
     const imageSearch = keyedImageSearch
     const imageGeneration = imageGenerationAvailable(settings, hasGskAuth())
     const mediaAnalysis = mediaAnalysisAvailable(settings, hasGskAuth())

@@ -59,6 +59,7 @@ export interface MarkdownImageSource {
 }
 
 export interface MarkdownToDocxOptions {
+  omitGeneratorFields?: boolean
   images?: MarkdownImageSource
   documentType?: DocumentType | string
   section?: SectionSettings
@@ -168,6 +169,7 @@ export async function markdownToDocx(
       undefined,
       saveOptions,
       profile,
+      { omitGeneratorFields: options.omitGeneratorFields },
     )
   })
 }

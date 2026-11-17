@@ -20,12 +20,9 @@
  * leftwards when over-wide.
  */
 import type { TableModel } from '@genoffice/docx-engine'
-import {
-  clampTableColWidths,
-  expandAutofitColWidths,
-  legacyIndentTable,
-  type RunDefaults,
-} from './convert'
+import { legacyIndentTable } from './convert'
+import type { FontMetricsProvider } from '../line-metrics'
+import { clampTableColWidths, expandAutofitColWidths, type RunDefaults } from '../table-layout'
 
 export type TableWidthPolicy = 'fixed' | 'dxa' | 'pct' | 'auto'
 
@@ -100,7 +97,7 @@ export function holdsDeclaredWidthInput(input: TableWidthInput, ctx: TableGeomet
   )
 }
 
-/** convert-time form of holdsDeclaredWidthInput over the display model (fixed layout excluded: it never clamps) */
+/** convert-time form of holdsDeclaredWidthInput over the display model (fixed layout: see holdsFixedGrid) */
 export function holdsDeclaredWidth(model: TableModel): boolean {
   return (
     !model.fixedLayout &&
@@ -109,6 +106,13 @@ export function holdsDeclaredWidth(model: TableModel): boolean {
       surface: 'static',
     })
   )
+}
+
+/** a fixed-layout grid past the paper is held past the paper (Word clips, never
+ *  rewraps); only a garbage grid wider than two papers is still clamped */
+export function holdsFixedGrid(model: TableModel, paperTwips: number): boolean {
+  const sum = colSumTwips(model)
+  return model.fixedLayout === true && sum !== null && sum <= paperTwips * 2
 }
 
 function colSumTwips(model: TableModel): number | null {
@@ -267,6 +271,8 @@ export interface ResolveTableWidthCtx {
   /** compat < 15: w:tblInd measured to the cell text, box hangs by the cell margins */
   legacyIndent: boolean
   defaults?: RunDefaults
+  /** advances to size the columns with; undefined = the renderer's canvas (node: heuristic) */
+  metrics?: FontMetricsProvider | null
 }
 
 export interface ResolvedTableWidth {
@@ -285,6 +291,8 @@ export interface ResolvedTableWidth {
   /** declared width held past the column / paper */
   hold: boolean
   bleed: 'none' | 'right' | 'left' | 'both'
+  /** the grid spills the column or was narrowed to it: w:noWrap cells cannot grow, they wrap */
+  overWide: boolean
   log: string[]
 }
 
@@ -316,22 +324,23 @@ export function resolveTableWidth(
       t,
       avail,
       budget.fit,
-      undefined,
+      ctx.metrics,
       false,
       ctx.legacyIndent,
       ctx.defaults,
     )
     if (t.colWidthsTwips !== before) log.push(`${policy} autofit within ${avail}/${budget.fit}`)
-    hold = holdsDeclaredWidth(t)
-    if (hold) log.push('declared dxa width held, no paper clamp')
+    hold = holdsDeclaredWidth(t) || holdsFixedGrid(t, budget.paper)
+    if (hold) log.push(`declared ${policy} width held, no paper clamp`)
     else {
-      const clamped = clampTableColWidths(t, budget.paper)
+      const clamped = clampTableColWidths(t, budget.paper, ctx.metrics)
       if (clamped !== t) log.push(`clamped to the paper ${budget.paper}`)
       t = clamped
     }
   }
   const colTwips = t.colWidthsTwips ?? null
   const widthTwips = colTwips ? colTwips.reduce((a, b) => a + b, 0) : null
+  const declaredTwips = colSumTwips(model)
   const origin =
     t.align === 'center' || t.floatPos?.xSpec === 'center'
       ? 'marginBox'
@@ -359,6 +368,13 @@ export function resolveTableWidth(
     hang,
     hold,
     bleed,
+    // a pct table is its share of the column whatever the saved grid says;
+    // noWrap columns pinned past the text column are shrunk proportionally
+    overWide: t.widthPct
+      ? t.widthPct > 100
+      : bleed !== 'none' ||
+        (widthTwips !== null && declaredTwips !== null && widthTwips < declaredTwips) ||
+        (!!budget && (t.noWrapPinnedTwips ?? 0) > budget.fit - (t.indentTwips ?? 0)),
     log,
   }
 }

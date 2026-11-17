@@ -16,10 +16,21 @@ import {
   throwIfCreditsNotice,
   throwIfToolCountOverBudget,
   throwIfToolJsonOverBudget,
-  usageCount,
+  openAiUsage,
   type StreamCallbacks,
 } from './shared'
 import type { AiTokenUsage } from '../types'
+
+interface ChatUsage {
+  prompt_tokens?: unknown
+  completion_tokens?: unknown
+  prompt_tokens_details?: { cached_tokens?: unknown } | null
+}
+
+function chatUsage(raw: ChatUsage | undefined): AiTokenUsage | undefined {
+  if (!raw) return undefined
+  return openAiUsage(raw.prompt_tokens, raw.completion_tokens, raw.prompt_tokens_details)
+}
 
 function openAiMessages(
   system: string,
@@ -87,7 +98,7 @@ function emitOpenAiJsonMessage(bodyText: string, cb: StreamCallbacks): void {
       }
       finish_reason?: string | null
     }>
-    usage?: { prompt_tokens?: unknown; completion_tokens?: unknown }
+    usage?: ChatUsage
     error?: { message?: string } | string
   }
   try {
@@ -132,16 +143,8 @@ function emitOpenAiJsonMessage(bodyText: string, cb: StreamCallbacks): void {
   for (const call of toolCalls) cb.onToolCall(call)
   if (!emitted) throw new Error(`The model returned no content: ${httpBodyDetail(bodyText)}`)
   if (choice?.finish_reason === 'length') cb.onStopReason?.('max_tokens')
-  const jsonUsage = msg.usage as
-    { prompt_tokens?: unknown; completion_tokens?: unknown } | undefined
-  if (jsonUsage) {
-    const usage: AiTokenUsage = {}
-    const input = usageCount(jsonUsage.prompt_tokens)
-    const output = usageCount(jsonUsage.completion_tokens)
-    if (input !== undefined) usage.inputTokens = input
-    if (output !== undefined) usage.outputTokens = output
-    if (usage.inputTokens !== undefined || usage.outputTokens !== undefined) cb.onUsage?.(usage)
-  }
+  const usage = chatUsage(msg.usage as ChatUsage | undefined)
+  if (usage) cb.onUsage?.(usage)
 }
 
 /** Per-endpoint request shaping resolved from the provider registry. */
@@ -153,6 +156,11 @@ export interface OpenAiRequestOptions {
   bodyExtras?: Record<string, unknown> | undefined
   /** echo `reasoning_content` back on assistant turns; absent = the shipped family heuristic */
   echoReasoning?: boolean | undefined
+  /** OpenAI-style reasoning effort for the families that accept the field
+   * (gpt-5.x chat, o-series, grok); absent = the model's default. Emitted
+   * after `bodyExtras` so the user's stored pick outranks a profile's extras,
+   * the same rule the toggle fields follow. */
+  reasoningEffort?: string | undefined
   /** static headers a user-hosted endpoint needs (merged last, so they win) */
   headers?: Record<string, string> | undefined
   /** stream idle budget override for slow local servers */
@@ -243,6 +251,7 @@ async function openAiCompatibleTurn(
         : {}),
       ...(options.omitTemperature ? {} : { temperature: 0.3 }),
       ...options.bodyExtras,
+      ...(options.reasoningEffort ? { reasoning_effort: options.reasoningEffort } : {}),
       stream: true,
       // OpenAI-class providers only report usage in a stream when asked (a final
       // chunk with empty choices carries it); strict gateways that reject the
@@ -313,22 +322,13 @@ async function openAiCompatibleTurn(
         finish_reason?: string | null
       }>
       /** usage chunk (requested via stream_options): empty choices + the counts */
-      usage?: { prompt_tokens?: unknown; completion_tokens?: unknown }
+      usage?: ChatUsage
       error?: { message?: string } | string
     }
     if (event.error) throw new Error(sseErrorText(event.error, 'Model stream error'))
     // The usage chunk arrives with empty choices right before [DONE]; some
     // providers (DeepSeek et al) attach usage to the last content chunk instead.
-    if (event.usage) {
-      const usage: AiTokenUsage = {}
-      const input = usageCount(event.usage.prompt_tokens)
-      const output = usageCount(event.usage.completion_tokens)
-      if (input !== undefined) usage.inputTokens = input
-      if (output !== undefined) usage.outputTokens = output
-      if (usage.inputTokens !== undefined || usage.outputTokens !== undefined) {
-        turnUsage = usage
-      }
-    }
+    turnUsage = chatUsage(event.usage) ?? turnUsage
     const choice = event.choices?.[0]
     if (!choice) continue
     const reasoning = choice.delta?.reasoning_content ?? choice.delta?.reasoning
@@ -433,6 +433,7 @@ export async function chatOpenAiCompatible(
       ],
       ...(options.omitTemperature ? {} : { temperature: 0.3 }),
       ...options.bodyExtras,
+      ...(options.reasoningEffort ? { reasoning_effort: options.reasoningEffort } : {}),
     }),
   })
   wd.touch()

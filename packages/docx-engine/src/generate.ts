@@ -275,9 +275,9 @@ function boxDrawingSegments(paragraphXml: string): Array<{ start: number; end: n
   )
 }
 
-/** How a caller addresses one shape drawing: by its wps:cNvPr id when known, else by box ordinal. */
+/** How a caller addresses one shape drawing: by its cNvPr id when known, else by box ordinal. */
 export interface ShapeDrawingLocation {
-  /** wps:cNvPr id of the owning shape (parsed boxes carry it) */
+  /** wps:cNvPr (or pic:cNvPr for a photo box) id of the owning shape (parsed boxes carry it) */
   shapeId?: string
   /** fallback ordinal among box drawings (generated shapes have no id) */
   boxIndex: number
@@ -291,8 +291,9 @@ function shapeDrawingSegment(
     // an id was given: never fall back to a different drawing
     const found = xmlSegments(paragraphXml, 'w:drawing', 0, paragraphXml.length).find(
       (seg) =>
-        /<wps:cNvPr\b[^>]*\bid="([^"]+)"/.exec(paragraphXml.slice(seg.start, seg.end))?.[1] ===
-        location.shapeId,
+        /<(?:wps|pic):cNvPr\b[^>]*\bid="([^"]+)"/.exec(
+          paragraphXml.slice(seg.start, seg.end),
+        )?.[1] === location.shapeId,
     )
     return found ?? null
   }
@@ -497,6 +498,39 @@ export interface FieldTextPatch {
  * hyperlinks, tabs, run styling, and field boundaries remain byte-identical.
  */
 export function patchFieldParagraphXml(xml: string, patch: FieldTextPatch): string {
+  const hyphens =
+    /<w:(?:noBreakHyphen|softHyphen)\s*\/>/.test(xml) || /[\u2011\u00ad]/.test(patch.left ?? '')
+  if (!hyphens) return patchFieldTextNodes(xml, patch)
+  // fieldDisplayOf reads the hyphen elements as U+2011 / U+00AD, so the edited
+  // text carries them as characters: lift the elements into text nodes for the
+  // distribution and fold every hyphen character back into its element after
+  // (a tracked deletion's hyphens lift as w:delText so they stay out of the live text)
+  const lift = (seg: string, tag: string) =>
+    seg
+      .replace(/<w:noBreakHyphen\s*\/>/g, `<${tag}>\u2011</${tag}>`)
+      .replace(/<w:softHyphen\s*\/>/g, `<${tag}>\u00ad</${tag}>`)
+  const lifted = lift(
+    xml.replace(/<w:del(?:\s[^>]*)?(?<!\/)>[\s\S]*?<\/w:del>/g, (del) => lift(del, 'w:delText')),
+    'w:t',
+  )
+  return patchFieldTextNodes(lifted, patch).replace(
+    /<(w:t|w:delText)(\s[^>]*)?>([^<]*[\u2011\u00ad][^<]*)<\/\1>/g,
+    (_m, tag: string, attrs: string | undefined, text: string) =>
+      text
+        .split(/([\u2011\u00ad])/)
+        .filter(Boolean)
+        .map((seg) =>
+          seg === '\u2011'
+            ? '<w:noBreakHyphen/>'
+            : seg === '\u00ad'
+              ? '<w:softHyphen/>'
+              : `<${tag}${attrs ?? ''}>${seg}</${tag}>`,
+        )
+        .join(''),
+  )
+}
+
+function patchFieldTextNodes(xml: string, patch: FieldTextPatch): string {
   const nodes = textNodes(xml, 'w:t')
   if (nodes.length === 0) return xml
   // run-level tab only (attribute-less CT_Empty) — `<w:tab w:val=…/>` inside

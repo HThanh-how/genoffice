@@ -779,12 +779,6 @@ mod sync_tests {
 
     #[test]
     fn refused_flushes_are_tolerated() {
-        for raw in TOLERATED_SYNC_ERRNOS {
-            assert!(
-                is_tolerated_sync_error(&io::Error::from_raw_os_error(raw)),
-                "errno {raw}"
-            );
-        }
         for kind in [
             io::ErrorKind::Unsupported,
             io::ErrorKind::InvalidInput,
@@ -796,13 +790,46 @@ mod sync_tests {
     }
 
     #[test]
+    fn platform_flush_errors_are_tolerated() {
+        // OS error numbers are platform-specific: Windows error 5 is access
+        // denied, while Unix errno 5 is an I/O failure that must be propagated.
+        #[cfg(unix)]
+        let raw_errors = [22, 1, 13, 16]; // EINVAL, EPERM, EACCES, EBUSY
+        #[cfg(windows)]
+        let raw_errors = [87, 5, 170]; // Invalid parameter, access denied, busy
+        #[cfg(not(any(unix, windows)))]
+        let raw_errors: [i32; 0] = [];
+
+        for raw in raw_errors.into_iter().chain(TOLERATED_SYNC_ERRNOS) {
+            assert!(
+                is_tolerated_sync_error(&io::Error::from_raw_os_error(raw)),
+                "errno {raw}"
+            );
+        }
+    }
+
+    #[test]
     fn real_write_failures_still_fail() {
         for kind in [
-            io::ErrorKind::Other,
             io::ErrorKind::StorageFull,
             io::ErrorKind::ReadOnlyFilesystem,
+            io::ErrorKind::Other,
         ] {
             assert!(!is_tolerated_sync_error(&io::Error::from(kind)), "{kind:?}");
+        }
+
+        #[cfg(unix)]
+        let raw_errors = [5, 28, 30]; // EIO, ENOSPC, EROFS
+        #[cfg(windows)]
+        let raw_errors = [1117, 112, 19]; // I/O device error, disk full, write protected
+        #[cfg(not(any(unix, windows)))]
+        let raw_errors: [i32; 0] = [];
+
+        for raw in raw_errors {
+            assert!(
+                !is_tolerated_sync_error(&io::Error::from_raw_os_error(raw)),
+                "errno {raw}"
+            );
         }
     }
 }

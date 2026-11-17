@@ -51,6 +51,33 @@ pub struct ExternalLinkStatus {
     pub sheet_names: Vec<String>,
 }
 
+/// One `[n]` link as the read-only listing carries it. Deliberately no
+/// `reachable`: opening a workbook (and its links panel) must not probe the
+/// targets on disk — a network share can block for seconds if it is gone —
+/// so reachability is answered only by the explicit update.
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ExternalLinkListStatus {
+    pub index: usize,
+    pub raw_target: String,
+    /// The resolved local path when the target names one; `None` for schemes
+    /// the sidecar cannot read.
+    pub source: Option<String>,
+    pub sheet_names: Vec<String>,
+}
+
+/// The kind of an external-formula cell's value, so a host can write the
+/// cache with the right XML type: a boolean result belongs in `t="b"`, an
+/// error in `t="e"`, not in a text cache that spells TRUE or #DIV/0!.
+#[derive(serde::Serialize, Debug, Clone, Copy, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub enum ExternalLinkCellKind {
+    Number,
+    Text,
+    Boolean,
+    Error,
+}
+
 /// One external-formula cell of the report, exactly one entry per
 /// external-formula cell of the workbook: its freshly computed value when
 /// every link it references was reachable and inlinable, its cached value
@@ -67,7 +94,19 @@ pub struct ExternalLinkCell {
     pub column: u32,
     pub formatted: String,
     pub number: Option<f64>,
+    /// The value's kind; `None` when there is no usable value (a formula cell
+    /// the file never cached cannot be written as one). Skipped, not `null`:
+    /// the host schema only knows an absent `kind`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub kind: Option<ExternalLinkCellKind>,
     pub formula: String,
+}
+
+/// The panel listing, shaped like the update report's `links` so the host
+/// reads both with one schema.
+#[derive(serde::Serialize)]
+pub struct ExternalLinksListing {
+    pub links: Vec<ExternalLinkListStatus>,
 }
 
 #[derive(serde::Serialize)]
@@ -91,13 +130,27 @@ impl LinkEntry {
         ExternalLinkStatus {
             index: self.index,
             raw_target: self.raw_target.clone(),
-            source: self
-                .source
-                .as_ref()
-                .map(|path| path.to_string_lossy().into_owned()),
+            source: self.source_text(),
             reachable: self.reachable(),
             sheet_names: self.sheet_names.clone(),
         }
+    }
+
+    /// The listing's shape: everything but reachability, which needs a disk
+    /// probe the open path must not pay for.
+    fn read_status(&self) -> ExternalLinkListStatus {
+        ExternalLinkListStatus {
+            index: self.index,
+            raw_target: self.raw_target.clone(),
+            source: self.source_text(),
+            sheet_names: self.sheet_names.clone(),
+        }
+    }
+
+    fn source_text(&self) -> Option<String> {
+        self.source
+            .as_ref()
+            .map(|path| path.to_string_lossy().into_owned())
     }
 
     fn reachable(&self) -> bool {
@@ -320,8 +373,8 @@ fn join_package_path(base: &str, target: &str) -> String {
     format!("{base}/{target}")
 }
 
-/// The link list without touching any source: what `sheet links` prints and
-/// the panel lists.
+/// The link list with each source's reachability verdict: what `sheet links`
+/// prints (the CLI listing wants the reachability column, so it probes).
 pub(crate) fn read_external_link_statuses(
     workbook: &Path,
 ) -> Result<Vec<ExternalLinkStatus>, SidecarError> {
@@ -329,6 +382,20 @@ pub(crate) fn read_external_link_statuses(
         .iter()
         .map(LinkEntry::status)
         .collect())
+}
+
+/// The link list without touching any source: no `is_file()` on the targets,
+/// nothing is opened, nothing is evaluated. This is what the editor's links
+/// panel reads when it opens; the explicit update answers reachability.
+pub(crate) fn list_external_link_statuses(
+    workbook: &Path,
+) -> Result<ExternalLinksListing, SidecarError> {
+    Ok(ExternalLinksListing {
+        links: parse_external_links(workbook)?
+            .iter()
+            .map(LinkEntry::read_status)
+            .collect(),
+    })
 }
 
 /// Computes fresh values for every external-formula cell against the reachable
@@ -403,15 +470,16 @@ pub(crate) fn update_external_link_values(
     let mut cells: Vec<ExternalLinkCell> = Vec::new();
     for (sheet, row, column, text, cached) in &pending {
         let rewritten_now = rewritten.contains(&(*sheet, *row, *column));
-        let (formatted, number) = if rewritten_now {
+        let (formatted, number, kind) = if rewritten_now {
             (
                 model
                     .get_formatted_cell_value(*sheet, *row, *column)
                     .unwrap_or_default(),
                 raw_number(&model, *sheet, *row, *column),
+                Some(cell_kind(&model, *sheet, *row, *column)),
             )
         } else {
-            (cached.formatted(), cached.number())
+            (cached.formatted(), cached.number(), cached.kind())
         };
         cells.push(ExternalLinkCell {
             sheet: model.workbook.worksheets[*sheet as usize].name.clone(),
@@ -419,6 +487,7 @@ pub(crate) fn update_external_link_values(
             column: (*column - 1) as u32,
             formatted,
             number,
+            kind,
             formula: text.clone(),
         });
     }
@@ -445,6 +514,7 @@ enum CachedValue {
     Number(f64),
     Text(String),
     Bool(bool),
+    Error(String),
     Missing,
 }
 
@@ -454,6 +524,8 @@ impl CachedValue {
             FormulaValue::Number(number) => CachedValue::Number(*number),
             FormulaValue::Text(text) => CachedValue::Text(text.clone()),
             FormulaValue::Boolean(flag) => CachedValue::Bool(*flag),
+            // the cached error's own spelling: #DIV/0!, #N/A, …
+            FormulaValue::Error { ei, .. } => CachedValue::Error(ei.to_string()),
             _ => CachedValue::Missing,
         }
     }
@@ -465,6 +537,18 @@ impl CachedValue {
         }
     }
 
+    /// The kind a host needs to write this cache with the right XML type;
+    /// `None` for a cell with no usable cache.
+    fn kind(&self) -> Option<ExternalLinkCellKind> {
+        match self {
+            CachedValue::Number(_) => Some(ExternalLinkCellKind::Number),
+            CachedValue::Text(_) => Some(ExternalLinkCellKind::Text),
+            CachedValue::Bool(_) => Some(ExternalLinkCellKind::Boolean),
+            CachedValue::Error(_) => Some(ExternalLinkCellKind::Error),
+            CachedValue::Missing => None,
+        }
+    }
+
     /// A skipped cell's report value: the file's own cache, spelled the way
     /// the model carries it — numbers bare, text as the string itself.
     fn formatted(&self) -> String {
@@ -473,8 +557,22 @@ impl CachedValue {
             CachedValue::Text(text) => text.clone(),
             CachedValue::Bool(true) => "TRUE".into(),
             CachedValue::Bool(false) => "FALSE".into(),
+            CachedValue::Error(text) => text.clone(),
             CachedValue::Missing => String::new(),
         }
+    }
+}
+
+/// The kind of a rewritten (live) cell's value, from the model's own cell type.
+fn cell_kind(model: &Model, sheet: u32, row: i32, column: i32) -> ExternalLinkCellKind {
+    match model.get_cell_type(sheet, row, column) {
+        Ok(CellType::Number) => ExternalLinkCellKind::Number,
+        Ok(CellType::LogicalValue) => ExternalLinkCellKind::Boolean,
+        Ok(CellType::ErrorValue) => ExternalLinkCellKind::Error,
+        Ok(CellType::Text) => ExternalLinkCellKind::Text,
+        // arrays/compound data have no per-cell cache of their own; their
+        // formatted text is the value a host can write
+        _ => ExternalLinkCellKind::Text,
     }
 }
 
@@ -833,8 +931,378 @@ fn cell_literal(model: &Model, sheet: u32, row: u32, column: u32) -> Option<Stri
     }
 }
 
+/// The value a break freezes one cell at: the file-cached `<v>` with its
+/// cell type. Mirrors the gateway's `literalCell` spelling one-to-one, so the
+/// cells reported here are exactly the cells a break transform converts.
+/// Struct variants on purpose — serde's internally-tagged enums reject
+/// scalar newtype variants.
+#[derive(serde::Serialize, Clone, Debug, PartialEq)]
+#[serde(tag = "kind", rename_all = "camelCase")]
+pub enum UsageValue {
+    Number { value: f64 },
+    Text { value: String },
+    Bool { value: bool },
+    /// An error result keeps its `t="e"` spelling (`#REF!`, `#NAME?`, …).
+    Error { value: String },
+    Missing,
+}
+
+/// One formula cell that references an external link, as the usage report
+/// carries it. `row`/`column` are 0-based.
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ExternalLinkUsageCell {
+    pub sheet: String,
+    pub row: u32,
+    pub column: u32,
+    pub value: UsageValue,
+}
+
+/// Every cell of the workbook that references link `[n]`.
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ExternalLinkUsage {
+    pub index: usize,
+    pub cells: Vec<ExternalLinkUsageCell>,
+}
+
+/// Decodes the XML entities a hand-read `<v>`/`<f>` text may carry.
+fn decode_xml_entities(text: &str) -> String {
+    if !text.contains('&') {
+        return text.to_string();
+    }
+    let mut out = String::with_capacity(text.len());
+    let mut rest = text;
+    while let Some(at) = rest.find('&') {
+        out.push_str(&rest[..at]);
+        let tail = &rest[at..];
+        let (entity, skip): (Option<char>, usize) = if let Some(digits) = tail.strip_prefix("&#x") {
+            match digits.find(';') {
+                Some(end) => (
+                    u32::from_str_radix(&digits[..end], 16).ok().and_then(char::from_u32),
+                    end + 4,
+                ),
+                None => (None, 1),
+            }
+        } else if let Some(digits) = tail.strip_prefix("&#") {
+            match digits.find(';') {
+                Some(end) => (
+                    digits[..end].parse::<u32>().ok().and_then(char::from_u32),
+                    end + 3,
+                ),
+                None => (None, 1),
+            }
+        } else if tail.starts_with("&amp;") {
+            (Some('&'), 5)
+        } else if tail.starts_with("&lt;") {
+            (Some('<'), 4)
+        } else if tail.starts_with("&gt;") {
+            (Some('>'), 4)
+        } else if tail.starts_with("&quot;") {
+            (Some('"'), 6)
+        } else if tail.starts_with("&apos;") {
+            (Some('\''), 6)
+        } else {
+            (None, 1)
+        };
+        match entity {
+            Some(decoded) => out.push(decoded),
+            // not an entity we know: keep the `&` verbatim
+            None => out.push('&'),
+        }
+        rest = &rest[at + skip..];
+    }
+    out.push_str(rest);
+    out
+}
+
+/// `A1`-style reference → 0-based row and column.
+fn parse_cell_reference(reference: &str) -> Option<(u32, u32)> {
+    let split = reference.find(|ch: char| ch.is_ascii_digit())?;
+    let (letters, digits) = reference.split_at(split);
+    if letters.is_empty() || letters.len() > 3 || digits.is_empty() {
+        return None;
+    }
+    let mut column = 0u32;
+    for ch in letters.chars() {
+        let upper = ch.to_ascii_uppercase();
+        if !upper.is_ascii_uppercase() {
+            return None;
+        }
+        column = column * 26 + u32::from(upper as u8 - b'A') + 1;
+    }
+    let row = digits.parse::<u32>().ok()?;
+    if row == 0 {
+        return None;
+    }
+    Some((row - 1, column - 1))
+}
+
+/// The link indices one formula body references — the same two spellings the
+/// gateway's break transform matches: `'[1]Sheet Name'` (quotes doubled
+/// inside) and `[1]Sheet1` (sheet-name characters run to a delimiter).
+fn link_indexes(body: &str) -> Vec<usize> {
+    let chars: Vec<char> = body.chars().collect();
+    let mut out = Vec::new();
+    let mut at = 0;
+    while at < chars.len() {
+        if chars[at] != '[' {
+            at += 1;
+            continue;
+        }
+        let mut cursor = at + 1;
+        while cursor < chars.len() && chars[cursor].is_ascii_digit() {
+            cursor += 1;
+        }
+        if cursor == at + 1 || cursor >= chars.len() || chars[cursor] != ']' {
+            at += 1;
+            continue;
+        }
+        let index: usize = chars[at + 1..cursor].iter().collect::<String>().parse().unwrap_or(0);
+        // the bare spelling needs at least one sheet-name character after
+        // `]`; the quoted spelling needs the closing quote of `'[n]…'`
+        let bare = cursor + 1 < chars.len() && is_sheet_name_char(chars[cursor + 1]);
+        let mut quoted = false;
+        if at > 0 && chars[at - 1] == '\'' {
+            let mut scan = cursor + 1;
+            while scan < chars.len() {
+                if chars[scan] == '\'' {
+                    if scan + 1 < chars.len() && chars[scan + 1] == '\'' {
+                        scan += 2;
+                        continue;
+                    }
+                    quoted = true;
+                    break;
+                }
+                scan += 1;
+            }
+        }
+        if (bare || quoted) && index > 0 && !out.contains(&index) {
+            out.push(index);
+        }
+        at = cursor + 1;
+    }
+    out
+}
+
+/// A character the bare `[n]Sheet1` spelling allows inside the sheet name —
+/// the inverse of the gateway's `BARE_REF` terminator set.
+fn is_sheet_name_char(ch: char) -> bool {
+    !matches!(
+        ch,
+        ' ' | '!'
+            | '('
+            | ')'
+            | ','
+            | ';'
+            | '"'
+            | '\''
+            | '^'
+            | '&'
+            | '*'
+            | '<'
+            | '>'
+            | '='
+            | '+'
+            | '-'
+            | '/'
+            | '['
+            | ']'
+    ) && !ch.is_whitespace()
+}
+
+/// Start offset of the next real `<tag` element at or after `from` — one whose
+/// next character ends the name, so `<c` never matches `<cols`.
+fn element_start(xml: &str, tag: &str, from: usize) -> Option<usize> {
+    let mut at = from;
+    while let Some(found) = xml[at..].find(&format!("<{tag}")) {
+        let open = found + at;
+        match xml.as_bytes().get(open + 1 + tag.len()) {
+            Some(b' ') | Some(b'>') | Some(b'/') | Some(b'\t') | Some(b'\n') | Some(b'\r') => {
+                return Some(open)
+            }
+            _ => at = open + 1,
+        }
+    }
+    None
+}
+
+/// `(tag start, body start, body end)` of the first `<tag …>` element at or
+/// after `from`. A self-closing `<tag/>` reports an empty body; the offsets
+/// index the same string the caller slices.
+fn element_span(xml: &str, tag: &str, from: usize) -> Option<(usize, usize, usize)> {
+    let open = element_start(xml, tag, from)?;
+    let after_open = xml[open..].find('>')? + open + 1;
+    // the slice ends at the `>`, so a self-closing tag spells `/>`
+    if xml[open..after_open].ends_with("/>") {
+        return Some((open, after_open, after_open));
+    }
+    let close = xml[after_open..].find(&format!("</{tag}>"))? + after_open;
+    Some((open, after_open, close))
+}
+
+/// Reads one attribute of a tag's opening text (` t="str"`, ` si="2"`).
+fn attribute_value(tag: &str, name: &str) -> Option<String> {
+    let pattern = format!(r#" {name}=""#);
+    let start = tag.find(&pattern)? + pattern.len();
+    let end = tag[start..].find('"')? + start;
+    Some(tag[start..end].to_string())
+}
+
+/// The cell's cached value, spelled the way a break freezes it.
+fn usage_value(cell_open: &str, body: &str) -> UsageValue {
+    let raw = element_span(body, "v", 0).map(|(_open, inner, close)| body[inner..close].to_string());
+    match attribute_value(cell_open, "t").as_deref() {
+        Some("str") => UsageValue::Text {
+            value: raw.map(|v| decode_xml_entities(&v)).unwrap_or_default(),
+        },
+        Some("e") => UsageValue::Error {
+            value: raw.map(|v| decode_xml_entities(&v)).unwrap_or_default(),
+        },
+        Some("b") => UsageValue::Bool {
+            value: raw.as_deref() == Some("1") || raw.as_deref() == Some("true"),
+        },
+        _ => match raw.as_deref() {
+            Some(text) if text.is_empty() => UsageValue::Missing,
+            Some(text) => match text.parse::<f64>() {
+                Ok(value) => UsageValue::Number { value },
+                Err(_) => UsageValue::Text {
+                    value: decode_xml_entities(text),
+                },
+            },
+            None => UsageValue::Missing,
+        },
+    }
+}
+
+/// Scans the workbook's sheet parts for formulas that reference each `[n]`
+/// link and reports every such cell with the literal its cached `<v>` freezes
+/// at. A file-level scan on purpose: it sees exactly the `<f>` bodies and
+/// `t="e"` caches the gateway's break transform sees, where a model pass
+/// would lose the errors.
+pub(crate) fn read_external_link_usage(
+    workbook: &Path,
+) -> Result<Vec<ExternalLinkUsage>, SidecarError> {
+    let mut usages: Vec<ExternalLinkUsage> = Vec::new();
+    let file = match std::fs::File::open(workbook) {
+        Ok(file) => file,
+        Err(_) => return Ok(usages),
+    };
+    let mut archive = zip::ZipArchive::new(file)?;
+    let (workbook_xml, rels_xml) = match (
+        crate::xml_util::read_zip_string(&mut archive, "xl/workbook.xml"),
+        crate::xml_util::read_zip_string(&mut archive, "xl/_rels/workbook.xml.rels"),
+    ) {
+        (Ok(xml), Ok(rels)) => (xml, rels),
+        _ => return Ok(usages),
+    };
+    let rel_targets = relationship_targets(&rels_xml);
+    // worksheet part → sheet name, so the report speaks sheet names
+    let mut sheet_names: HashMap<String, String> = HashMap::new();
+    if let Ok(doc) = roxmltree::Document::parse(&workbook_xml) {
+        for node in doc.descendants() {
+            if node.tag_name().name() != "sheet" {
+                continue;
+            }
+            if let (Some(name), Some(rid)) = (node.attribute("name"), node.attribute("id")) {
+                if let Some(target) = rel_targets.get(rid) {
+                    sheet_names.insert(join_package_path("xl", target), name.to_string());
+                }
+            }
+        }
+    }
+    let mut part_paths: Vec<String> = Vec::new();
+    for index in 0..archive.len() {
+        let Ok(file) = archive.by_index_raw(index) else {
+            continue;
+        };
+        // zip 9 made name() fallible (non-UTF-8 entry names); skip that
+        // entry like the other per-index failures above
+        let Ok(name) = file.name() else {
+            continue;
+        };
+        let name = name.into_owned();
+        if name.starts_with("xl/worksheets/sheet") && name.ends_with(".xml") {
+            part_paths.push(name);
+        }
+    }
+    part_paths.sort();
+    for part in part_paths {
+        let xml = match crate::xml_util::read_zip_string(&mut archive, &part) {
+            Ok(xml) => xml,
+            Err(_) => continue,
+        };
+        let sheet_name = sheet_names.get(&part).cloned().unwrap_or_else(|| part.clone());
+        // shared anchors: si → formula body; instances inherit their anchor's
+        let mut shared_bodies: HashMap<String, String> = HashMap::new();
+        let mut cursor = 0;
+        while let Some((open, inner, close)) = element_span(&xml, "f", cursor) {
+            let tag = &xml[open..inner];
+            if tag.contains("t=\"shared\"") && inner < close {
+                if let Some(si) = attribute_value(tag, "si") {
+                    shared_bodies.insert(si, xml[inner..close].to_string());
+                }
+            }
+            cursor = close + 4;
+        }
+        cursor = 0;
+        while let Some((open, inner, close)) = element_span(&xml, "c", cursor) {
+            cursor = close + 4;
+            let cell_open = &xml[open..inner];
+            let body = &xml[inner..close];
+            let Some((_f_open, f_inner, f_close)) = element_span(body, "f", 0) else {
+                continue;
+            };
+            let f_tag = &body[..f_inner];
+            let formula = if f_tag.contains("t=\"shared\"") && f_inner == f_close {
+                // a shared instance carries no body; its anchor's does
+                match attribute_value(f_tag, "si").and_then(|si| shared_bodies.get(&si)) {
+                    Some(shared) => shared.clone(),
+                    None => continue,
+                }
+            } else {
+                body[f_inner..f_close].to_string()
+            };
+            let indexes = link_indexes(&decode_xml_entities(&formula));
+            if indexes.is_empty() {
+                continue;
+            }
+            let Some(reference) = attribute_value(cell_open, "r") else {
+                continue;
+            };
+            let Some((row, column)) = parse_cell_reference(&reference) else {
+                continue;
+            };
+            let value = usage_value(cell_open, body);
+            for index in indexes {
+                let entry = match usages.iter_mut().find(|usage| usage.index == index) {
+                    Some(entry) => entry,
+                    None => {
+                        usages.push(ExternalLinkUsage {
+                            index,
+                            cells: Vec::new(),
+                        });
+                        usages.last_mut().unwrap()
+                    }
+                };
+                entry.cells.push(ExternalLinkUsageCell {
+                    sheet: sheet_name.clone(),
+                    row,
+                    column,
+                    value: value.clone(),
+                });
+            }
+        }
+    }
+    for usage in &mut usages {
+        usage.cells.sort_by_key(|cell| (cell.sheet.clone(), cell.row, cell.column));
+    }
+    usages.sort_by_key(|usage| usage.index);
+    Ok(usages)
+}
+
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use std::io::Write;
 
@@ -1065,9 +1533,9 @@ mod tests {
     }
 
     /// A partial rewrite pins, it does not poison: two links, the first
-    /// reachable through a POSIX-absolute `file:///Users/…`-shaped URI (the
-    /// leading slash must survive resolution), the second gone. A formula
-    /// mixing both stays whole on its cache and reports once; the gone
+    /// reachable through an absolute file URI (a drive on Windows, a leading
+    /// slash on Unix), the second gone. A formula mixing both stays whole on
+    /// its cache and reports once; the gone
     /// link's own cell and its dependents keep their caches instead of
     /// cascading `#ERROR!`; a text cache reports its text; and a `[1]…`
     /// spelling inside a string literal stays text.
@@ -1076,14 +1544,21 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         write_source_fixture(&dir.path().join("source.xlsx"));
         let path = dir.path().join("book.xlsx");
-        let target = format!("file://{}", dir.path().join("source.xlsx").display());
+        let source = dir.path().join("source.xlsx");
+        #[cfg(windows)]
+        let target = format!(
+            "file:///{}",
+            source.display().to_string().replace('\\', "/")
+        );
+        #[cfg(not(windows))]
+        let target = format!("file://{}", source.display());
         write_two_link_dependent_fixture(&path, &target, "gone.xlsx");
         let report = update_external_link_values(&path).unwrap();
 
         assert_eq!(report.links.len(), 2);
         assert!(
             report.links[0].reachable,
-            "a file:///Users/… target keeps its leading slash: {:?}",
+            "an absolute file URI resolves to the source: {:?}",
             report.links[0].source
         );
         assert!(!report.links[1].reachable);
@@ -1122,6 +1597,147 @@ mod tests {
         assert_eq!(literal.formatted, "10[1]Sheet1!A2");
     }
 
+    /// The dependent workbook with one link and four formula cells covering
+    /// the report's value kinds: a number, a text, a boolean and an error.
+    fn write_kind_dependent_fixture(path: &Path, target: &str) {
+        let entries: [(&str, &str); 7] = [
+            (
+                "[Content_Types].xml",
+                r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/><Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/><Override PartName="/xl/worksheets/sheet1.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/><Override PartName="/xl/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.styles+xml"/><Override PartName="/xl/externalLinks/externalLink1.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.externalLink+xml"/></Types>"#,
+            ),
+            (
+                "_rels/.rels",
+                r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="xl/workbook.xml"/></Relationships>"#,
+            ),
+            (
+                "xl/workbook.xml",
+                r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?><workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><sheets><sheet name="Sheet1" sheetId="1" r:id="rId1"/></sheets><externalReferences><externalReference r:id="rId3"/></externalReferences></workbook>"#,
+            ),
+            (
+                "xl/_rels/workbook.xml.rels",
+                r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet1.xml"/><Relationship Id="rId2" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles" Target="styles.xml"/><Relationship Id="rId3" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/externalLink" Target="externalLinks/externalLink1.xml"/></Relationships>"#,
+            ),
+            (
+                "xl/styles.xml",
+                r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?><styleSheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><fonts count="1"><font><sz val="11"/><name val="Calibri"/></font></fonts><fills count="2"><fill><patternFill patternType="none"/></fill><fill><patternFill patternType="gray125"/></fill></fills><borders count="1"><border><left/><right/><top/><bottom/><diagonal/></border></borders><cellStyleXfs count="1"><xf numFmtId="0" fontId="0" fillId="0" borderId="0"/></cellStyleXfs><cellXfs count="1"><xf numFmtId="0" fontId="0" fillId="0" borderId="0" xfId="0"/></cellXfs><cellStyles count="1"><cellStyle name="Normal" xfId="0" builtinId="0"/></cellStyles></styleSheet>"#,
+            ),
+            (
+                "xl/externalLinks/externalLink1.xml",
+                r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?><externalLink xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><externalBook r:id="rId1"><sheetNames><sheetName val="Sheet1"/></sheetNames></externalBook></externalLink>"#,
+            ),
+            (
+                "xl/externalLinks/_rels/externalLink1.xml.rels",
+                &format!(
+                    r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/externalLinkPath" Target="{target}" TargetMode="External"/></Relationships>"#
+                ),
+            ),
+        ];
+        let mut writer = zip::ZipWriter::new(std::fs::File::create(path).unwrap());
+        let options = zip::write::SimpleFileOptions::default()
+            .compression_method(zip::CompressionMethod::Deflated);
+        // the four kind cells are package-internal, so they are written here
+        // instead of in the array above
+        for (name, content) in entries {
+            writer.start_file(name, options).unwrap();
+            writer.write_all(content.as_bytes()).unwrap();
+        }
+        writer
+            .start_file("xl/worksheets/sheet1.xml", options)
+            .unwrap();
+        writer
+            .write_all(
+                r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?><worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><dimension ref="A1:D1"/><sheetData><row r="1"><c r="A1"><f>[1]Sheet1!A1*2</f><v>20</v></c><c r="B1" t="str"><f>[1]Sheet1!A1&amp;"!"</f><v>10!</v></c><c r="C1" t="b"><f>[1]Sheet1!A1&gt;5</f><v>1</v></c><c r="D1" t="e"><f>[1]Sheet1!A1/0</f><v>#DIV/0!</v></c></row></sheetData></worksheet>"#
+                    .as_bytes(),
+            )
+            .unwrap();
+        writer.finish().unwrap();
+    }
+
+    /// The read path lists link identity only: the listing never asks the
+    /// disk about the target and its JSON carries no reachability flag, so
+    /// opening the links panel cannot block on a dead network share.
+    #[test]
+    fn read_lists_links_without_probing() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("book.xlsx");
+        write_dependent_fixture(&path, "gone.xlsx");
+        let links = list_external_link_statuses(&path).unwrap().links;
+        assert_eq!(links.len(), 1);
+        assert_eq!(links[0].index, 1);
+        assert_eq!(links[0].raw_target, "gone.xlsx");
+        assert!(links[0].source.as_deref().unwrap().ends_with("gone.xlsx"));
+        assert_eq!(links[0].sheet_names, vec!["Sheet1", "Missing Sheet"]);
+        let json = serde_json::to_value(&links).unwrap();
+        assert!(
+            json[0].get("reachable").is_none(),
+            "the listing must not answer reachability: {json}"
+        );
+        // a file:/// target resolves without being opened
+        write_dependent_fixture(&path, "file:///Users/me/source.xlsx");
+        let links = list_external_link_statuses(&path).unwrap().links;
+        assert_eq!(links[0].source.as_deref(), Some("/Users/me/source.xlsx"));
+    }
+
+    /// Live values report their kind so the host caches booleans and errors
+    /// with t="b" / t="e" instead of spelling them as text.
+    #[test]
+    fn update_reports_live_value_kinds() {
+        let dir = tempfile::tempdir().unwrap();
+        write_source_fixture(&dir.path().join("source.xlsx"));
+        let path = dir.path().join("book.xlsx");
+        write_kind_dependent_fixture(&path, "source.xlsx");
+        let report = update_external_link_values(&path).unwrap();
+        let number = cell_of(&report, "[1]Sheet1!A1*2");
+        assert_eq!(number.kind, Some(ExternalLinkCellKind::Number));
+        assert_eq!(number.formatted, "20");
+        let text = cell_of(&report, "[1]Sheet1!A1&\"!\"");
+        assert_eq!(text.kind, Some(ExternalLinkCellKind::Text));
+        assert_eq!(text.formatted, "10!");
+        let boolean = cell_of(&report, "[1]Sheet1!A1>5");
+        assert_eq!(boolean.kind, Some(ExternalLinkCellKind::Boolean));
+        let error = cell_of(&report, "[1]Sheet1!A1/0");
+        assert_eq!(error.kind, Some(ExternalLinkCellKind::Error));
+        assert_eq!(error.formatted, "#DIV/0!");
+    }
+
+    /// An uncached cell serializes without a `kind` key: the host rejects
+    /// `kind: null`.
+    #[test]
+    fn uncached_cell_omits_kind() {
+        let cell = ExternalLinkCell {
+            sheet: "Sheet1".into(),
+            row: 0,
+            column: 0,
+            formatted: String::new(),
+            number: None,
+            kind: None,
+            formula: "[1]Sheet1!A1".into(),
+        };
+        let json = serde_json::to_value(&cell).unwrap();
+        assert!(json.get("kind").is_none(), "{json}");
+    }
+
+    /// A skipped cell (unreachable source) keeps its kind from the file's
+    /// own cache, so the panel applies the cached boolean/error unchanged.
+    #[test]
+    fn update_reports_cached_value_kinds_when_the_source_is_gone() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("book.xlsx");
+        write_kind_dependent_fixture(&path, "gone.xlsx");
+        let report = update_external_link_values(&path).unwrap();
+        assert!(!report.links[0].reachable);
+        let number = cell_of(&report, "[1]Sheet1!A1*2");
+        assert_eq!(number.kind, Some(ExternalLinkCellKind::Number));
+        let text = cell_of(&report, "[1]Sheet1!A1&\"!\"");
+        assert_eq!(text.kind, Some(ExternalLinkCellKind::Text));
+        let boolean = cell_of(&report, "[1]Sheet1!A1>5");
+        assert_eq!(boolean.kind, Some(ExternalLinkCellKind::Boolean));
+        assert_eq!(boolean.formatted, "TRUE");
+        let error = cell_of(&report, "[1]Sheet1!A1/0");
+        assert_eq!(error.kind, Some(ExternalLinkCellKind::Error));
+        assert_eq!(error.formatted, "#DIV/0!");
+    }
+
     /// Path resolution, Excel-style: file URIs, UNC spellings, drive paths
     /// and folder-relative targets.
     #[test]
@@ -1154,4 +1770,110 @@ mod tests {
             None
         );
     }
+
+    /// A minimal three-part workbook for the usage scan: one sheet named
+    /// `Data`, no externalLink parts needed — the scan is formula-text-only.
+    fn write_usage_fixture(path: &Path, sheet1: &str) {
+        let entries = [
+            (
+                "xl/workbook.xml",
+                r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?><workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><sheets><sheet name="Data" sheetId="1" r:id="rId1"/></sheets></workbook>"#,
+            ),
+            (
+                "xl/_rels/workbook.xml.rels",
+                r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet1.xml"/></Relationships>"#,
+            ),
+            ("xl/worksheets/sheet1.xml", sheet1),
+        ];
+        let mut writer = zip::ZipWriter::new(std::fs::File::create(path).unwrap());
+        let options = zip::write::SimpleFileOptions::default()
+            .compression_method(zip::CompressionMethod::Deflated);
+        for (name, content) in entries {
+            writer.start_file(name, options).unwrap();
+            writer.write_all(content.as_bytes()).unwrap();
+        }
+        writer.finish().unwrap();
+    }
+
+    /// The usage scan reports every formula cell that references the link
+    /// with the literal its cached `<v>` freezes at — numbers and formula
+    /// string results alike — sorted by position.
+    #[test]
+    fn usage_scan_reports_every_referencing_cell_with_its_cached_value() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("book.xlsx");
+        write_dependent_fixture(&path, "gone.xlsx");
+        let usages = read_external_link_usage(&path).unwrap();
+        assert_eq!(usages.len(), 1);
+        let usage = &usages[0];
+        assert_eq!(usage.index, 1);
+        assert!(usage.cells.iter().all(|cell| cell.sheet == "Sheet1"));
+        let values: Vec<(String, UsageValue)> = usage
+            .cells
+            .iter()
+            .map(|cell| (cell_reference(cell.row, cell.column), cell.value.clone()))
+            .collect();
+        assert_eq!(
+            values,
+            vec![
+                ("A1".to_string(), UsageValue::Number { value: 84.0 }),
+                ("B1".to_string(), UsageValue::Number { value: 2.0 }),
+                ("C1".to_string(), UsageValue::Text { value: "Total!".to_string() }),
+                ("A2".to_string(), UsageValue::Number { value: 60.0 }),
+                ("A3".to_string(), UsageValue::Number { value: 9.0 }),
+            ]
+        );
+    }
+
+    /// Shared-formula instances inherit their anchor's body, and an error
+    /// cache keeps its `t="e"` spelling — both land in the report.
+    #[test]
+    fn usage_scan_resolves_shared_instances_and_error_caches() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("book.xlsx");
+        super::tests::write_usage_fixture(
+            &path,
+            r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?><worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><sheetData><row r="1"><c r="A1"><f t="shared" si="0">[1]Sheet1!A1*2</f><v>84</v></c><c r="B1"><f t="shared" si="0"/><v>84</v></c><c r="C1" t="e"><f>[1]Sheet1!ZZZ9</f><v>#REF!</v></c></row></sheetData></worksheet>"#,
+        );
+        let usages = read_external_link_usage(&path).unwrap();
+        assert_eq!(usages.len(), 1);
+        let values: Vec<(String, UsageValue)> = usages[0]
+            .cells
+            .iter()
+            .map(|cell| (cell_reference(cell.row, cell.column), cell.value.clone()))
+            .collect();
+        assert_eq!(
+            values,
+            vec![
+                ("A1".to_string(), UsageValue::Number { value: 84.0 }),
+                ("B1".to_string(), UsageValue::Number { value: 84.0 }),
+                ("C1".to_string(), UsageValue::Error { value: "#REF!".to_string() }),
+            ]
+        );
+    }
+
+    /// Reference detection mirrors the gateway's break transform: `[1]`
+    /// inside a string literal is not a reference, a bare `[1]` needs a
+    /// sheet name after `]`, and the quoted spelling tolerates doubled quotes.
+    #[test]
+    fn usage_reference_detection_matches_the_break_transform() {
+        assert_eq!(link_indexes("\"see [1] notes\"+1"), Vec::<usize>::new());
+        assert_eq!(link_indexes("[1]"), Vec::<usize>::new());
+        assert_eq!(link_indexes("[0]Sheet1!A1"), Vec::<usize>::new());
+        assert_eq!(link_indexes("'[1]My Sheet'!A1+1"), vec![1]);
+        assert_eq!(link_indexes("'[1]It''s'!A1"), vec![1]);
+        assert_eq!(link_indexes("SUM([2]Sheet1!A1:B3)"), vec![2]);
+        assert_eq!(link_indexes("[1]Sheet1!A1+[2]Sheet1!B1"), vec![1, 2]);
+    }
+
+    fn cell_reference(row: u32, column: u32) -> String {
+        let mut letters = String::new();
+        let mut rest = column + 1;
+        while rest > 0 {
+            letters.insert(0, (b'A' + ((rest - 1) % 26) as u8) as char);
+            rest = (rest - 1) / 26;
+        }
+        format!("{letters}{}", row + 1)
+    }
 }
+

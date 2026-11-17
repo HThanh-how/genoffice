@@ -27,8 +27,11 @@ export type AiProviderId =
   | 'atlascloud'
   | 'runcrate'
   | 'cloudgpu'
+  | 'siliconflow'
+  | 'ppio'
   | 'opencode-zen'
   | 'opencode-go'
+  | 'commandcode'
   | 'custom'
 
 /** Genspark account status (gsk login state; the sole auth source for AI features) */
@@ -46,6 +49,9 @@ export interface AiProviderConfig {
   cliPath?: string | undefined
   /** the declarative profile of the active user-hosted endpoint (custom only) */
   profile?: AiCustomProfile | undefined
+  /** per-model thinking-effort picks (model id → level, see thinking-effort.ts);
+   *  absent or a level the model's family does not list = the vendor default */
+  thinking?: Record<string, string> | undefined
 }
 
 /**
@@ -140,6 +146,13 @@ export interface AiCustomEndpoint extends AiCustomProfile {
   model: string
   /** ids the server advertised on the last `/models` probe, so the composer chip can list them offline */
   models?: string[] | undefined
+  /**
+   * per-model thinking-effort picks (model id → level, see thinking-effort.ts).
+   * The endpoint record carries its own copy so the settings pane's pick
+   * survives normalization and reaches `providers.custom` through the slot
+   * mirror; absent = the vendor default.
+   */
+  thinking?: Record<string, string> | undefined
 }
 
 /** Live picker data returned by Codex app-server's model/list method. */
@@ -179,10 +192,14 @@ export type AiMediaProviderId =
   | 'minimax'
   | 'deepseek'
   | 'agy'
+  | 'stability'
+  | 'bfl'
+  | 'microsoft'
   | 'custom'
 
-/** wire shape of the image endpoint ('agy-cli' = the local Antigravity agent, no HTTP) */
-export type AiImageProtocol = 'openai-images' | 'gemini' | 'dashscope' | 'minimax' | 'agy-cli'
+/** wire shape of the image endpoint */
+export type AiImageProtocol =
+  'openai-images' | 'gemini' | 'dashscope' | 'minimax' | 'stability' | 'bfl' | 'mai' | 'agy-cli'
 /** wire shape of the understanding endpoint */
 export type AiAnalysisProtocol = 'openai-chat' | 'gemini' | 'agy-cli'
 
@@ -236,6 +253,7 @@ export type AiSearchProviderId =
   | 'genspark'
   | 'serper'
   | 'serply'
+  | 'searchapi'
   | 'tavily'
   | 'parallel'
   | 'exa'
@@ -337,6 +355,10 @@ export interface AiTokenUsage {
   thoughtsTokenCount?: number
   cachedContentTokenCount?: number
   totalTokenCount?: number
+  /** share of inputTokens served from the provider's prompt cache */
+  cacheReadTokens?: number
+  /** share of inputTokens written to the prompt cache this turn (Anthropic bills it at a premium) */
+  cacheWriteTokens?: number
 }
 
 export interface AiStreamChunk {

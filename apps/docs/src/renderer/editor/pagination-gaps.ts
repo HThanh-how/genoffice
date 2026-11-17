@@ -202,8 +202,8 @@ export function rowFillAttrs(
   extraPx = 0,
   gapPx = 0,
 ): { style: string; 'data-split-extra'?: string } {
-  // the target is a row pitch (tr top to tr top): a separate-borders row owns the
-  // border-spacing below it, which the tr height would otherwise add once per pass
+  // the target is a row pitch (tr top to tr top, table edge for an edge row): the
+  // part outside the tr box would otherwise be added once per pass
   const h = Math.round(targetPx - gapPx)
   const extra = extraPx > 0 ? h + gapPx - (targetPx - extraPx) : 0
   return { style: `height:${h}px`, ...(extra > 0 ? { 'data-split-extra': extra.toFixed(1) } : {}) }
@@ -218,14 +218,29 @@ export function canvasZoomOf(zoomEl: { style: { zoom: string } } | null, fallbac
   return Number.isFinite(z) && z > 0 ? z : 1
 }
 
-/** vertical border-spacing of the row's table (w:tblCellSpacing tables), else 0 */
-function rowGapPx(tr: Element): number {
+/** the part of a row's measured pitch its tr box does not hold: the vertical
+ *  border-spacing of a separate-borders table, or, in a collapsed one, the outer
+ *  half border between an edge row and the table box */
+export function rowGapPx(tr: Element, zoomFactor = 1): number {
   const table = tr.closest('table')
   if (!table) return 0
   const cs = getComputedStyle(table)
-  if (cs.borderCollapse !== 'separate') return 0
-  const parts = cs.borderSpacing.split(' ')
-  return parseFloat(parts[1] ?? parts[0]) || 0
+  if (cs.borderCollapse === 'separate') {
+    const parts = cs.borderSpacing.split(' ')
+    return parseFloat(parts[1] ?? parts[0]) || 0
+  }
+  const rows = Array.from(table.querySelectorAll('tr')).filter(
+    (r) =>
+      r.closest('table') === table &&
+      !r.classList.contains('page-gap') &&
+      !r.classList.contains('page-repeat-header'),
+  )
+  const box = table.getBoundingClientRect()
+  const row = tr.getBoundingClientRect()
+  let gap = 0
+  if (rows[0] === tr) gap += row.top - box.top
+  if (rows[rows.length - 1] === tr) gap += box.bottom - row.bottom
+  return Math.max(0, gap) / zoomFactor
 }
 
 /** Identity of a pass's applied row fills: a change re-lays out the table (the
@@ -245,10 +260,11 @@ export function setRowFills(
   view: EditorView,
   fills: Array<{ el: Element; targetPx: number; extraPx?: number }>,
   batch?: LayoutBatch,
+  zoomFactor = 1,
 ): void {
   const decos: Decoration[] = []
   for (const [i, fill] of fills.entries()) {
-    const attrs = rowFillAttrs(fill.targetPx, fill.extraPx, rowGapPx(fill.el))
+    const attrs = rowFillAttrs(fill.targetPx, fill.extraPx, rowGapPx(fill.el, zoomFactor))
     try {
       const $inside = view.state.doc.resolve(view.posAtDOM(fill.el, 0))
       for (let d = $inside.depth; d > 0; d--) {
@@ -390,7 +406,7 @@ export function insideFloatTable(el: Element): boolean {
  *  the spacer is real flow space, unlike a page gap). */
 export function setFloatVShifts(
   view: EditorView,
-  shifts: Array<{ el: Element; dyPx: number; flow?: boolean; carryPx?: number }>,
+  shifts: Array<{ el: Element; dyPx: number; flow?: boolean; carryPx?: number; pull?: boolean }>,
   batch?: LayoutBatch,
 ): void {
   const decos: Decoration[] = []
@@ -451,6 +467,16 @@ export function setFloatVShifts(
               to,
               { class: 'doc-table-float-flow' },
               { key: `tblp-flow-${i}`, flow: true },
+            ),
+          )
+        } else if (shift.pull) {
+          // display-only lift of a side-wrapped picture (styles.css --float-pull-dy)
+          decos.push(
+            Decoration.node(
+              from,
+              to,
+              { style: `--float-pull-dy:${dy}px` },
+              { key: `float-pull-${i}-${dy}`, pull: dy },
             ),
           )
         } else {
@@ -527,6 +553,9 @@ export interface GapMetrics {
    *  text area ends this far below the gap's top (a dropped picture is anchored
    *  to fit above it, imageDropPages) */
   bodyPad?: number
+  /** the closing page's own bottom margin (px): marginBottom minus the unused
+   *  body remainder and footnote area, where the bottom text boundary sits */
+  bodyMarginBottom?: number
   /** text-area height of the page the gap closes (px, footnotes excluded): with
    *  the previous gap's bottom it places that page's body bottom even when the
    *  page's content ran past it */
@@ -624,6 +653,7 @@ export function makeGapEl(m: GapMetrics, kind: GapKind, cols?: number): HTMLElem
   }
   gap.style.height = `${m.marginBottom + GAP_BAND + m.marginTop}px`
   gap.style.setProperty('--gap-mb', `${m.marginBottom}px`)
+  gap.style.setProperty('--gap-body-mb', `${m.bodyMarginBottom ?? m.marginBottom}px`)
   if (m.bodyPad) gap.dataset.bodyPad = m.bodyPad.toFixed(1)
   if (m.bodyHeight) gap.dataset.bodyHeight = m.bodyHeight.toFixed(1)
   gap.style.setProperty('--gap-mt', `${m.marginTop}px`)
@@ -648,7 +678,7 @@ export function makeGapEl(m: GapMetrics, kind: GapKind, cols?: number): HTMLElem
     cell.colSpan = Math.max(1, Math.round(cols ?? 1))
     cell.contentEditable = 'false'
     const fill = document.createElement('div')
-    fill.className = 'page-gap-table-fill'
+    fill.className = 'page-gap-table-fill page-gap-paper'
     cell.appendChild(fill)
     gap.appendChild(cell)
     return gap
@@ -656,10 +686,10 @@ export function makeGapEl(m: GapMetrics, kind: GapKind, cols?: number): HTMLElem
   gap.className =
     kind === 'cell'
       ? // in-cell gap (single-column in-row table cut): inline gap + opaque bands covering the cell's fill/borders
-        'page-gap page-gap-inline page-gap-cell'
+        'page-gap page-gap-paper page-gap-inline page-gap-cell'
       : kind === 'inline'
-        ? 'page-gap page-gap-inline'
-        : 'page-gap'
+        ? 'page-gap page-gap-paper page-gap-inline'
+        : 'page-gap page-gap-paper'
   gap.style.marginLeft = `-${m.marginLeft}px`
   gap.style.marginRight = `-${m.marginRight}px`
   // inline-block (not block-level): avoids block-in-inline anonymous-box splitting,
@@ -803,20 +833,20 @@ export function setPageGaps(
     }
     // boundaryY in the key: a reused widget must not keep a stale boundary
     // (cols too: a table-structure edit must rebuild the spanning cell)
-    const mKey = `${metrics.marginTop},${metrics.marginBottom},${metrics.marginLeft},${metrics.marginRight},${Math.round(gap.pullUp ?? 0)},${Math.round(gap.boundaryY ?? -1)},${gap.cols ?? 0},${Math.round(metrics.pageLeft ?? -1)}`
+    const mKey = `${metrics.marginTop},${metrics.marginBottom},${metrics.bodyMarginBottom ?? -1},${metrics.marginLeft},${metrics.marginRight},${Math.round(gap.pullUp ?? 0)},${Math.round(gap.boundaryY ?? -1)},${gap.cols ?? 0},${Math.round(metrics.pageLeft ?? -1)}`
     const build = (as: GapKind) => {
       const el = makeGapEl(metrics, as, gap.cols)
       // margins don't apply to table-rows and cuts are zero-height markers;
       // tables inside mixed-column regions are out of scope anyway (v1)
       if (gap.pullUp && as !== 'cut' && as !== 'table') el.style.marginTop = `-${gap.pullUp}px`
-      if (notes) el.appendChild(notes)
-      if (hfEls && (as === 'block' || as === 'inline' || as === 'cell')) {
-        for (const hf of hfEls) el.appendChild(hf)
-      } else if (hfEls && as === 'table') {
-        // table-row gaps position their strips inside the absolutely-filled cell;
-        // only zero-height cut markers still can't carry them
-        const fill = el.querySelector('.page-gap-table-fill')
-        if (fill) for (const hf of hfEls) fill.appendChild(hf)
+      // notes and header/footer strips live on the gap's paper box; a zero-height
+      // cut marker has none and carries neither
+      const paper = el.classList.contains('page-gap-paper')
+        ? el
+        : el.querySelector('.page-gap-paper')
+      if (paper) {
+        if (notes) paper.appendChild(notes)
+        for (const hf of hfEls ?? []) paper.appendChild(hf)
       }
       return el
     }
@@ -1437,6 +1467,130 @@ export function syncPageSheets(
 }
 
 /**
+ * A phantom row inside a grown rowspan keeps to the columns the crossing cells
+ * leave free. Laid over an occupied column, its cells are pushed right into
+ * columns the table does not have; those take width from the real ones, the
+ * cells re-wrap, the row heights change and the next pass cuts elsewhere.
+ * A cell shrinks to its first free run. A header clone cell with no free
+ * column is hidden and a copy of it is painted over the crossing cell at its
+ * own column, as the page shows it; the copy hangs inside a cell that stayed
+ * in the grid (an out-of-flow child of the row itself would be wrapped in an
+ * anonymous cell and push a column again). A gap row keeps its one cell: the
+ * fill hangs on it. Idempotent.
+ */
+function fitPhantomRows(
+  table: HTMLTableElement,
+  isPhantom: (tr: HTMLTableRowElement) => boolean,
+): void {
+  /** rows a cell above still takes in each column */
+  const carry: number[] = []
+  /** the same for the phantom rows' own cells (a header clone of several rows
+   *  with a merge of its own), in the grid they were cloned from */
+  let own: number[] = []
+  const realCells: Array<[HTMLTableCellElement, number]> = []
+  const lifted: Array<{
+    host: HTMLTableCellElement
+    hostCol: number
+    cells: Array<[HTMLTableCellElement, number, number]>
+  }> = []
+  for (const tr of Array.from(table.rows)) {
+    if (isPhantom(tr)) {
+      const isGap = tr.classList.contains('page-gap')
+      let col = 0
+      let host: HTMLTableCellElement | null = null
+      let hostCol = 0
+      const cells: Array<[HTMLTableCellElement, number, number]> = []
+      for (const td of Array.from(tr.cells)) {
+        const base = Number(td.getAttribute('data-base-colspan')) || td.colSpan
+        while ((own[col] ?? 0) > 0) col++
+        for (let k = 0; k < base; k++) own[col + k] = td.rowSpan
+        let run = 0
+        let first = col
+        while (first < col + base && (carry[first] ?? 0) > 0) first++
+        while (first + run < col + base && !((carry[first + run] ?? 0) > 0)) run++
+        const span = Math.max(run, isGap ? 1 : 0)
+        const hide = span === 0
+        if (hide) cells.push([td, col, col + base])
+        else if (!host && !isGap) {
+          host = td
+          hostCol = first
+        }
+        col += base
+        if (td.hidden !== hide) td.hidden = hide
+        if (span === base || hide) {
+          if (!hide) {
+            if (td.colSpan !== base) td.colSpan = base
+            td.removeAttribute('data-base-colspan')
+          }
+          continue
+        }
+        if (td.getAttribute('data-base-colspan') !== String(base))
+          td.setAttribute('data-base-colspan', String(base))
+        if (td.colSpan !== span) td.colSpan = span
+      }
+      for (let c = 0; c < own.length; c++) if ((own[c] ?? 0) > 0) own[c]--
+      // copies of an earlier pass that no longer apply
+      const keep = new Set(host ? cells.map(([, from, to]) => `${from}-${to}`) : [])
+      for (const old of Array.from(tr.querySelectorAll<HTMLElement>('.page-rh-over'))) {
+        if (old.parentElement !== host || !keep.has(old.dataset.rhCols ?? '')) old.remove()
+      }
+      for (const td of Array.from(tr.cells)) {
+        const on = td === host && cells.length > 0
+        if (td.classList.contains('page-rh-host') !== on) td.classList.toggle('page-rh-host', on)
+      }
+      if (host && cells.length > 0) lifted.push({ host, hostCol, cells })
+    } else {
+      own = []
+      let col = 0
+      for (const td of Array.from(tr.cells)) {
+        while ((carry[col] ?? 0) > 0) col++
+        for (let k = 0; k < td.colSpan; k++) carry[col + k] = td.rowSpan
+        realCells.push([td, col])
+        col += td.colSpan
+      }
+    }
+    for (let c = 0; c < carry.length; c++) if ((carry[c] ?? 0) > 0) carry[c]--
+  }
+  if (lifted.length === 0) return
+  // column edges from the real cells, measured before the first style write
+  const box = table.getBoundingClientRect()
+  const zoom = table.offsetWidth > 0 ? box.width / table.offsetWidth || 1 : 1
+  const edges = new Map<number, number>()
+  const wanted = new Set(
+    lifted.flatMap((l) => [l.hostCol, ...l.cells.flatMap(([, from, to]) => [from, to])]),
+  )
+  for (const [td, col] of realCells) {
+    if ([...wanted].every((c) => edges.has(c))) break
+    if (!wanted.has(col) && !wanted.has(col + td.colSpan)) continue
+    const r = td.getBoundingClientRect()
+    if (!edges.has(col)) edges.set(col, (r.left - box.left) / zoom)
+    if (!edges.has(col + td.colSpan)) edges.set(col + td.colSpan, (r.right - box.left) / zoom)
+  }
+  const px = (v: number) => `${Math.round(v * 10) / 10}px`
+  for (const { host, hostCol, cells } of lifted) {
+    const origin = edges.get(hostCol) ?? 0
+    for (const [td, from, to] of cells) {
+      const key = `${from}-${to}`
+      let copy = Array.from(host.children).find(
+        (c): c is HTMLElement => c instanceof HTMLElement && c.dataset.rhCols === key,
+      )
+      if (!copy) {
+        copy = td.cloneNode(true) as HTMLElement
+        copy.hidden = false
+        copy.removeAttribute('id')
+        copy.classList.add('page-rh-over')
+        copy.dataset.rhCols = key
+        host.appendChild(copy)
+      }
+      const left = px((edges.get(from) ?? 0) - origin)
+      const width = px((edges.get(to) ?? 0) - (edges.get(from) ?? 0))
+      if (copy.style.left !== left) copy.style.left = left
+      if (copy.style.width !== width) copy.style.width = width
+    }
+  }
+}
+
+/**
  * Phantom table rows (page-gap rows, repeated-header clones) occupy grid row
  * slots, so a vMerge cell spanning across them exhausts its rowspan early and
  * every later cell in the row shifts one column left. Bridge: grow each
@@ -1448,6 +1602,7 @@ export function syncPhantomRowspans(root: HTMLElement): void {
   const isPhantom = (tr: HTMLTableRowElement) =>
     tr.classList.contains('page-gap') || tr.classList.contains('page-repeat-header')
   const grown = new Set<HTMLTableCellElement>()
+  const withPhantoms: HTMLTableElement[] = []
   for (const table of Array.from(root.querySelectorAll('table'))) {
     const real: HTMLTableRowElement[] = []
     /** phantom rows between real[i-1] and real[i] */
@@ -1480,6 +1635,7 @@ export function syncPhantomRowspans(root: HTMLElement): void {
         grown.add(td)
       }
     })
+    withPhantoms.push(table)
   }
   for (const td of Array.from(
     root.querySelectorAll<HTMLTableCellElement>('td[data-base-rowspan], th[data-base-rowspan]'),
@@ -1488,6 +1644,8 @@ export function syncPhantomRowspans(root: HTMLElement): void {
     td.rowSpan = Number(td.getAttribute('data-base-rowspan')) || 1
     td.removeAttribute('data-base-rowspan')
   }
+  // after the restore: the occupancy below reads the final rowspans
+  for (const table of withPhantoms) fitPhantomRows(table, isPhantom)
 }
 
 const decoKey = (d: Decoration) => `${d.from}:${(d.spec as { key?: string }).key ?? ''}`
@@ -1521,10 +1679,12 @@ export function syncFloatShifts(
   floats: Array<{
     el: HTMLElement
     top: number
+    height?: number
     anchorTop?: number
     pinned?: boolean
     pageRelV?: boolean
     pageRelFromPage?: boolean
+    noSpill?: boolean
   }>,
   origin: number,
   factor: number,
@@ -1581,13 +1741,28 @@ export function syncFloatShifts(
   // reads first: a style write between two getBoundingClientRect calls forces
   // a whole-document layout per float (thousands of anchored pictures hung
   // the renderer for minutes)
+  // Word draws an anchored object on its anchor's page. A flow box whose
+  // virtual Y lies past a cut that follows its anchor (a cover paragraph
+  // ending in a section break, its title boxes offset below it) still sits in
+  // that page's blank remainder: counting the cut's gap would carry it onto
+  // the next page over the body text. Boxes the anchor's page cannot hold
+  // keep the virtual-Y walk (the spill block opened pages for them).
+  const anchorPageHolds = (f: (typeof floats)[number]): boolean => {
+    if (f.anchorTop === undefined) return false
+    if (f.noSpill) return true
+    if (!layout || layout.cuts.length === 0) return false
+    const cut = layout.cuts[pageOfCut(layout.cuts, f.anchorTop + 0.5, 0)]
+    if (!cut || cut.regions) return false
+    return f.top + (f.height ?? 0) <= cut.end + cut.padPx + 1
+  }
   const curTops = floats.map((f) => f.el.getBoundingClientRect().top)
   floats.forEach((f, i) => {
     // page-absolute V boxes render on their ANCHOR's page at the page-relative
     // Y (Word): pinned tops already are page coords, pageRelV tops carry the
-    // anchor position. Flow-positioned boxes keep their virtual Y.
+    // anchor position. Flow-positioned boxes keep their virtual Y, offset by
+    // the gaps above their anchor (or above the box itself once it spills).
     const abs = !!(f.pinned || f.pageRelV)
-    const ref = abs ? (f.anchorTop ?? f.top) + 0.5 : f.top
+    const ref = abs || anchorPageHolds(f) ? (f.anchorTop ?? f.top) + 0.5 : f.top
     const place = layout ? fromCuts(ref, abs) : fromDom(ref, abs)
     if (layout && gaps) {
       const dom = fromDom(ref, abs)

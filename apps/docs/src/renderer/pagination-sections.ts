@@ -80,18 +80,30 @@ export function effectiveBottomPx(set: SectionSettings, footerPx: number): numbe
 export function singleVariantGeomOf(
   set: SectionSettings,
   hf: SectionHfHeights,
-): Pick<SectionGeom, 'firstContentHeight' | 'evenContentHeight'> {
-  const capacity = (variant: HfVariant) => {
-    const { headerPx, footerPx } = hfVariantReservedPx(hf, variant)
-    return (
-      twipsToPx(set.pageHeight) - effectiveTopPx(set, headerPx) - effectiveBottomPx(set, footerPx)
-    )
-  }
+): Pick<
+  SectionGeom,
+  | 'firstContentHeight'
+  | 'evenContentHeight'
+  | 'marginBottomPx'
+  | 'firstMarginBottomPx'
+  | 'evenMarginBottomPx'
+> {
+  const bottom = (variant: HfVariant) =>
+    effectiveBottomPx(set, hfVariantReservedPx(hf, variant).footerPx)
+  const capacity = (variant: HfVariant) =>
+    twipsToPx(set.pageHeight) -
+    effectiveTopPx(set, hfVariantReservedPx(hf, variant).headerPx) -
+    bottom(variant)
   const base = capacity('default')
   const even = hfHasVariant(hf, 'even') ? capacity('even') : undefined
   return {
-    ...(hfHasVariant(hf, 'first') ? { firstContentHeight: capacity('first') } : {}),
-    ...(even !== undefined && Math.abs(even - base) > 0.01 ? { evenContentHeight: even } : {}),
+    marginBottomPx: bottom('default'),
+    ...(hfHasVariant(hf, 'first')
+      ? { firstContentHeight: capacity('first'), firstMarginBottomPx: bottom('first') }
+      : {}),
+    ...(even !== undefined && Math.abs(even - base) > 0.01
+      ? { evenContentHeight: even, evenMarginBottomPx: bottom('even') }
+      : {}),
   }
 }
 
@@ -897,6 +909,13 @@ export function sectionGeoms(
       ...(vertical ? { vertical } : {}),
       topPx: effectiveTopPx(set, hfOf('default').headerPx),
       pageHeightPx: twipsToPx(set.pageHeight),
+      marginBottomPx: effectiveBottomPx(set, hfOf('default').footerPx),
+      ...(hf && hfHasVariant(hf, 'first')
+        ? { firstMarginBottomPx: effectiveBottomPx(set, hfOf('first').footerPx) }
+        : {}),
+      ...(hf && hfHasVariant(hf, 'even')
+        ? { evenMarginBottomPx: effectiveBottomPx(set, hfOf('even').footerPx) }
+        : {}),
       forceBreak,
       startType: s.startType,
       ...(numberingParity ? { numberingParity } : {}),
@@ -976,6 +995,10 @@ export function assignSections(blocks: BlockBox[], sections: SectionInfo[]): voi
     if (block.docxIndex !== undefined) {
       const i = ends.findIndex((end) => block.docxIndex! <= end)
       s = i >= 0 ? i : ends.length - 1
+    } else {
+      // typed after an unsaved break: the break closed its section
+      for (let n = block.unsavedSectBreaksBefore ?? 0; n > 0 && sections[s]?.pendingBreak; n--)
+        s = Math.min(s + 1, sections.length - 1)
     }
     block.section = s
     prev = s
@@ -986,7 +1009,9 @@ export function assignSections(blocks: BlockBox[], sections: SectionInfo[]): voi
 /**
  * Word keeps a paragraph's space-before when it opens a forced section start
  * (unlike a paragraph that merely flowed to a page top, where the margin is
- * folded into the previous block's space-after and dropped with it).
+ * folded into the previous block's space-after and dropped with it). Planned
+ * blocks keep only the excess over the previous paragraph's space after
+ * (sectionLeadSpacePx); the DOM margin is trimmed to it below the gap (leadMtPx).
  */
 export function foldSectionStartSpaceBefore(blocks: BlockBox[], geoms: SectionGeom[]): void {
   for (let i = 1; i < blocks.length; i++) {
@@ -994,9 +1019,12 @@ export function foldSectionStartSpaceBefore(blocks: BlockBox[], geoms: SectionGe
     const prev = blocks[i - 1]
     const sec = block.section ?? 0
     if (!block.el || sec === (prev.section ?? sec) || !geoms[sec]?.forceBreak) continue
+    if (block.leadMtPx !== undefined) continue
     const after = prev.spaceAfterPx ?? 0
     const margin = block.marginBeforePx ?? (parseFloat(getComputedStyle(block.el).marginTop) || 0)
-    const sb = Math.min(margin, after)
+    const cap = block.sectionLeadSpacePx
+    const sb = Math.min(margin, after, cap ?? Infinity)
+    if (cap !== undefined && sb < margin - 0.5) block.leadMtPx = Math.max(0, sb)
     if (sb <= 0.5) continue
     prev.spaceAfterPx = after - sb
     prev.height -= sb
