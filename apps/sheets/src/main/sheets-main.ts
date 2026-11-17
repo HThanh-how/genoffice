@@ -21,6 +21,7 @@ import {
   writeFile,
 } from 'node:fs/promises'
 import { refreshCsvDigest } from './csv-digest'
+import { ImportRegistry } from './import-registry'
 import { createServer } from 'node:http'
 import { basename, dirname, isAbsolute, join } from 'node:path'
 
@@ -80,6 +81,7 @@ import {
   writeLegacyImportSkip,
 } from '@genoffice/electron-utils'
 import { createMainProcessProxyDispatcher } from '@genoffice/electron-utils/main-proxy'
+import { fetchRemoteTable } from '@genoffice/electron-utils/remote-table'
 import { createI18n, getUiLang, type Lang, normalizeLang, setUiLang } from '@genoffice/i18n'
 import { ProjectStore } from '@genoffice/project-store'
 
@@ -109,11 +111,13 @@ import {
 import { shutdownCodexAppServers } from '@genoffice/ai-provider/codex-app-server'
 import { isCliProvider, listAgyModels } from '@genoffice/ai-provider/agy-cli'
 import { convertLegacyXlsFile } from './disguised-xls'
+import { decodeCsvBuffer } from '@genoffice/xlsx-gateway/gateway/csv-import'
+import type { CsvImportProgress } from '@genoffice/xlsx-gateway/gateway/csv-import'
+import { delimitedImportLimit } from './csv-import-limit'
 import {
   csvToXlsxBufferForOpen,
-  decodeCsvBuffer,
   sheetCsvToXlsxBuffer,
-} from '@genoffice/xlsx-gateway/gateway/csv-import'
+} from '@genoffice/xlsx-gateway/gateway/csv-import-xlsx'
 import {
   ensureGenofficeLogin,
   noteGskCallFailure,
@@ -131,13 +135,21 @@ import {
 import { parseFileToText } from '@genoffice/file-parse'
 import type { CellEdit, SheetStructuralOps } from '@genoffice/xlsx-gateway/gateway/xlsx-gateway'
 import {
+  readArchiveEntriesText,
   readArchiveEntryText,
   saveWorkbookViaSidecar,
+  type ArchiveClient,
 } from '@genoffice/xlsx-gateway/gateway/xlsx-package-io'
+import {
+  connectionSourceOf,
+  refreshableQueriesOf,
+} from '@genoffice/xlsx-gateway/gateway/xlsx-connection-refresh'
+import type { PartReader } from '@genoffice/xlsx-gateway/gateway/xlsx-connections'
 import { parsePivotDefinition } from '@genoffice/xlsx-gateway/gateway/xlsx-pivot'
+import { parseSlicerState } from '@genoffice/xlsx-gateway/gateway/xlsx-slicer'
 import { listWorkbookQueries } from '@genoffice/xlsx-gateway/gateway/xlsx-connections'
 import type { SheetEditPlan } from '@genoffice/xlsx-gateway/gateway/xlsx-sheets'
-import { readWorkbookRedactionPart } from './workbook-redactions'
+import { manifestNamesSchema, readWorkbookRedactionPart } from './workbook-redactions'
 import type {
   AttachmentAddResult,
   AttachmentImageResult,
@@ -158,9 +170,18 @@ import {
   workbookFindCellsResultSchema,
   workbookRecalcRequestSchema,
   workbookRecalcResultSchema,
+  workbookPickSelectionSchema,
+  externalLinksRequestSchema,
+  externalLinksResultSchema,
+  externalLinksUpdateResultSchema,
+  externalLinkRevealRequestSchema,
   workbookMediaRequestSchema,
   workbookMediaResultSchema,
+  workbookConnectionsRequestSchema,
+  workbookConnectionsResultSchema,
   workbookPivotRequestSchema,
+  workbookRefreshRequestSchema,
+  workbookRefreshResultSchema,
   workbookRedactionsRequestSchema,
   workbookRedactionsResultSchema,
   workbookQueriesRequestSchema,
@@ -182,6 +203,8 @@ import {
   saveEditsChunkArraySchema,
   workbookSaveEditsChunkSchema,
   workbookSaveRequestSchema,
+  workbookSlicerStateRequestSchema,
+  workbookSlicerStateResultSchema,
   type WorkbookCreateDocumentResult,
   type WorkbookSaveRequest,
 } from '../shared/desktop-api'
@@ -1942,6 +1965,13 @@ export function setSheetsHostWindowHook(
   hostWindowHook = fn
 }
 
+/// The shell registers how to bring a tab (by webContents id) to the front —
+/// the cross-workbook picker re-activates the editing tab after a pick.
+let activateTabHook: ((wcId: number) => void) | null = null
+export function setSheetsActivateTabHook(fn: ((wcId: number) => void) | null): void {
+  activateTabHook = fn
+}
+
 function hostWindowFor(wc: WebContents): BrowserWindow | undefined {
   const own = hostWindowHook?.(wc) ?? BrowserWindow.fromWebContents(wc)
   if (own && !own.isDestroyed()) return own
@@ -1955,6 +1985,10 @@ interface SheetsTabSession {
   readonly aiStreams: Map<string, AbortController>
   /// Chunked uploads of large saves' cell edits, pending their save request.
   readonly saveTransfers: SaveEditsTransferStore
+  /// The file this tab currently shows (merge sources excluded) — what the
+  /// cross-workbook picker matches external links against. null until the
+  /// first open lands; Save As keeps it current.
+  currentPath: string | null
 }
 
 /** per-tab session state, keyed by webContents.id — replaces the old single-window closures
@@ -1962,8 +1996,15 @@ interface SheetsTabSession {
  * tab (or a closed-then-reopened tab) registered and overwrote the previous closure. */
 /// Same ceiling as local add_image (readLocalImage's 20MB check)
 const MAX_REMOTE_IMAGE_BYTES = 20 * 1024 * 1024
-/** Max .csv/.tsv bytes converted on open: stops a 500MB text file OOMing main before sidecar limits. */
-const MAX_DELIMITED_IMPORT_BYTES = 32 * 1024 * 1024
+// the .csv/.tsv ceiling lives with the numbers it describes (the gateway's
+// csv-limits, exposed through csv-import-limit)
+
+/**
+ * The delimited import (a .csv/.tsv opened as a workbook) that is running for
+ * a tab, so the renderer can cancel it: a 250 MB file takes a while, and the
+ * user should not have to wait it out.
+ */
+const pendingImports = new ImportRegistry()
 
 const sheetsTabs = new Map<number, SheetsTabSession>()
 let activeSheetsWebContents: WebContents | null = null
@@ -1979,6 +2020,39 @@ function sessionFor(event: IpcMainInvokeEvent): SheetsTabSession {
   const entry = sheetsTabs.get(event.sender.id)
   if (!entry) throw new Error('Untrusted IPC sender.')
   return entry
+}
+
+/**
+ * Parts the connection walk reads: the connections part, the workbook and its
+ * relationships, sheet relationship parts, tables and query tables. Worksheet
+ * cell data is never read, so the prefetch stays small even for a big sheet.
+ */
+function isConnectionWalkPart(name: string): boolean {
+  return (
+    name === 'xl/connections.xml' ||
+    name === 'xl/workbook.xml' ||
+    name === 'xl/_rels/workbook.xml.rels' ||
+    name.startsWith('xl/tables/') ||
+    name.startsWith('xl/queryTables/') ||
+    /^xl\/worksheets\/_rels\/[^/]+\.rels$/.test(name)
+  )
+}
+
+/**
+ * A part reader over a session snapshot for the connection walk. The walk asks
+ * for parts by path, so every part it can ask for is fetched in one sidecar
+ * round trip; a part the manifest does not list reads as undefined.
+ */
+async function connectionPartReader(
+  client: ArchiveClient,
+  snapshotPath: string,
+): Promise<PartReader> {
+  const manifest = z
+    .object({ entries: z.array(z.object({ name: z.string() })) })
+    .parse(await client.archiveManifest(snapshotPath))
+  const wanted = manifest.entries.map((entry) => entry.name).filter(isConnectionWalkPart)
+  const texts = await readArchiveEntriesText(client, snapshotPath, wanted)
+  return async (path) => texts.get(path)
 }
 
 /**
@@ -2059,6 +2133,7 @@ function registerSheetsSession(webContents: WebContents, client: XlsxSidecarClie
     sessions: new Map(),
     aiStreams: new Map(),
     saveTransfers: new SaveEditsTransferStore(),
+    currentPath: null,
   })
   activeSheetsWebContents = webContents
   webContents.once('destroyed', () => {
@@ -3024,12 +3099,56 @@ export function registerSheetsIpc(): void {
         await decryptOoxml(bytes, password)
       }
     }
-    const prepared = await prepareWorkbookForOpen(
-      entry.client,
-      path,
-      event.sender,
-      dialogParent(event),
-    )
+    // A delimited import can take a while on a big file, so the renderer
+    // watches its progress and can cancel it.
+    const owner = event.sender.id
+    // a superseded import may have left its bar standing; this open owns the
+    // tab now, whether or not it will report anything itself
+    const superseded = pendingImports.controllerFor(owner) !== undefined
+    const importController = pendingImports.start(owner)
+    if (superseded && !event.sender.isDestroyed())
+      event.sender.send(IPC_CHANNELS.importProgress, null)
+    // only a delimited import reports progress; a plain .xlsx never does,
+    // and there is no bar to take down for it
+    let reported = false
+    const reportProgress = (progress: CsvImportProgress | null): void => {
+      if (event.sender.isDestroyed()) return
+      // an import that was replaced no longer owns the bar
+      if (pendingImports.controllerFor(owner) !== importController) return
+      if (progress === null) {
+        if (!reported) return
+        reported = false
+      } else {
+        reported = true
+      }
+      event.sender.send(IPC_CHANNELS.importProgress, progress)
+    }
+    let prepared: Awaited<ReturnType<typeof prepareWorkbookForOpen>>
+    try {
+      prepared = await prepareWorkbookForOpen(
+        entry.client,
+        path,
+        event.sender,
+        dialogParent(event),
+        {
+          import: {
+            onProgress: reportProgress,
+            signal: importController.signal,
+          },
+        },
+      )
+    } catch (error) {
+      // The user stopped the import: nothing opens, and it is not a failure
+      // to report. The renderer already knows it asked for this.
+      if (pendingImports.wasCancelled(importController)) return null
+      throw error
+    } finally {
+      // the import is over (done, failed or cancelled): the bar must not
+      // stand into the next open; reportProgress drops this for a
+      // superseded import, so finish comes after
+      reportProgress(null)
+      pendingImports.finish(owner, importController)
+    }
     // a declined import (an .ods the user chose not to convert) opens nothing
     if (!prepared) return null
     // The recovery prompt (or the file dialog / import conversion) can outlive
@@ -3061,6 +3180,7 @@ export function registerSheetsIpc(): void {
       }
       throw error
     }
+    entry.currentPath = path
     // The sidecar open itself can also outlive the tab after the pre-open
     // check. Close the newly registered session instead of stranding it in
     // the detached entry map.
@@ -3082,6 +3202,12 @@ export function registerSheetsIpc(): void {
     if (!prepared.unsavedNew) workbookOpenedHook?.(event.sender, path)
     return result
   }
+
+  // The renderer cancels a delimited import that is taking too long; the
+  // conversion throws and nothing opens.
+  ipcMain.handle(IPC_CHANNELS.cancelImport, (event) => {
+    pendingImports.cancel(event.sender.id)
+  })
 
   ipcMain.handle(IPC_CHANNELS.selectWorkbook, async (event) => {
     try {
@@ -3288,6 +3414,127 @@ export function registerSheetsIpc(): void {
       cached: z.boolean().optional(),
     })
     .strict()
+  // The external-links handlers are session-bound like the other workbook
+  // handlers: the renderer names a session, never a filesystem path, and main
+  // resolves the path the session was opened from.
+  ipcMain.handle(IPC_CHANNELS.listExternalLinks, async (event, input: unknown) => {
+    const entry = sessionFor(event)
+    const request = externalLinksRequestSchema.parse(input)
+    const session = entry.sessions.get(request.sessionId)
+    if (!session) throw new Error('Unknown workbook session.')
+    const result = await entry.client.listExternalLinks({ path: session.path })
+    return externalLinksResultSchema.parse(result)
+  })
+  ipcMain.handle(IPC_CHANNELS.updateExternalLinks, async (event, input: unknown) => {
+    const entry = sessionFor(event)
+    const request = externalLinksRequestSchema.parse(input)
+    const session = entry.sessions.get(request.sessionId)
+    if (!session) throw new Error('Unknown workbook session.')
+    // The saved file is what the update must read: the panel saves before it
+    // asks, so the on-disk bytes match the grid the values are applied to.
+    const result = await entry.client.updateExternalLinks({ path: session.path })
+    return externalLinksUpdateResultSchema.parse(result)
+  })
+  // The formula cells referencing each [n] link, with the value a Break would
+  // freeze them at: the file-level usage scan, not the model's view.
+  ipcMain.handle(IPC_CHANNELS.readExternalLinkUsage, async (event, input: unknown) => {
+    const entry = sessionFor(event)
+    const request = externalLinksRequestSchema.parse(input)
+    const session = entry.sessions.get(request.sessionId)
+    if (!session) throw new Error('Unknown workbook session.')
+    return entry.client.readExternalLinkUsage({ path: session.path })
+  })
+  // Change Source's file picker: the host picks the new source file itself, the
+  // renderer only names the link it belongs to.
+  ipcMain.handle(IPC_CHANNELS.selectExternalLinkSource, async (event) => {
+    const selection = await openFileDialog(event, {
+      properties: ['openFile'],
+      filters: [{ name: tm('filterSpreadsheets'), extensions: WORKBOOK_FILTER_EXTENSIONS }],
+    })
+    if (selection.canceled || selection.filePaths.length === 0) return null
+    return selection.filePaths[0] ?? null
+  })
+  // ── cross-workbook range picking (genoffice#2109) ──────────────────────
+  // One pick armed at a time: the tab editing a formula arms it, the user
+  // clicks a range in another workbook's tab, that tab reports the
+  // selection, and main relays it back and re-activates the editor.
+  let pendingWorkbookPick: { pickId: string; sourceWcId: number; targetWcId: number } | null = null
+  const broadcastPickCancelled = (pickId: string, exceptWcId: number): void => {
+    for (const entry of sheetsTabs.values()) {
+      if (entry.webContents.id === exceptWcId || entry.webContents.isDestroyed()) continue
+      entry.webContents.send(IPC_CHANNELS.workbookPickCancelled, { pickId })
+    }
+  }
+  ipcMain.handle(IPC_CHANNELS.listWorkbookTabs, (event) => ({
+    tabs: [...sheetsTabs.values()]
+      .filter(
+        (entry) =>
+          entry.webContents.id !== event.sender.id &&
+          !entry.webContents.isDestroyed() &&
+          entry.currentPath !== null,
+      )
+      .map((entry) => ({
+        wcId: entry.webContents.id,
+        name: basename(entry.currentPath!),
+        path: entry.currentPath!,
+      })),
+  }))
+  ipcMain.handle(IPC_CHANNELS.armWorkbookPick, (event, input: unknown) => {
+    const { wcId } = z.object({ wcId: z.number().int() }).strict().parse(input)
+    const pickId = 'pick-' + randomUUID()
+    if (pendingWorkbookPick) broadcastPickCancelled(pendingWorkbookPick.pickId, event.sender.id)
+    pendingWorkbookPick = { pickId, sourceWcId: event.sender.id, targetWcId: wcId }
+    // only the tab holding the selected link's source workbook is armed
+    const target = sheetsTabs.get(wcId)
+    if (target && wcId !== event.sender.id && !target.webContents.isDestroyed()) {
+      target.webContents.send(IPC_CHANNELS.workbookPickArmed, { pickId })
+    }
+    return { pickId }
+  })
+  ipcMain.handle(IPC_CHANNELS.sendWorkbookPickSelection, (event, input: unknown) => {
+    const selection = workbookPickSelectionSchema.parse(input)
+    const pending = pendingWorkbookPick
+    // only the tab the pick was armed against answers
+    if (!pending || pending.pickId !== selection.pickId || event.sender.id !== pending.targetWcId)
+      return
+    pendingWorkbookPick = null
+    const source = sheetsTabs.get(pending.sourceWcId)
+    if (source && !source.webContents.isDestroyed()) {
+      source.webContents.send(IPC_CHANNELS.workbookPickSelected, selection)
+    }
+    broadcastPickCancelled(pending.pickId, pending.sourceWcId)
+    activateTabHook?.(pending.sourceWcId)
+  })
+  ipcMain.handle(IPC_CHANNELS.cancelWorkbookPick, (event, input: unknown) => {
+    const { pickId } = z
+      .object({ pickId: z.string().min(1) })
+      .strict()
+      .parse(input)
+    if (!pendingWorkbookPick || pendingWorkbookPick.pickId !== pickId) return
+    pendingWorkbookPick = null
+    broadcastPickCancelled(pickId, event.sender.id)
+  })
+  // The preload sends this one (fire-and-forget): handle() would make the
+  // renderer's send() a no-op. The renderer names a link index of its session,
+  // never a path, so Locate resolves the source from the session's own listing.
+  ipcMain.on(IPC_CHANNELS.revealLinkSource, (event, input: unknown) => {
+    void (async () => {
+      const request = externalLinkRevealRequestSchema.safeParse(input)
+      const entry = sheetsTabs.get(event.sender.id)
+      if (!request.success || !entry) return
+      const session = entry.sessions.get(request.data.sessionId)
+      if (!session) return
+      try {
+        const listing = await entry.client.listExternalLinks({ path: session.path })
+        const source = listing.links.find((link) => link.index === request.data.index)?.source
+        // Reveal only real files: a missing source is a silent no-op.
+        if (source === null || source === undefined || !existsSync(source)) return
+        shell.showItemInFolder(source)
+      } catch {
+        // Locate is best-effort: a sidecar failure changes nothing on disk
+      }
+    })()
+  })
   ipcMain.handle(IPC_CHANNELS.recalcWorkbook, async (event, input: unknown) => {
     const entry = sessionFor(event)
     const request = workbookRecalcRequestSchema.parse(input)
@@ -3464,6 +3711,88 @@ export function registerSheetsIpc(): void {
       readArchiveEntryText(entry.client, session.snapshotPath, request.cachePath),
     ])
     return workbookPivotDefinitionSchema.parse(parsePivotDefinition(pivotXml, cacheXml))
+  })
+
+  ipcMain.handle(IPC_CHANNELS.readSlicerState, async (event, input: unknown) => {
+    const entry = sessionFor(event)
+    const request = workbookSlicerStateRequestSchema.parse(input)
+    const session = entry.sessions.get(request.sessionId)
+    if (!session) throw new Error('Unknown workbook session.')
+    // The slicer parts are read from the session snapshot in one sidecar
+    // extraction; the gateway parser does the rest.
+    const manifest = manifestNamesSchema.parse(
+      await entry.client.archiveManifest(session.snapshotPath),
+    )
+    const names = manifest.entries.map((archiveEntry) => archiveEntry.name)
+    const hasSlicerParts = names.some((name) =>
+      /^xl\/(?:slicers|timelines)\/[^/]+\.xml$/.test(name),
+    )
+    if (!hasSlicerParts) return []
+    // Worksheet parts and their rels are keys/lookups for the parser (host
+    // sheets, pivot binding), so both ride the paths() view; only the XML
+    // texts below are actually extracted.
+    const wanted = names.filter(
+      (name) =>
+        name === 'xl/workbook.xml' ||
+        name === 'xl/_rels/workbook.xml.rels' ||
+        /^xl\/(?:slicers|timelines|slicerCaches|timelineCaches|pivotTables)\/[^/]+\.xml$/.test(
+          name,
+        ) ||
+        /^xl\/pivotCache\/pivotCacheDefinition\d*\.xml$/.test(name) ||
+        /^xl\/worksheets\/(?:_rels\/)?[^/]+\.xml(?:\.rels)?$/.test(name),
+    )
+    const texts = await readArchiveEntriesText(entry.client, session.snapshotPath, wanted)
+    return workbookSlicerStateResultSchema.parse(
+      await parseSlicerState({
+        paths: async () => names,
+        readText: async (path) => {
+          const text = texts.get(path)
+          if (text === undefined) throw new Error(`Workbook is missing ${path}.`)
+          return text
+        },
+      }),
+    )
+  })
+
+  // The workbook's refreshable web queries: the walk follows both shapes Excel
+  // writes (a table part's relationship, or a legacy ExternalData_N name) and
+  // returns the sheet and range each query fills. Read from the session
+  // snapshot so the list matches what the renderer shows.
+  ipcMain.handle(IPC_CHANNELS.listWorkbookConnections, async (event, input: unknown) => {
+    const entry = sessionFor(event)
+    const request = workbookConnectionsRequestSchema.parse(input)
+    const session = entry.sessions.get(request.sessionId)
+    if (!session) throw new Error('Unknown workbook session.')
+    const read = await connectionPartReader(entry.client, session.snapshotPath)
+    return workbookConnectionsResultSchema.parse({ connections: await refreshableQueriesOf(read) })
+  })
+
+  // Refreshing a query: the renderer names only the connection id, and the URL
+  // is resolved from the workbook part here — this IPC is not a fetch proxy.
+  // The fetch still goes through the SSRF gate, because a workbook could name
+  // loopback, a cloud metadata endpoint or a UNC share.
+  ipcMain.handle(IPC_CHANNELS.refreshWorkbookConnection, async (event, input: unknown) => {
+    const entry = sessionFor(event)
+    const request = workbookRefreshRequestSchema.parse(input)
+    const session = entry.sessions.get(request.sessionId)
+    if (!session) throw new Error('Unknown workbook session.')
+    // Only this part is needed, and a workbook without connections has no
+    // listed query to refresh: a missing part means "no such connection".
+    const connectionsXml = await readArchiveEntryText(
+      entry.client,
+      session.snapshotPath,
+      'xl/connections.xml',
+    ).catch(() => undefined)
+    const read: PartReader = async (path) =>
+      path === 'xl/connections.xml' ? connectionsXml : undefined
+    const source = await connectionSourceOf(read, request.connectionId)
+    if (!source) throw new Error('This workbook has no refreshable web query with that id.')
+    const table = await fetchRemoteTable(source)
+    if (!table) throw new Error('Could not read a table from that address.')
+    return workbookRefreshResultSchema.parse({
+      headers: [...table.headers],
+      rows: table.rows.map((row) => [...row]),
+    })
   })
 
   ipcMain.handle(IPC_CHANNELS.readWorkbookRedactions, async (event, input: unknown) => {
@@ -3787,6 +4116,9 @@ export function registerSheetsIpc(): void {
           : {}),
       ...(session.password === undefined ? {} : { password: session.password }),
     })
+    // the swap retargets the tab: a Save As renames the file the picker
+    // matches links against
+    entry.currentPath = (csvInPlace ? session.csvSourcePath : undefined) ?? targetPath
     if (quietUnsavedNew && session.suggestSaveAs !== undefined) {
       // the temp path must not reach the title or recents; the recovery copy
       // is what a crash restores from, so it tracks the saved bytes
@@ -4682,6 +5014,18 @@ async function writeWorkbookTo(
     sheetName: resolveSheetName(sheetId),
     ...group,
   }))
+  // Slicer panels: same sheetId → sheet name mapping as the other
+  // additions; part paths stay package-absolute.
+  const slicerState =
+    request.slicerState === null
+      ? null
+      : {
+          slicers: request.slicerState.slicers.map(({ sheetId, ...control }) => ({
+            ...control,
+            sheetName: resolveSheetName(sheetId),
+          })),
+          removals: [...request.slicerState.removals],
+        }
   // Recalculated formula values: sheetId → file sheet name, the same
   // resolution the cell edits use.
   const formulaValuesBySheet = new Map<
@@ -4759,6 +5103,7 @@ async function writeWorkbookTo(
       tableEdits,
       pivotAdditions,
       sparklineAdditions,
+      slicerState,
       formulaValues,
       pivotCacheRefreshPaths: request.pivotCacheRefreshPaths,
       // Output-area expansion from layout growth: sheetId → sheet name; the part
@@ -4777,6 +5122,7 @@ async function writeWorkbookTo(
             }),
       })),
       redactionStates,
+      externalLinkOps: request.externalLinkOps,
     })
     if (session.password) {
       const encryptedBytes = encryptOoxml(await readFile(plainTargetPath), session.password)
@@ -5052,7 +5398,14 @@ async function prepareWorkbookForOpen(
   path: string,
   contents?: WebContents | undefined,
   parent?: BrowserWindow | undefined,
-  options?: { skipRecoveryPrompt?: boolean },
+  options?: {
+    skipRecoveryPrompt?: boolean
+    /** progress and cancellation for a delimited import */
+    import?: {
+      readonly onProgress?: (progress: CsvImportProgress) => void
+      readonly signal?: AbortSignal
+    }
+  },
 ): Promise<{
   openPath: string
   suggestSaveAs?: string
@@ -5132,7 +5485,12 @@ async function prepareWorkbookForOpen(
   try {
     if (extension === 'csv' || extension === 'tsv') {
       const csvStat = await stat(path)
-      if (csvStat.size > MAX_DELIMITED_IMPORT_BYTES) throw new Error(tm('errFileTooLarge'))
+      const limitBytes = delimitedImportLimit()
+      if (csvStat.size > limitBytes) {
+        const limitMb = Math.round(limitBytes / 1024 / 1024)
+        const sizeMb = (csvStat.size / 1024 / 1024).toFixed(1)
+        throw new Error(`${tm('errTooLarge', { mb: limitMb })} (${sizeMb} MB)`)
+      }
       const converted = await csvToXlsxBufferForOpen(
         decodeCsvBuffer(await readFile(path), legacyCsvCharset()),
         'Sheet1',
@@ -5143,6 +5501,7 @@ async function prepareWorkbookForOpen(
         // every row shatters on the comma. A .csv keeps the sniff — the prose
         // guard in resolveImportDelimiter is what that path needs.
         extension === 'tsv' ? '\t' : undefined,
+        options?.import,
       )
       emptyCsv = converted.empty
       await writeFile(openPath, converted.buffer)
@@ -5150,7 +5509,7 @@ async function prepareWorkbookForOpen(
       await convertLegacyXlsFile(path, openPath, {
         convertOle: (from, to) => client.convertWorkbook({ path: from, targetPath: to }),
         charset: legacyCsvCharset(),
-        maxTextBytes: MAX_DELIMITED_IMPORT_BYTES,
+        maxTextBytes: delimitedImportLimit(),
         tooLarge: () => new Error(tm('errFileTooLarge')),
       })
     }

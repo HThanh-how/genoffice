@@ -1,3 +1,4 @@
+import { SEG_BREAKABLE_RE } from '../text-layout/script-rules'
 import { Extension, type Editor } from '@tiptap/core'
 import { Plugin, PluginKey, type EditorState, type Transaction } from '@tiptap/pm/state'
 import { Decoration, DecorationSet, type EditorView } from '@tiptap/pm/view'
@@ -47,6 +48,7 @@ export const SearchHighlightExtension = Extension.create({
               return DecorationSet.create(
                 tr.doc,
                 meta.ranges.map((r, i) =>
+                  // inline-rules: allow — search highlight
                   Decoration.inline(r.from, r.to, {
                     class: i === meta.activeIndex ? 'search-hit search-hit-active' : 'search-hit',
                   }),
@@ -86,6 +88,7 @@ export const PendingCommentHighlightExtension = Extension.create({
             if (meta === null) return DecorationSet.empty
             if (meta) {
               return DecorationSet.create(tr.doc, [
+                // inline-rules: allow — pending comment range
                 Decoration.inline(meta.from, meta.to, { class: 'comment-pending' }),
               ])
             }
@@ -136,6 +139,7 @@ export const ResolvedCommentsExtension = Extension.create({
                 .filter(Boolean)
               if (ids.length === 0 || !ids.every((id) => done.has(id))) return
               decos.push(
+                // inline-rules: allow — resolved comment range
                 Decoration.inline(pos, pos + node.nodeSize, { class: 'doc-comment-resolved' }),
               )
             })
@@ -469,9 +473,6 @@ function tabGlyphLeft(view: EditorView, pos: number): number | null {
   return rect ? rect.left : null
 }
 
-/** inner whitespace or CJK text: a wrap opportunity inside the tab segment */
-const SEG_BREAKABLE_RE = /\s|[\u2E80-\u9FFF\uAC00-\uD7AF\uF900-\uFAFF\uFF00-\uFFEF]/
-
 /**
  * Leader width (layout px): the free width of the title's last line when the
  * page number fits before the right tab stop; else the "leader + page" unit
@@ -714,6 +715,7 @@ class TabLayoutView {
       const box = fixed ? ' doc-tab-fixed' : ''
       const wrap = t.wrap ? ' doc-tab-wrap' : ''
       decos.push(
+        // inline-rules: allow — maps the tab layout's result for one tab character
         Decoration.inline(
           t.pos,
           t.pos + 1,
@@ -1162,56 +1164,8 @@ export const WsRunLineHeightExtension = Extension.create({
             (m) => m.type.name === 'docTextStyle' && (m.attrs.sizeHalfPoints || m.attrs.styleId),
           )
           if (!styled) return
+          // inline-rules: allow — formatting-mark display of a whitespace run
           decos.push(Decoration.inline(pos, pos + node.nodeSize, { class: 'doc-ws-run' }))
-        }),
-      ),
-    ]
-  },
-})
-
-// ---- hinted East Asian curly quotes (w:hint="eastAsia") ----
-
-const eaHintQuotesPluginKey = new PluginKey<DecorationSet>('eaHintQuotes')
-
-/** the run's own w:rFonts carries w:hint="eastAsia" (revision snapshots inside w:rPrChange don't count) */
-const EA_HINT_RE = /<w:rFonts\b[^>]*\bw:hint="eastAsia"/
-
-const EA_QUOTES_RE = /[‘’“”]+/g
-
-/** quote ranges of `text` that Word renders with the East Asian font; exported for tests */
-export function eaHintQuoteRanges(
-  rawRPr: string | null | undefined,
-  text: string,
-): Array<{ from: number; to: number }> {
-  if (!rawRPr || !text || !/[‘’“”]/.test(text)) return []
-  if (!EA_HINT_RE.test(rawRPr.replace(/<w:rPrChange[\s\S]*?<\/w:rPrChange>/, ''))) return []
-  const ranges: Array<{ from: number; to: number }> = []
-  for (const m of text.matchAll(EA_QUOTES_RE)) {
-    ranges.push({ from: m.index, to: m.index + m[0].length })
-  }
-  return ranges
-}
-
-/**
- * Curly quotes U+2018/2019/201C/201D are dual-width codepoints: Word renders
- * them with the run's East Asian font (fullwidth advance) iff the run's
- * w:rFonts carries w:hint="eastAsia" — surrounding text and w:lang play no
- * part (Word for Mac probe 2026-09-01). Chromium resolves them through the
- * Latin head of the font chain (halfwidth), so hinted quotes get a
- * display-only decoration whose bundled CJK face restores the 1em advance.
- */
-export const EaHintQuotesExtension = Extension.create({
-  name: 'eaHintQuotes',
-  addProseMirrorPlugins() {
-    return [
-      new Plugin(
-        textDecorationState(eaHintQuotesPluginKey, (node, pos, decos) => {
-          if (!node.text) return
-          const style = node.marks.find((m) => m.type.name === 'docTextStyle')
-          const raw = style?.attrs.rawRPr as string | null | undefined
-          for (const r of eaHintQuoteRanges(raw, node.text)) {
-            decos.push(Decoration.inline(pos + r.from, pos + r.to, { class: 'doc-ea-quotes' }))
-          }
         }),
       ),
     ]

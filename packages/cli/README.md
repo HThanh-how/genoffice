@@ -34,7 +34,7 @@ genoffice sheet check book.xlsx --json                # formula errors, missing-
 genoffice sheet links book.xlsx                       # external [n] links: stored path, resolved path, reachable, source sheets
 genoffice sheet links book.xlsx --update              # re-read reachable sources and write the computed values as the formulas' cached <v> (formulas untouched; unreachable links keep their cache)
 genoffice sheet links book.xlsx --break 1,2           # break links: formulas become their cached values, the links' parts are removed and surviving links renumber
-genoffice create --type docx --from report.md --out report.docx      # or --from fragment.html (restricted HTML); the new file carries Word-like docProps/core.xml + app.xml
+genoffice create --type docx --from report.md --out report.docx      # or --from fragment.html (restricted HTML); the new file carries Word-like docProps/core.xml + app.xml; --no-generator-fields drops the Application / AppVersion stamps
 genoffice convert notes.md --to docx|html
 genoffice convert report.docx --to html               # the Word editor's standalone-HTML export
 genoffice convert page.html --to docx                 # html2docx, same as the HTML app's Export as Word
@@ -59,7 +59,7 @@ genoffice skill install --dir ./skills --force   # copy the bundled skill into a
 genoffice install-cli   # put genoffice on the PATH
 genoffice mcp --http 3000 [--host 127.0.0.1] [--token secret]   # Streamable HTTP for clients on other machines; omit --http for stdio
 genoffice mcp --compact-schemas   # advertise ops/cells/data as plain arrays instead of the per-op schema (smaller tools/list; also GENOFFICE_MCP_COMPACT_SCHEMAS=1)
-genoffice mcp install all   # register the stdio server with every coding agent found (or one: claude-code, codex, cursor, gemini, agy, copilot, opencode, windsurf)
+genoffice mcp install all   # register the stdio server with every coding agent found (or one: claude-code, codex, cursor, gemini, agy, copilot, opencode, windsurf, dsh)
 genoffice mcp list          # each agent's MCP config and whether genoffice is registered; `mcp uninstall <agent>` removes the entry
 ```
 
@@ -138,7 +138,7 @@ honoured), `~/.codex/config.toml` (`[mcp_servers.genoffice]`; `CODEX_HOME`),
 `~/.gemini/config` folder, a `disabled` toggle set with `agy mcp disable` is
 kept), `~/.copilot/mcp-config.json`
 (Copilot CLI), `~/.config/opencode/opencode.json` and
-`~/.codeium/windsurf/mcp_config.json`. Only the `genoffice` key is touched; an
+`~/.codeium/windsurf/mcp_config.json` and `~/.dsh/cordis.patch.yml` (DeepSeek Harness). Only the `genoffice` key is touched; an
 entry of that name starting another program is reported as `occupied` and left
 alone unless `--force`, a file that cannot be parsed is reported as `manual`
 with the snippet to paste. `--dir` names the agent's config folder for one
@@ -230,7 +230,7 @@ Independently of the PATH, every launch of the packaged app writes the launcher 
 ## Cloud commands
 
 `search`, `image` and `media` reuse the editors' provider routing. Search uses
-the selected Serper / Serply / Tavily / Parallel provider when its key is configured;
+the selected Serper / Serply / SearchApi / Tavily / Parallel provider when its key is configured;
 otherwise Genspark is the default when signed in (`~/.genoffice/auth.json`)
 and cloud tools are on, then Parallel's free, rate-limited Search MCP, then
 DuckDuckGo. Parallel

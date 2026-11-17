@@ -14,6 +14,7 @@ afterEach(() => {
   globalThis.fetch = realFetch
   delete process.env.SERPER_API_KEY
   delete process.env.SERPLY_API_KEY
+  delete process.env.SEARCHAPI_API_KEY
   delete process.env.PARALLEL_API_KEY
   delete process.env.TAVILY_API_KEY
   delete process.env.EXA_API_KEY
@@ -566,6 +567,7 @@ describe('search-tools', () => {
         providers: {
           serper: { apiKey: 'k' },
           serply: { apiKey: '' },
+          searchapi: { apiKey: '' },
           tavily: { apiKey: '' },
           parallel: { apiKey: '' },
           agy: { apiKey: '' },
@@ -587,6 +589,7 @@ describe('search-tools', () => {
         providers: {
           serper: { apiKey: '' },
           serply: { apiKey: '' },
+          searchapi: { apiKey: '' },
           tavily: { apiKey: 't' },
           parallel: { apiKey: '' },
           agy: { apiKey: '' },
@@ -608,6 +611,7 @@ describe('search-tools', () => {
         providers: {
           serper: { apiKey: '' },
           serply: { apiKey: '' },
+          searchapi: { apiKey: '' },
           tavily: { apiKey: '' },
           parallel: { apiKey: '' },
           agy: { apiKey: '' },
@@ -625,6 +629,7 @@ describe('search-tools', () => {
         providers: {
           serper: { apiKey: '' },
           serply: { apiKey: '' },
+          searchapi: { apiKey: '' },
           tavily: { apiKey: '' },
           parallel: { apiKey: '' },
           agy: { apiKey: '' },
@@ -647,6 +652,7 @@ describe('search-tools', () => {
         providers: {
           serper: { apiKey: '' },
           serply: { apiKey: '' },
+          searchapi: { apiKey: '' },
           tavily: { apiKey: '' },
           parallel: { apiKey: '' },
           agy: { apiKey: '' },

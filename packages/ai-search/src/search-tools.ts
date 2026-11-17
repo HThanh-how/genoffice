@@ -24,6 +24,7 @@ export function searchOptionsFromSettings(settings: AiSettings): SearchOptions {
   if (provider === 'agy') return { useGsk: false, parallelKey: '', prefer: 'parallel' }
   if (provider === 'parallel') return { useGsk: false, parallelKey: key, prefer: 'parallel' }
   if (provider === 'serply') return { useGsk: false, serplyKey: key, prefer: 'serply' }
+  if (provider === 'searchapi') return { useGsk: false, searchapiKey: key, prefer: 'searchapi' }
   if (provider === 'exa') return { useGsk: false, exaKey: key, prefer: 'exa' }
   if (provider === 'firecrawl') return { useGsk: false, firecrawlKey: key, prefer: 'firecrawl' }
   if (provider === 'keenable') return { useGsk: false, keenableKey: key, prefer: 'keenable' }
@@ -92,6 +93,7 @@ export async function testSearchProvider(
     useGsk: false,
     serperKey: provider === 'serper' ? apiKey : '',
     serplyKey: provider === 'serply' ? apiKey : '',
+    searchapiKey: provider === 'searchapi' ? apiKey : '',
     tavilyKey: provider === 'tavily' ? apiKey : '',
     parallelKey: provider === 'parallel' ? apiKey : '',
     exaKey: provider === 'exa' ? apiKey : '',

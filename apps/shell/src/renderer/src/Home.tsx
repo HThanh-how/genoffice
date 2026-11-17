@@ -45,7 +45,7 @@ import type {
 } from '../../shared/home-api'
 import type { IntegrationsApi } from '../../shared/integrations-api'
 import { markText } from '../../shared/text-marks'
-import { useDismissablePopover } from '@genoffice/ui'
+import { useDismissablePopover, useEscapeToClose } from '@genoffice/ui'
 import { fileCountLabel, visiblePageCount } from './counts'
 import { useI18n } from './locale'
 import type { I18n, StringKey } from './locale'
@@ -433,13 +433,7 @@ function FolderPicker({
     for (const dir of expanded) load(dir)
   }, [expanded, load])
 
-  useEffect(() => {
-    const onKeyDown = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') onCancel()
-    }
-    window.addEventListener('keydown', onKeyDown)
-    return () => window.removeEventListener('keydown', onKeyDown)
-  }, [onCancel])
+  useEscapeToClose(true, onCancel)
 
   const disabledDir = (dir: string) =>
     currentDirs.has(dir) ||
@@ -653,13 +647,7 @@ interface ConflictPromptProps {
 
 function ConflictPrompt({ names, onChoose }: ConflictPromptProps) {
   const { t } = useI18n()
-  useEffect(() => {
-    const onKeyDown = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') onChoose('skip')
-    }
-    window.addEventListener('keydown', onKeyDown)
-    return () => window.removeEventListener('keydown', onKeyDown)
-  }, [onChoose])
+  useEscapeToClose(true, () => onChoose('skip'))
   return (
     <div className="modal-overlay" onClick={() => onChoose('skip')}>
       <div
@@ -722,13 +710,7 @@ function GroupPicker({ groups, count, onCancel, onPick, onCreate, onRemove }: Gr
   const { t } = useI18n()
   const [name, setName] = useState('')
 
-  useEffect(() => {
-    const onKeyDown = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') onCancel()
-    }
-    window.addEventListener('keydown', onKeyDown)
-    return () => window.removeEventListener('keydown', onKeyDown)
-  }, [onCancel])
+  useEscapeToClose(true, onCancel)
 
   const create = () => {
     const trimmed = name.trim()
@@ -1863,27 +1845,20 @@ export function Home() {
   }, [folderMenu])
 
   // Escape closes the row menu and the confirm dialogs
-  useEffect(() => {
-    if (
-      rowMenu === null &&
-      folderMenu === null &&
-      confirmDelete === null &&
-      confirmMissing === null &&
-      confirmDeleteFolder === null
-    )
-      return
-    const onKeyDown = (event: KeyboardEvent) => {
-      if (event.key === 'Escape') {
-        setRowMenu(null)
-        setFolderMenu(null)
-        setConfirmDelete(null)
-        setConfirmMissing(null)
-        setConfirmDeleteFolder(null)
-      }
-    }
-    window.addEventListener('keydown', onKeyDown)
-    return () => window.removeEventListener('keydown', onKeyDown)
-  }, [rowMenu, folderMenu, confirmDelete, confirmMissing, confirmDeleteFolder])
+  useEscapeToClose(
+    rowMenu !== null ||
+      folderMenu !== null ||
+      confirmDelete !== null ||
+      confirmMissing !== null ||
+      confirmDeleteFolder !== null,
+    () => {
+      setRowMenu(null)
+      setFolderMenu(null)
+      setConfirmDelete(null)
+      setConfirmMissing(null)
+      setConfirmDeleteFolder(null)
+    },
+  )
 
   // WPS-style sortable "modified" column header, shared by both file tables
   const renderModifiedHeader = () => (

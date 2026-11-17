@@ -31,9 +31,14 @@ import {
   stripInkRuns,
 } from './ink'
 import { resolveRelationshipTargetPath } from './parse-package'
-import { applyRemoveParts, planRemoveParts, type RemovePartsOptions } from './remove-parts'
+import {
+  applyRemoveParts,
+  planRemoveParts,
+  removePartsRefusalMessageFor,
+  type RemovePartsOptions,
+} from './remove-parts'
 import { assertZipWithinLimits, resolveMainDocumentPath, type ParseExtras } from './parse'
-import { cleanupDocxOwnedResources } from './resource-cleanup'
+import { cleanupDocxOwnedResources, referencedRelationshipIds } from './resource-cleanup'
 import { loadDocxZip } from './zip-load'
 import {
   BLANK_NUMBERING_XML,
@@ -795,16 +800,26 @@ export async function saveDocx(
     options.themeFonts === undefined &&
     options.themeColors === undefined &&
     options.properties === undefined &&
-    options.removeParts === undefined &&
     options.contentControls === undefined &&
     (options.partXml === undefined || Object.keys(options.partXml).length === 0) &&
     (options.partBinary === undefined || Object.keys(options.partBinary).length === 0)
   if (isUnchanged && !scrubPersonalInfo) {
     // remove_parts may be the only requested change: when nothing matches, the
     // package is already scrubbed and the original bytes are the right answer
-    if (options.removeParts === undefined) return originalBytes
-    const plan = await planRemoveParts(originalBytes, options.removeParts)
-    if (plan.removedPaths.length === 0) return originalBytes
+    if (options.removeParts === undefined) {
+      // the final save drops orphan move-range markers (cleanStoryMoveRanges);
+      // a document that only carries them must not take the no-op shortcut, or
+      // an accept / reject would report success yet save the junk back
+      // (genoffice#2554: the markers ride in the body, so the body is the check)
+      if (cleanMoveRangeMarkers(documentXml).removed === 0) return originalBytes
+    } else {
+      const plan = await planRemoveParts(originalBytes, options.removeParts)
+      // an op-level check already refuses these; this is the engine invariant:
+      // a save never applies a remove_parts set that names a structural part
+      if (plan.refusedPaths.length > 0)
+        throw new Error(removePartsRefusalMessageFor(plan.refusedPaths))
+      if (plan.removedPaths.length === 0) return originalBytes
+    }
   }
 
   const zip = await loadDocxZip(originalBytes)
@@ -2259,10 +2274,11 @@ export async function saveDocx(
 
   const out = new JSZip()
   for (const [name, entry] of Object.entries(zip.files)) {
-    if (entry.dir) {
-      out.folder(name)
-      continue
-    }
+    // source folder entries are not copied over: Word does not write them and
+    // they carry no content (genoffice#2554). JSZip still auto-creates folder
+    // entries for every nested out.file() below — those are stripped right
+    // before the generate at the end.
+    if (entry.dir) continue
     const hfPart = hfParts.find((p) => p.path === name)
     if (name === docPath) {
       out.file(name, newDocumentXml, { date: entry.date })
@@ -2371,7 +2387,17 @@ export async function saveDocx(
   if (customPropertiesIsNew && customPropertiesXml !== null) {
     out.file(CUSTOM_PROPERTIES_PATH, customPropertiesXml)
   }
-  await cleanupDocxOwnedResources(out, docPath)
+  // The resource sweep prunes only what this save broke: a relationship the
+  // source document already did not reference is a pre-existing orphan, and
+  // Word keeps those (so do the byte-identity round trips).
+  const sourceDocumentFile = zip.file(docPath)
+  await cleanupDocxOwnedResources(
+    out,
+    docPath,
+    sourceDocumentFile
+      ? referencedRelationshipIds(await sourceDocumentFile.async('string'))
+      : undefined,
+  )
   await cleanStoryMoveRanges(out, docPath)
   if (scrubPersonalInfo) await scrubPersonalMetadata(out)
   // metadata scrubs come after every generated/copied part is in place, so a
@@ -2379,6 +2405,10 @@ export async function saveDocx(
   if (options.removeParts) await applyRemoveParts(out, options.removeParts)
   // the property write comes last: what the caller asked for wins over the scrub
   if (options.properties) await applyPropertyChanges(out, options.properties)
+  // Word does not write folder entries and they carry no content: JSZip
+  // auto-creates one per nested part, so drop them from the flat files map
+  // before the single generate pass (genoffice#2554)
+  for (const [name, entry] of Object.entries(out.files)) if (entry.dir) delete out.files[name]
   return out.generateAsync({
     type: 'uint8array',
     compression: 'DEFLATE',

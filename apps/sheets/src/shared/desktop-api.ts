@@ -2095,6 +2095,27 @@ export const redactionStatesSchema = z
   )
   .max(1_000)
 
+/// Breaks and source retargets of the workbook's external links, applied by
+/// the save planner on the final entry contents. Indexes are the stored `[n]`
+/// positions in `<externalReferences>`; a break also needs the affected cells
+/// journaled as literals, so the model and the file agree after the save.
+export const externalLinkOpsSchema = z
+  .object({
+    broken: z.array(z.number().int().positive()).max(64),
+    retargets: z
+      .array(
+        z
+          .object({
+            index: z.number().int().positive(),
+            target: z.string().min(1).max(2_048),
+          })
+          .strict(),
+      )
+      .max(64),
+  })
+  .strict()
+export type ExternalLinkOps = z.infer<typeof externalLinkOpsSchema>
+
 export const workbookSaveRequestSchema = z
   .object({
     sessionId: z.string().uuid(),
@@ -2225,6 +2246,65 @@ export const workbookSaveRequestSchema = z
       )
       .max(50)
       .default([]),
+    /// Session slicer panels persisted as x14 slicer parts on this save
+    /// (created, edited, or deleted this session; null = nothing
+    /// slicer-related rides the save, leaving any file parts untouched).
+    slicerState: z
+      .object({
+        slicers: z
+          .array(
+            z
+              .object({
+                sheetId: z.string().min(1),
+                /// Package-absolute pivot part path (file.sheets[].pivotTables).
+                pivotPath: z.string().regex(/^xl\/[A-Za-z0-9._/-]+\.xml$/),
+                /// Cache field name (slicerCacheDefinition@sourceName).
+                sourceName: z.string().min(1).max(255),
+                caption: z.string().max(255),
+                /// File identity from the restore; present = update in place.
+                name: z.string().min(1).max(255).optional(),
+                partPath: z
+                  .string()
+                  .regex(/^xl\/[A-Za-z0-9._/-]+\.xml$/)
+                  .optional(),
+                cachePath: z
+                  .string()
+                  .regex(/^xl\/[A-Za-z0-9._/-]+\.xml$/)
+                  .optional(),
+                cacheName: z.string().min(1).max(255).optional(),
+                /// Every member with its selection (x = sharedItems index).
+                items: z
+                  .array(
+                    z
+                      .object({
+                        x: z.number().int().nonnegative(),
+                        selected: z.boolean(),
+                      })
+                      .strict(),
+                  )
+                  .min(1)
+                  .max(100_000),
+              })
+              .strict(),
+          )
+          .max(100),
+        /// Controls restored from the file and deleted this session: their
+        /// parts and references are removed; file slicers the session never
+        /// restored are never listed here (and never touched).
+        removals: z
+          .array(
+            z
+              .object({
+                partPath: z.string().regex(/^xl\/[A-Za-z0-9._/-]+\.xml$/),
+                cachePath: z.string().regex(/^xl\/[A-Za-z0-9._/-]+\.xml$/),
+              })
+              .strict(),
+          )
+          .max(200),
+      })
+      .strict()
+      .nullable()
+      .default(null),
     /// Declarative defined-names snapshot (null = untouched). `preserveNames`
     /// lists file names the editor could not model — they stay verbatim, as do
     /// _xlnm.* built-ins and hidden names.
@@ -2306,6 +2386,7 @@ export const workbookSaveRequestSchema = z
      * through without a translation step.
      */
     redactionStates: redactionStatesSchema.nullable().default(null),
+    externalLinkOps: externalLinkOpsSchema.nullable().default(null),
   })
   .strict()
   .refine(
@@ -2340,7 +2421,9 @@ export const workbookSaveRequestSchema = z
       (request.tableEdits?.length ?? 0) > 0 ||
       request.pivotAdditions.length > 0 ||
       request.sparklineAdditions.length > 0 ||
-      (request.redactionStates?.length ?? 0) > 0,
+      request.slicerState !== null ||
+      (request.redactionStates?.length ?? 0) > 0 ||
+      request.externalLinkOps !== null,
     { message: 'A save needs at least one edit.' },
   )
   .refine((request) => request.sheetOps.length === 0 || request.sheetOrder.length > 0, {
@@ -2434,6 +2517,34 @@ export const workbookPivotRequestSchema = z
   })
   .strict()
 
+export const workbookSlicerStateRequestSchema = z.object({ sessionId: z.string().uuid() }).strict()
+
+/// One slicer control the file carries, as parsed by the gateway (see
+/// xlsx-slicer parseSlicerState). The renderer binds the pivot through
+/// pivotCacheDefinitionPath against the sheet metadata's pivotTables entries,
+/// then rebuilds the session panel (with file identity for update-in-place).
+export const workbookSlicerPartSchema = z
+  .object({
+    /// `sheet-<sheetId>` — matches WorkbookFile sheets[].id.
+    sheetId: z.string().min(1),
+    worksheetPath: z.string().regex(/^xl\/[A-Za-z0-9._/-]+\.xml$/),
+    partPath: z.string().regex(/^xl\/[A-Za-z0-9._/-]+\.xml$/),
+    cachePath: z.string().regex(/^xl\/[A-Za-z0-9._/-]+\.xml$/),
+    name: z.string().min(1).max(255),
+    cacheName: z.string().min(1).max(255),
+    sourceName: z.string().max(255),
+    caption: z.string().max(255),
+    pivotCacheDefinitionPath: z
+      .string()
+      .regex(/^xl\/[A-Za-z0-9._/-]+\.xml$/)
+      .nullable(),
+    /// sharedItems indices of the selected members; null = the cache carried
+    /// no item list (treat as unfiltered).
+    selectedItems: z.array(z.number().int().nonnegative()).max(100_000).nullable(),
+  })
+  .strict()
+
+export const workbookSlicerStateResultSchema = z.array(workbookSlicerPartSchema).max(1_000)
 export const workbookQueriesRequestSchema = z
   .object({
     sessionId: z.string().uuid(),
@@ -2453,7 +2564,10 @@ export const workbookQueriesResultSchema = z
           .object({
             sheet: z.string().max(1_000),
             table: z.string().max(1_000).optional(),
+            hasTable: z.boolean(),
             range: z.string().max(100),
+            headerRows: z.number().int().min(0),
+            totalsRows: z.number().int().min(0),
             rows: z.number().int().min(0),
           })
           .strict()
@@ -2660,8 +2774,36 @@ export type WorkbookRangeResult = z.infer<typeof workbookRangeResultSchema>
 export type WorkbookPagePrintSettings = NonNullable<WorkbookRangeResult['pageSetup']>
 export type WorkbookRecalcRequest = z.infer<typeof workbookRecalcRequestSchema>
 
-export const externalLinksRequestSchema = z.object({ path: z.string().min(1) }).strict()
+/// External-link reads and retargets are addressed by the open session, not a
+/// renderer-supplied path: the main process resolves the workbook this tab
+/// actually has open (the same binding the other workbook handlers use).
+export const externalLinksRequestSchema = z.object({ sessionId: z.string().uuid() }).strict()
 export type ExternalLinksRequest = z.infer<typeof externalLinksRequestSchema>
+
+/// Locate a source: the renderer names the link index of its own session, never
+/// a path, so the main process resolves the target from what the sidecar reads.
+export const externalLinkRevealRequestSchema = z
+  .object({ sessionId: z.string().uuid(), index: z.number().int().positive() })
+  .strict()
+export type ExternalLinkRevealRequest = z.infer<typeof externalLinkRevealRequestSchema>
+
+/// One link as the read-only listing carries it. Deliberately no `reachable`:
+/// listing the links must not probe the targets on disk (a dead network share
+/// can block the open), so reachability is answered only by the explicit
+/// update.
+export const externalLinkListStatusSchema = z
+  .object({
+    index: z.number().int().positive(),
+    rawTarget: z.string(),
+    source: z.string().nullable(),
+    sheetNames: z.array(z.string()),
+  })
+  .strict()
+export type ExternalLinkListStatus = z.infer<typeof externalLinkListStatusSchema>
+
+/// One row of the links panel: the listing's fields, plus the update's
+/// reachability verdict once it has run.
+export type ExternalLinkRow = ExternalLinkListStatus & { readonly reachable?: boolean }
 
 export const externalLinkStatusSchema = z
   .object({
@@ -2674,14 +2816,23 @@ export const externalLinkStatusSchema = z
   .strict()
 export type ExternalLinkStatus = z.infer<typeof externalLinkStatusSchema>
 
+/// The panel's non-probing listing (the sidecar's `list_external_links`).
 export const externalLinksResultSchema = z
-  .object({ links: z.array(externalLinkStatusSchema) })
+  .object({ links: z.array(externalLinkListStatusSchema) })
   .strict()
 export type ExternalLinksResult = z.infer<typeof externalLinksResultSchema>
 
+/// The kinds an external-formula cell's value can have: the save path writes a
+/// boolean as `t="b"` and an error as `t="e"` instead of spelling them as a
+/// text cache.
+export const externalLinkCellKindSchema = z.enum(['number', 'text', 'boolean', 'error'])
+export type ExternalLinkCellKind = z.infer<typeof externalLinkCellKindSchema>
+
 // One external-formula cell of an update report. `row` and `column` are
 // 0-based in the report; IronCalc, which computed the value, addresses the
-// same cells 1-based.
+// same cells 1-based. `kind` is absent when the cell has no usable value (a
+// formula the file never cached), so the host keeps the cell's own cache;
+// older sidecars spell that as `null`.
 export const externalLinkCellSchema = z
   .object({
     sheet: z.string(),
@@ -2689,9 +2840,11 @@ export const externalLinkCellSchema = z
     column: z.number().int().nonnegative(),
     formatted: z.string(),
     number: z.number().nullable().optional(),
+    kind: externalLinkCellKindSchema.nullish(),
     formula: z.string(),
   })
   .strict()
+export type ExternalLinkCell = z.infer<typeof externalLinkCellSchema>
 
 export const externalLinksUpdateResultSchema = z
   .object({
@@ -2700,11 +2853,81 @@ export const externalLinksUpdateResultSchema = z
   })
   .strict()
 export type ExternalLinksUpdateResult = z.infer<typeof externalLinksUpdateResultSchema>
+
+/// One formula cell that references a link, as the usage scan carries it: the
+/// value a break would freeze the cell at, typed by the cached `<v>`. `row`
+/// and `column` are 0-based.
+export const externalLinkUsageCellSchema = z
+  .object({
+    sheet: z.string(),
+    row: z.number().int().nonnegative(),
+    column: z.number().int().nonnegative(),
+    value: z.union([
+      z.object({ kind: z.literal('number'), value: z.number() }).strict(),
+      z.object({ kind: z.literal('text'), value: z.string() }).strict(),
+      z.object({ kind: z.literal('bool'), value: z.boolean() }).strict(),
+      z.object({ kind: z.literal('error'), value: z.string() }).strict(),
+      z.object({ kind: z.literal('missing') }).strict(),
+    ]),
+  })
+  .strict()
+export type ExternalLinkUsageCell = z.infer<typeof externalLinkUsageCellSchema>
+
+/// Every formula cell of the workbook that references link `[n]`.
+export const externalLinkUsageSchema = z
+  .object({
+    index: z.number().int().positive(),
+    cells: z.array(externalLinkUsageCellSchema),
+  })
+  .strict()
+export type ExternalLinkUsage = z.infer<typeof externalLinkUsageSchema>
+
+export const externalLinkUsageResultSchema = z
+  .object({ links: z.array(externalLinkUsageSchema) })
+  .strict()
+export type ExternalLinkUsageResult = z.infer<typeof externalLinkUsageResultSchema>
+
+// ── cross-workbook range picking (genoffice#2109) ──────────────────────
+
+/// Another open workbook tab, as the picker's book list shows it.
+export const workbookTabSchema = z
+  .object({
+    wcId: z.number().int().positive(),
+    name: z.string().min(1),
+    path: z.string().min(1),
+  })
+  .strict()
+export type WorkbookTab = z.infer<typeof workbookTabSchema>
+
+export const workbookTabsResultSchema = z.object({ tabs: z.array(workbookTabSchema) }).strict()
+export type WorkbookTabsResult = z.infer<typeof workbookTabsResultSchema>
+
+export const pickIdPayloadSchema = z.object({ pickId: z.string().min(1) }).strict()
+export type PickIdPayload = z.infer<typeof pickIdPayloadSchema>
+
+/// One picked range on another workbook's grid, relayed to the tab whose
+/// formula is being edited. 0-based bounds, Univer's RANGE_TYPE for 1=rows,
+/// 2=columns picks.
+export const workbookPickSelectionSchema = z
+  .object({
+    pickId: z.string().min(1),
+    sheetName: z.string().min(1),
+    startRow: z.number().int().nonnegative(),
+    endRow: z.number().int().nonnegative(),
+    startColumn: z.number().int().nonnegative(),
+    endColumn: z.number().int().nonnegative(),
+    rangeType: z.number().int().optional(),
+  })
+  .strict()
+export type WorkbookPickSelection = z.infer<typeof workbookPickSelectionSchema>
 export type WorkbookRecalcResult = z.infer<typeof workbookRecalcResultSchema>
 export type WorkbookMediaRequest = z.infer<typeof workbookMediaRequestSchema>
 export type WorkbookMediaResult = z.infer<typeof workbookMediaResultSchema>
 export type WorkbookPivotRequest = z.infer<typeof workbookPivotRequestSchema>
 export type WorkbookPivotDefinition = z.infer<typeof workbookPivotDefinitionSchema>
+export type WorkbookSlicerStateRequest = z.infer<typeof workbookSlicerStateRequestSchema>
+export type WorkbookSlicerPart = z.infer<typeof workbookSlicerPartSchema>
+export type WorkbookSlicerState = z.infer<typeof workbookSlicerStateResultSchema>
 export type WorkbookQueriesRequest = z.infer<typeof workbookQueriesRequestSchema>
 export type WorkbookQueriesResult = z.infer<typeof workbookQueriesResultSchema>
 export type WorkbookRedactionsRequest = z.infer<typeof workbookRedactionsRequestSchema>
@@ -3218,6 +3441,8 @@ export interface DesktopApi {
   onDocumentThemeChanged(handler: (theme: DocTheme) => void): () => void
   /** shell-wide AutoSave default (see useAutoSavePref) */
   getAutoSaveDefault(): Promise<AutoSaveDefault>
+  /** the ceiling a delimited import may reach, in MB (the user's setting) */
+  getCsvImportLimit(): Promise<number>
   onAutoSaveDefaultChanged(handler: (value: AutoSaveDefault) => void): () => void
   /** AI panel text size + chat-input spellcheck (Settings → General in the shell) */
   getAiPanelPrefs(): Promise<AiPanelPrefs>
@@ -3230,6 +3455,16 @@ export interface DesktopApi {
    */
   onChromePressed(handler: () => void): () => void
   selectWorkbook(): Promise<WorkbookFile | { passwordRequired: true; path: string } | null>
+  /** How far a delimited import is: 'read' parses the text, 'write' builds the
+   *  workbook. The fraction is 0..1 within the phase. `null` means the import
+   *  is over — the bar belongs to one import and must not outlive it. */
+  onImportProgress?: (
+    listener: (
+      progress: { readonly phase: 'read' | 'write'; readonly fraction: number } | null,
+    ) => void,
+  ) => (() => void) | undefined
+  /** Stop the delimited import that is running for this tab */
+  cancelImport?: () => Promise<void>
   openEncryptedWorkbook(path: string, password: string): Promise<WorkbookFile | null>
   updateWorkbookPassword(
     sessionId: string,
@@ -3251,10 +3486,36 @@ export interface DesktopApi {
   readWorkbookRange(request: WorkbookRangeRequest): Promise<WorkbookRangeResult>
   readWorkbookFormulas(request: WorkbookFormulaCellsRequest): Promise<WorkbookFormulaCellsResult>
   findWorkbookCells(request: WorkbookFindCellsRequest): Promise<WorkbookFindCellsResult>
+  /** The workbook's refreshable data connections (web queries for now). */
+  listWorkbookConnections(request: WorkbookConnectionsRequest): Promise<WorkbookConnectionsResult>
+  /** Fetch a web query's table: main resolves its URL from the workbook part. */
+  refreshWorkbookConnection(request: WorkbookRefreshRequest): Promise<WorkbookRefreshResult>
   readWorkbookRowOutline(request: WorkbookFormulaCellsRequest): Promise<WorkbookRowOutlineResult>
   recalcWorkbook(request: WorkbookRecalcRequest): Promise<WorkbookRecalcResult>
+  listExternalLinks(request: ExternalLinksRequest): Promise<ExternalLinksResult>
+  updateExternalLinks(request: ExternalLinksRequest): Promise<ExternalLinksUpdateResult>
+  /// The formula cells referencing each [n] link, with the value a break
+  /// would freeze them at — the file-level scan, not the model's view.
+  readExternalLinkUsage(request: ExternalLinksRequest): Promise<ExternalLinkUsageResult>
+  /// A single-workbook file picker for "Change Source" (a link's new source).
+  selectExternalLinkSource(): Promise<string | null>
+  /// Other open workbook tabs (the cross-workbook range picker's book list).
+  listWorkbookTabs(): Promise<{ tabs: WorkbookTab[] }>
+  /// Arms a cross-workbook pick from this tab; other sheets' grids become
+  /// the pick target until a selection or a cancel.
+  armWorkbookPick(wcId: number): Promise<{ pickId: string }>
+  sendWorkbookPickSelection(selection: WorkbookPickSelection): Promise<void>
+  cancelWorkbookPick(pickId: string): Promise<void>
+  onWorkbookPickArmed(listener: (payload: { pickId: string }) => void): () => void
+  onWorkbookPickSelected(listener: (selection: WorkbookPickSelection) => void): () => void
+  onWorkbookPickCancelled(listener: (payload: { pickId: string }) => void): () => void
+  revealLinkSource(request: ExternalLinkRevealRequest): void
   readWorkbookMedia(request: WorkbookMediaRequest): Promise<WorkbookMediaResult>
   readPivotDefinition(request: WorkbookPivotRequest): Promise<WorkbookPivotDefinition>
+  /// Slicer controls the file carries; read once per open so the session can
+  /// restore the panels (and re-save them update-in-place). Timelines are not
+  /// read or restored: they stay session-only for now.
+  readSlicerState(request: WorkbookSlicerStateRequest): Promise<WorkbookSlicerState>
   /**
    * The cells the reader withheld from the model, read once per open. An
    * unreadable part is reported as such rather than as "nothing withheld" —
@@ -3407,6 +3668,64 @@ export interface GenerateImageResult {
   url?: string
   error?: string
 }
+
+/// A workbook's data connections that can be refreshed: a web query fills a
+/// range on a sheet, and its URL lives in the workbook's connection part.
+/// Text queries are not listed yet: a local path cannot go through the SSRF
+/// gate, so refreshing one would only fail (genoffice#2363 review).
+export const workbookConnectionSchema = z
+  .object({
+    id: z.string(),
+    name: z.string(),
+    /** only web queries are refreshable for now */
+    kind: z.literal('web'),
+    /** the URL the query reads */
+    source: z.string(),
+    /** the sheet the query's rows land on */
+    sheetName: z.string(),
+    /** the A1 range the query fills, header row included */
+    range: z.string(),
+    /** rows at the top of the range that are the query's header (0 or 1) */
+    headerRows: z.number().int().min(0),
+    /** trailing rows that hold a ListObject's totals row, left untouched */
+    totalsRows: z.number().int().min(0),
+    /** true when the rows live in a ListObject, whose column names pin the header cells */
+    hasTable: z.boolean(),
+  })
+  .strict()
+
+export const workbookConnectionsRequestSchema = z
+  .object({
+    sessionId: z.string().uuid(),
+  })
+  .strict()
+
+export const workbookConnectionsResultSchema = z
+  .object({
+    connections: z.array(workbookConnectionSchema),
+  })
+  .strict()
+
+export const workbookRefreshRequestSchema = z
+  .object({
+    sessionId: z.string().uuid(),
+    /** the connection list's id; main resolves the URL from the workbook */
+    connectionId: z.string().min(1).max(200),
+  })
+  .strict()
+
+export const workbookRefreshResultSchema = z
+  .object({
+    headers: z.array(z.string()),
+    rows: z.array(z.array(z.string())),
+  })
+  .strict()
+
+export type WorkbookConnection = z.infer<typeof workbookConnectionSchema>
+export type WorkbookConnectionsRequest = z.infer<typeof workbookConnectionsRequestSchema>
+export type WorkbookConnectionsResult = z.infer<typeof workbookConnectionsResultSchema>
+export type WorkbookRefreshRequest = z.infer<typeof workbookRefreshRequestSchema>
+export type WorkbookRefreshResult = z.infer<typeof workbookRefreshResultSchema>
 
 export interface UserSkillEntry {
   name: string

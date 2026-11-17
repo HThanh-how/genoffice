@@ -9,6 +9,7 @@ import type {
 export const AI_SEARCH_PROVIDERS: AiSearchProviderMeta[] = [
   { id: 'serper', label: 'Serper', keyPlaceholder: 'Serper API key', imageSearch: true },
   { id: 'serply', label: 'Serply', keyPlaceholder: 'Serply API key', imageSearch: true },
+  { id: 'searchapi', label: 'SearchApi', keyPlaceholder: 'SearchApi API key', imageSearch: true },
   { id: 'tavily', label: 'Tavily', keyPlaceholder: 'tvly-...', imageSearch: false },
   { id: 'parallel', label: 'Parallel', keyPlaceholder: 'Parallel API key', imageSearch: false },
   { id: 'agy', label: 'Antigravity CLI', keyPlaceholder: '', imageSearch: false, keyless: true },
@@ -28,6 +29,7 @@ export function defaultAiSearchSettings(
     providers: {
       serper: { apiKey: '' },
       serply: { apiKey: '' },
+      searchapi: { apiKey: '' },
       tavily: { apiKey: '' },
       parallel: { apiKey: '' },
       agy: { apiKey: '', cliPath: '', model: '' },
@@ -47,6 +49,7 @@ export function resolveAiSearchSettings(
   for (const id of [
     'serper',
     'serply',
+    'searchapi',
     'tavily',
     'parallel',
     'exa',

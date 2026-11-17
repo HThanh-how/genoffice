@@ -11,6 +11,7 @@
     "./table-grid": "./src/table-grid.ts",
     "./identity": "./src/identity.ts",
     "./chart-workbook": "./src/chart-workbook.ts",
+    "./dgm-hier": "./src/dgm-hier.ts",
     "./model3d": "./src/model3d.ts",
     "./named-action": "./src/named-action.ts",
     "./background-promote": "./src/background-promote.ts"
@@ -22,7 +23,7 @@
   },
   "dependencies": {
     "@genoffice/zip-gate": "*",
-    "fast-xml-parser": "^5.3.4",
+    "fast-xml-parser": "^5.12.0",
     "jszip": "^3.10.1",
     "@genoffice/agent-core": "*"
   },

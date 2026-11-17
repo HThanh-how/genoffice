@@ -36,3 +36,4 @@ tools/ooxml-validate/schemas/
 # Condensed architecture boundary files with strict LOC limits (< 500 LOC, <= 400 LOC).
 apps/shell/src/main/document-memory/manager.ts
 apps/shell/src/main/document-memory/store.ts
+apps/docs/src/renderer/stand-in-chains.generated.ts

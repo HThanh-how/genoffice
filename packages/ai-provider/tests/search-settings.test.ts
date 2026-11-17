@@ -14,6 +14,7 @@ describe('search settings', () => {
       providers: {
         serper: { apiKey: '' },
         serply: { apiKey: '' },
+        searchapi: { apiKey: '' },
         tavily: { apiKey: '' },
         parallel: { apiKey: '' },
         agy: { apiKey: '', cliPath: '', model: '' },
@@ -62,6 +63,7 @@ describe('search settings', () => {
           providers: {
             serper: { apiKey: '' },
             serply: { apiKey: '' },
+            searchapi: { apiKey: '' },
             tavily: { apiKey: '' },
             parallel: { apiKey: '' },
             agy: { apiKey: '' },
@@ -79,6 +81,7 @@ describe('search settings', () => {
           providers: {
             serper: { apiKey: 'k' },
             serply: { apiKey: '' },
+            searchapi: { apiKey: '' },
             tavily: { apiKey: '' },
             parallel: { apiKey: '' },
             agy: { apiKey: '' },
@@ -96,6 +99,7 @@ describe('search settings', () => {
           providers: {
             serper: { apiKey: '   ' },
             serply: { apiKey: '' },
+            searchapi: { apiKey: '' },
             tavily: { apiKey: '' },
             parallel: { apiKey: '' },
             agy: { apiKey: '' },
@@ -125,6 +129,27 @@ describe('Serply search settings', () => {
       activeSearchProvider({
         search: { ...settings, providers: { ...settings.providers, serply: { apiKey: '  ' } } },
       }),
+    ).toBe('parallel')
+  })
+})
+
+describe('SearchApi search settings', () => {
+  it('restores and trims a saved SearchApi key and activates it only with a key', () => {
+    const settings = resolveAiSearchSettings({
+      provider: 'searchapi',
+      providers: { searchapi: { apiKey: ' searchapi-key ' } } as never,
+    })
+    expect(settings.provider).toBe('searchapi')
+    expect(settings.providers.searchapi.apiKey).toBe('searchapi-key')
+    expect(activeSearchProvider({ search: settings })).toBe('searchapi')
+    expect(
+      activeSearchProvider({
+        search: {
+          ...settings,
+          providers: { ...settings.providers, searchapi: { apiKey: '  ' } },
+        },
+      }),
+      // The fork falls back to keyless Parallel rather than the upstream Genspark CLI.
     ).toBe('parallel')
   })
 })
@@ -188,6 +213,7 @@ describe('exa and firecrawl providers', () => {
         providers: {
           serper: { apiKey: '' },
           serply: { apiKey: '' },
+          searchapi: { apiKey: '' },
           tavily: { apiKey: '' },
           parallel: { apiKey: '' },
           agy: { apiKey: '' },

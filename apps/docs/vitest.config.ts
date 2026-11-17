@@ -30,6 +30,9 @@ export default defineConfig({
       '@genoffice/electron-utils/safe-external-url': local(
         '../../packages/electron-utils/src/safe-external-url.ts',
       ),
+      '@genoffice/electron-utils/image-cutout': local(
+        '../../packages/electron-utils/src/image-cutout.ts',
+      ),
       '@genoffice/electron-utils/image-cutout-core': local(
         '../../packages/electron-utils/src/image-cutout-core.ts',
       ),
@@ -57,6 +60,11 @@ export default defineConfig({
         '../../packages/ai-provider/src/custom-models.ts',
       ),
       '@genoffice/ai-provider/browser': local('../../packages/ai-provider/src/browser.ts'),
+      '@genoffice/ai-provider/diag-hook': local('../../packages/ai-provider/src/diag-hook.ts'),
+      '@genoffice/ai-provider/agy-cli': local('../../packages/ai-provider/src/agy-cli.ts'),
+      '@genoffice/ai-provider/provider-models': local(
+        '../../packages/ai-provider/src/provider-models.ts',
+      ),
       '@genoffice/ai-provider': local('../../packages/ai-provider/src/index.ts'),
       '@genoffice/i18n': local('../../packages/i18n/src/index.ts'),
       '@genoffice/ui': local('../../packages/ui/src/index.ts'),

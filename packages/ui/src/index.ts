@@ -43,8 +43,29 @@ export {
 } from './color-picker'
 export { installScreenTips } from './screentip'
 export {
+  SentAttachments,
+  truncateCardName,
+  formatAttachmentSize,
+  AttachmentCardIcon,
+  ATTACHMENT_IMAGE_EXTS,
+  fileImageIcon,
+  fileGeneralIcon,
+  fileDocumentIcon,
+  type AiAttachmentLike,
+} from './ai-attachments'
+export {
+  AI_PANEL_WIDTH_DEFAULT,
+  AI_PANEL_WIDTH_MIN,
+  AI_PANEL_WIDTH_MAX,
+  maxAiPanelWidth,
+  clampAiPanelWidth,
+  loadAiPanelWidth,
+  saveAiPanelWidth,
+} from './ai-panel-width'
+export {
   installPopoverDismiss,
   useDismissablePopover,
+  useEscapeToClose,
   type PopoverDismissOptions,
 } from './popover-dismiss'
 export { Dropdown, type DropdownOption } from './dropdown'
@@ -164,3 +185,4 @@ export { AppActionHost, appActionBridge, appActionSignal, reportAppAction } from
 export { useAppControl, appActionLabel } from './use-app-control'
 export { waitForActionStep } from './app-action-steps'
 export { useScrollWindow } from './scroll-window'
+export { createImeEnterGuard, useImeEnterGuard, type ImeEnterGuard } from './ime-enter'

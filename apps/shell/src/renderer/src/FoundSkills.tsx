@@ -20,7 +20,7 @@ export function FoundSkills({ t }: { t: TFunc }) {
   const [recommended, setRecommended] = useState<RecommendedSkill[]>([])
   const [busy, setBusy] = useState(false)
   const [notice, setNotice] = useState<Notice | null>(null)
-  const [tab, setTab] = useState<Category | null>(null)
+  const [tab, setTab] = useState<Category | 'all' | null>(null)
   const [section, setSection] = useState<Section | null>(null)
 
   const load = useCallback(async () => {
@@ -82,7 +82,10 @@ export function FoundSkills({ t }: { t: TFunc }) {
   if (!skills) return null
 
   const categories = CATEGORY_ORDER.filter((c) => recommended.some((s) => categoryOf(s) === c))
-  const current = tab && categories.includes(tab) ? tab : categories[0]
+  // 'all' sits ahead of the real categories and is the landing view: the point
+  // of the catalog is to browse everything, not to guess a category first
+  const current: Category | 'all' =
+    tab === 'all' || (tab !== null && categories.includes(tab)) ? (tab as Category | 'all') : 'all'
   const shown: Section = section ?? 'mine'
   const sectionTab = (s: Section, label: string) => (
     <button
@@ -179,7 +182,7 @@ export function FoundSkills({ t }: { t: TFunc }) {
         {shown === 'recommended' && categories.length > 0 && (
           <div className="set-intg-list">
             <div className="set-intg-tabs" role="tablist" aria-label={t('intgSkillsRecommended')}>
-              {categories.map((c) => (
+              {(['all', ...categories] as const).map((c) => (
                 <button
                   key={c}
                   type="button"
@@ -188,13 +191,13 @@ export function FoundSkills({ t }: { t: TFunc }) {
                   className={c === current ? 'set-intg-tab active' : 'set-intg-tab'}
                   onClick={() => setTab(c)}
                 >
-                  {t(CATEGORY_LABELS[c])}
+                  {c === 'all' ? t('intgSkillsCatAll') : t(CATEGORY_LABELS[c])}
                 </button>
               ))}
             </div>
             <div role="tabpanel">
               {recommended
-                .filter((s) => categoryOf(s) === current)
+                .filter((s) => current === 'all' || categoryOf(s) === current)
                 .map((skill) => (
                   <SkillRow
                     key={skill.path}

@@ -19,9 +19,9 @@ export {
   type ContentControlShell,
   type ContentControlSpec,
 } from './content-control'
+export { reconcileGridColumns } from './table-widths'
 export {
   parseDocx,
-  reconcileGridColumns,
   paraCsFormat,
   styleRunFormat,
   type ParseExtras,
@@ -53,7 +53,7 @@ export { assertZipInflatesWithinLimits, assertZipWithinLimits, DOCX_ZIP_LIMITS }
 export { LAZY_MEDIA_SCHEME, isLazyMediaPart, lazyMediaUrl, parseLazyMediaUrl } from './lazy-media'
 export { setAltChunkHtmlConverter, type AltChunkHtmlConverter } from './alt-chunk'
 export { tocLevelOf } from './parse-fields'
-export { mergeStyleBorders } from './parse-props'
+export { EMPTY_EA_THEME_FONT, mergeStyleBorders, themeLangEaSlotFont } from './parse-props'
 export {
   APP_PROPERTIES_PATH,
   APP_PROPERTY_KEYS,
@@ -95,6 +95,7 @@ export {
   applyRemoveParts,
   planRemoveParts,
   removePartsRefusalMessage,
+  removePartsRefusalMessageFor,
   type RemovePartsKind,
   type RemovePartsOptions,
   type RemovePartsPlan,
@@ -211,7 +212,7 @@ export {
   notePropsFromXml,
   xmlFlagOn,
 } from './section'
-export { nextNoteId, parseNotesXml, type NoteKind } from './notes'
+export { nextNoteId, parseNoteSeparator, parseNotesXml, type NoteKind } from './notes'
 export {
   isPictureWatermark,
   pictureWatermarkPreviewImage,
@@ -314,3 +315,16 @@ export {
   type CompareSummary,
 } from './compare'
 export { keepsHangulKanaSingle } from './parse-block-passes'
+export {
+  charClass,
+  isCjkLetterChar,
+  isDoubleByteChar,
+  isEastAsianChar,
+  isEastAsianLangTag,
+  isHangulChar,
+  isLatinAlnumChar,
+  textHasEastAsian,
+  textHasHangulChars,
+  type CharClass,
+} from './char-class'
+export * from './table-width-thresholds'

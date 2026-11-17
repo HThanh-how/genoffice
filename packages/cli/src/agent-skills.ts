@@ -38,6 +38,7 @@ export type AgentId =
   | 'openclaw'
   | 'copilot'
   | 'opencode'
+  | 'dsh'
 
 export interface AgentTarget {
   id: AgentId
@@ -45,6 +46,8 @@ export interface AgentTarget {
   label: string
   /** global skills directory the agent scans */
   skillsDir: string
+  /** the products that read this shared directory, when the row stands for several */
+  readers?: string[]
 }
 
 export type SkillInstallStatus =
@@ -107,7 +110,7 @@ const AGENTS: readonly AgentDef[] = [
     // the cross-tool skills directory: these tools read `~/.agents/skills` and
     // need no folder of their own, so one row installs for all of them
     id: 'agents',
-    label: '.agents (Codex / Cursor / Gemini CLI / Copilot / OpenCode / dsh …)',
+    label: '.agents',
     probe: (env, home) =>
       [
         join(home, '.agents'),
@@ -170,6 +173,15 @@ const AGENTS: readonly AgentDef[] = [
     skills: (p) => join(p, 'skills'),
     skillsTarget: false,
   },
+  {
+    // DSH_HOME (default ~/.dsh): the row exists so `agentConfigDir('dsh')`
+    // finds the dotfolder and `genoffice mcp` can write its Cordis patch
+    id: 'dsh',
+    label: 'DeepSeek Harness (dsh)',
+    probe: (env, home) => env.DSH_HOME || join(home, '.dsh'),
+    skills: (p) => join(p, 'skills'),
+    skillsTarget: false,
+  },
 ]
 
 /**
@@ -209,9 +221,20 @@ export function detectAgents(
   for (const a of AGENTS) {
     if (!a.skillsTarget) continue
     const probe = a.probe(env, home)
-    if (isDir(probe)) out.push({ id: a.id, label: a.label, skillsDir: a.skills(probe, env, home) })
+    if (isDir(probe)) out.push(target(a, probe, env, home))
   }
   return out
+}
+
+function target(a: AgentDef, probe: string, env: NodeJS.ProcessEnv, home: string): AgentTarget {
+  const t: AgentTarget = { id: a.id, label: a.label, skillsDir: a.skills(probe, env, home) }
+  if (a.id === 'agents') t.readers = AGENTS.filter((x) => !x.skillsTarget).map((x) => x.label)
+  return t
+}
+
+/** The label with the shared row's readers spelled out: `.agents (Codex, Cursor, …)`. */
+export function agentDisplayLabel(t: AgentTarget): string {
+  return t.readers ? `${t.label} (${t.readers.join(', ')})` : t.label
 }
 
 /** The dotfolder probed for `id` (env overrides applied): where the agent keeps its own config files. */
@@ -246,7 +269,7 @@ export function agentTarget(
 ): AgentTarget | null {
   const a = AGENTS.find((x) => x.id === id)
   if (!a || !a.skillsTarget) return null
-  return { id: a.id, label: a.label, skillsDir: a.skills(a.probe(env, home), env, home) }
+  return target(a, a.probe(env, home), env, home)
 }
 
 export interface SkillFrontmatter {

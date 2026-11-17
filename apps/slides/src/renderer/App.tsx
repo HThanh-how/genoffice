@@ -58,7 +58,8 @@ import { runHeadlessPdfExport } from './headless-export'
 import { syncPrivateFonts } from './doc-fonts'
 import { toPickerHex } from './color-input'
 import { InkOverlay } from './InkOverlay'
-import { inkNodesOf, type InkPenSettings, type InkStroke, type InkTool } from './ink'
+import { inkNodesOf, type InkStroke, type InkTool } from './ink'
+import { loadInkPresets, saveInkPresets, type InkPreset } from './ink-presets'
 import type { SlideThemePreset } from './themes'
 import { Ribbon, type FormatCmd, type SlidesViewMode } from './components/Ribbon'
 import {
@@ -73,6 +74,7 @@ import { IconNotes, IconPlayBoxed } from './components/icons'
 import { PresenterView } from './components/PresenterView'
 import { CustomShowDialog } from './components/CustomShowDialog'
 import { PrintDialog } from './components/PrintDialog'
+import { ExportVideoDialog } from './components/ExportVideoDialog'
 import { FindReplaceDialog } from './components/FindReplaceDialog'
 import { formatClock, type CustomShow } from './slideshow-utils'
 import { ContextMenu } from './components/ContextMenu'
@@ -528,11 +530,13 @@ export function App() {
   /** Ribbon hover preview: the hovered effect played on the selection without applying */
   const [hoverAnim, setHoverAnim] = useState<{ nonce: number; items: AnimationItem[] } | null>(null)
   const [inkTool, setInkTool] = useState<InkTool>('select')
-  const [inkPen, setInkPen] = useState<InkPenSettings>({ color: 'C00000', width: 2 })
-  const [inkHighlighter, setInkHighlighter] = useState<InkPenSettings>({
-    color: 'FFFF00',
-    width: 10,
-  })
+  const [inkPresets, setInkPresets] = useState<InkPreset[]>(loadInkPresets)
+  const [inkActiveId, setInkActiveId] = useState(() => loadInkPresets()[0]!.id)
+  const inkActive = inkPresets.find((p) => p.id === inkActiveId) ?? inkPresets[0]!
+  const onInkPresets = useCallback((next: InkPreset[]) => {
+    setInkPresets(next)
+    saveInkPresets(next)
+  }, [])
   const [ctxMenu, setCtxMenu] = useState<CtxMenuState>(null)
   /** "Change Shape" gallery popover: anchor point + the shape it retargets */
   const [shapeGalleryAt, setShapeGalleryAt] = useState<{
@@ -1043,6 +1047,7 @@ export function App() {
     [],
   )
   const exportPdf = useCallback(() => void fileActions.exportPdf(ctxRef.current), [])
+  const [videoDlgOpen, setVideoDlgOpen] = useState(false)
 
   // Headless export mode (--headless-export): this renderer lives in a hidden
   // window whose only job is to run the File menu's PDF export against a path
@@ -2353,6 +2358,7 @@ export function App() {
       else if (cmd === 'export-pdf') void exportPdf()
       else if (cmd === 'export-images') void exportImages('png')
       else if (cmd === 'export-images-jpg') void exportImages('jpg')
+      else if (cmd === 'export-video') setVideoDlgOpen(true)
       else if (cmd === 'print') setPrintDlgOpen(true)
       // Through the preview path so the zoom pivots on the viewport center, not the scroll origin
       else if (cmd === 'zoom-in') previewZoom(nextPreset)
@@ -3248,18 +3254,13 @@ export function App() {
 
   // ---- Draw (freehand ink): one stroke = one transparent PNG picture element; undo/save use the existing pipeline ----
 
-  const onInkTool = useCallback(
-    (tool: InkTool) => {
-      // Clicking the currently active tool again = cancel (back to select mode)
-      const next = tool !== 'select' && inkTool === tool ? 'select' : tool
-      setInkTool(next)
-      if (next !== 'select') {
-        setSelectedIds([])
-        setEditing(null)
-      }
-    },
-    [inkTool],
-  )
+  const onInkTool = useCallback((tool: InkTool) => {
+    setInkTool(tool)
+    if (tool !== 'select') {
+      setSelectedIds([])
+      setEditing(null)
+    }
+  }, [])
 
   const commitInk = useCallback(
     (stroke: InkStroke) => arrangeActions.commitInk(ctxRef.current, stroke),
@@ -3321,6 +3322,7 @@ export function App() {
         onPrint={() => setPrintDlgOpen(true)}
         onExportImages={() => void exportImages('png')}
         onExportImagesJpg={() => void exportImages('jpg')}
+        onExportVideo={() => setVideoDlgOpen(true)}
         onFormat={onFormat}
         zoom={zoom}
         onZoom={previewZoom}
@@ -3418,10 +3420,10 @@ export function App() {
         onToggleHidden={() => void toggleHidden()}
         inkTool={inkTool}
         onInkTool={onInkTool}
-        inkPen={inkPen}
-        onInkPen={setInkPen}
-        inkHighlighter={inkHighlighter}
-        onInkHighlighter={setInkHighlighter}
+        inkPresets={inkPresets}
+        inkActiveId={inkActive.id}
+        onInkPresets={onInkPresets}
+        onInkActivate={setInkActiveId}
         inkCount={inkCount}
         onInkClearAll={() => void clearInk()}
         viewMode={viewMode}
@@ -4384,12 +4386,8 @@ export function App() {
                               <InkOverlay
                                 slide={slide}
                                 tool={inkTool}
-                                color={
-                                  inkTool === 'highlighter' ? inkHighlighter.color : inkPen.color
-                                }
-                                width={
-                                  inkTool === 'highlighter' ? inkHighlighter.width : inkPen.width
-                                }
+                                color={inkActive.color}
+                                width={inkActive.width}
                                 onCommit={(stroke) => void commitInk(stroke)}
                                 onErase={(ids) => void eraseInk(ids)}
                               />
@@ -4682,6 +4680,16 @@ export function App() {
             setDirty(true)
           }}
           onClose={() => setFindOpen(false)}
+        />
+      )}
+
+      {videoDlgOpen && (
+        <ExportVideoDialog
+          slideCount={slides.length}
+          run={(opts, onProgress, signal) =>
+            fileActions.exportVideoFile(ctxRef.current, opts, onProgress, signal)
+          }
+          onClose={() => setVideoDlgOpen(false)}
         />
       )}
 

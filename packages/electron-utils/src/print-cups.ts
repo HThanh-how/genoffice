@@ -8,6 +8,8 @@
 /// given the direct print.
 
 import { spawn } from 'node:child_process'
+import { decodeChunks } from './console-output'
+import { isValidOptionName, isValidOptionValue } from './printer-options'
 
 export interface CupsPrintJob {
   /** CUPS queue name; undefined = the system's default destination */
@@ -15,6 +17,9 @@ export interface CupsPrintJob {
   copies?: number
   collate?: boolean
   duplexMode?: 'simplex' | 'longEdge' | 'shortEdge'
+  /** driver options the dialog picked from the queue's advertised groups
+   * (quality, color, media type) — passed through as `-o name=value` */
+  driverOptions?: readonly { readonly name: string; readonly value: string }[]
 }
 
 const SIDES: Record<NonNullable<CupsPrintJob['duplexMode']>, string> = {
@@ -31,6 +36,11 @@ export function lpArgumentsFor(job: CupsPrintJob): string[] {
   if (job.copies !== undefined) args.push('-n', String(job.copies))
   if (job.collate !== undefined) args.push('-o', job.collate ? 'Collate=True' : 'Collate=False')
   if (job.duplexMode !== undefined) args.push('-o', `sides=${SIDES[job.duplexMode]}`)
+  for (const option of job.driverOptions ?? []) {
+    // charset re-checked here: these strings become spawn arguments
+    if (isValidOptionName(option.name) && isValidOptionValue(option.value))
+      args.push('-o', `${option.name}=${option.value}`)
+  }
   return args
 }
 
@@ -80,8 +90,8 @@ export async function printPdfViaCups(
     const child = spawnFn('/usr/bin/lp', lpArgumentsFor(job), {
       stdio: ['pipe', 'pipe', 'pipe'],
     })
-    let stderr = ''
-    let stdout = ''
+    const outChunks: Array<Buffer | string> = []
+    const errChunks: Array<Buffer | string> = []
     let settled = false
     const settle = (result: { ok: boolean; error?: string }) => {
       if (!settled) {
@@ -91,22 +101,101 @@ export async function printPdfViaCups(
     }
     child.on('error', (err) => settle({ ok: false, error: err.message }))
     child.stdout.on('data', (chunk) => {
-      stdout += chunk
+      outChunks.push(chunk)
     })
     child.stderr.on('data', (chunk) => {
-      stderr += chunk
+      errChunks.push(chunk)
     })
     child.on('close', (code) => {
       if (code === 0) settle({ ok: true })
       else
         settle({
           ok: false,
-          error: stderr.trim() || stdout.trim() || `lp exited with code ${code}`,
+          error:
+            decodeChunks(errChunks).trim() ||
+            decodeChunks(outChunks).trim() ||
+            `lp exited with code ${code}`,
         })
     })
     // lp exits early on a bad queue and closes stdin: an EPIPE here must not
     // crash the main process — the close handler carries the verdict
     child.stdin.on('error', () => undefined)
     child.stdin.end(Buffer.from(pdf))
+  })
+}
+
+/** One 1-based page selection as lp's `-P page-list` spelling: consecutive runs
+ * collapse (`1,2,3,7` → `1-3,7`). Empty or invalid input → undefined, not an
+ * empty range (lp would print nothing). */
+export function lpPageRange(pages: readonly number[]): string | undefined {
+  const sorted = [...new Set(pages)]
+    .filter((n) => Number.isInteger(n) && n >= 1 && n <= 1_000_000)
+    .sort((a, b) => a - b)
+  if (sorted.length === 0) return undefined
+  const runs: string[] = []
+  let start = sorted[0]!
+  let prev = start
+  for (const n of sorted.slice(1)) {
+    if (n === prev + 1) {
+      prev = n
+      continue
+    }
+    runs.push(start === prev ? `${start}` : `${start}-${prev}`)
+    start = n
+    prev = n
+  }
+  runs.push(start === prev ? `${start}` : `${start}-${prev}`)
+  return runs.join(',')
+}
+
+/** Spools an existing PDF file: the vector original goes to the driver
+ * untouched (no rasterization pass), with an optional `-P page-list` selection.
+ * The caller owns the path's authorization — this only builds the argv. */
+export async function printFileViaCups(
+  path: string,
+  job: CupsPrintJob,
+  pages?: readonly number[],
+  spawnFn: typeof spawn = spawn,
+): Promise<{ ok: boolean; error?: string }> {
+  const range = pages === undefined ? undefined : lpPageRange(pages)
+  // A selection that filters down to nothing must not quietly print the whole
+  // file: report it instead, the same wholesale-drop rule the caller applied.
+  if (pages !== undefined && range === undefined) {
+    return { ok: false, error: 'the page selection has no printable pages' }
+  }
+  // capital -P is lp's page-list option; lowercase -p is the priority alias,
+  // so the lowercase spelling would spool the whole document.
+  const args = [...lpArgumentsFor(job), ...(range ? ['-P', range] : []), '--', path]
+  return new Promise((resolve) => {
+    const child = spawnFn('/usr/bin/lp', args, { stdio: ['pipe', 'pipe', 'pipe'] })
+    const outChunks: Array<Buffer | string> = []
+    const errChunks: Array<Buffer | string> = []
+    let settled = false
+    const settle = (result: { ok: boolean; error?: string }) => {
+      if (!settled) {
+        settled = true
+        resolve(result)
+      }
+    }
+    child.on('error', (err) => settle({ ok: false, error: err.message }))
+    child.stdout.on('data', (chunk) => {
+      outChunks.push(chunk)
+    })
+    child.stderr.on('data', (chunk) => {
+      errChunks.push(chunk)
+    })
+    child.on('close', (code) => {
+      if (code === 0) settle({ ok: true })
+      else
+        settle({
+          ok: false,
+          error:
+            decodeChunks(errChunks).trim() ||
+            decodeChunks(outChunks).trim() ||
+            `lp exited with code ${code}`,
+        })
+    })
+    child.stdin.on('error', () => undefined)
+    child.stdin.end()
   })
 }

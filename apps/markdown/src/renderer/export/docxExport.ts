@@ -480,6 +480,7 @@ export async function exportDocxBytes(
   renderDiagram?: DiagramRenderer,
   extraOptions?: SaveOptions,
   profile?: DocumentTypeProfile,
+  generatorOptions?: Pick<BlankDocxOptions, 'omitGeneratorFields'>,
 ): Promise<Uint8Array> {
   const mapping = await mapDocToSaveBlocks(doc, loadImage, renderDiagram, profile)
   const mergedOptions: SaveOptions = {
@@ -516,6 +517,6 @@ export async function exportDocxBytes(
         title: documentTitle(doc),
       }
     : undefined
-  const parsed = await parseDocx(await buildBlankDocx(blankOptions))
+  const parsed = await parseDocx(await buildBlankDocx({ ...blankOptions, ...generatorOptions }))
   return saveDocx(parsed, mapping.blocks, mergedOptions)
 }

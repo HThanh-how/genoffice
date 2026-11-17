@@ -1,7 +1,7 @@
 // DOM line-box sampling for page-crossing blocks (cached per element), the
 // line-split re-slice, table row cut positions and line anchors.
 import { rangeSlot } from './dom-range'
-import { applyBlockMeta, lineLeadPx } from './pagination-measure'
+import { applyBlockMeta, blockGapRects, lineLeadPx, unshiftRunRect } from './pagination-measure'
 import { CapacityWindows, SortedYs } from './pagination-index'
 import { blockInlineExtraPx } from './pagination-sections'
 import {
@@ -58,6 +58,8 @@ const PATCH_KEYS = [
   'rowFills',
   'rowSplits',
   'floatVShifts',
+  'floatPullUps',
+  'floatCarries',
   'floatFlows',
   'floatSplits',
   'oversizeClips',
@@ -700,8 +702,17 @@ function replacedSoleLine(el: HTMLElement): boolean {
 }
 
 /** Boundary list (excluding 0) → line boxes tiling the block height (heights are adjacent-boundary diffs; the first box starts at 0) */
-function tileBoxes(boundaries: number[], blockHeight: number): LineBox[] {
-  const tops = [0, ...boundaries.filter((b) => b > 0.5 && b < blockHeight)]
+export function tileBoxes(boundaries: number[], blockHeight: number): LineBox[] {
+  let tops = [0, ...boundaries.filter((b) => b > 0.5 && b < blockHeight)]
+  // Blink floors the half-leading above each inline box, so rect-midpoint
+  // boundaries sit a fraction high: the first line measures short and the last
+  // long by the same amount. Recentre them (sub-pixel only, so a paragraph with
+  // genuinely unequal first/last lines is left alone) — the page-bottom text
+  // fit of a cut block otherwise over-counts its tail by that fraction.
+  if (tops.length > 1) {
+    const delta = (blockHeight - tops[tops.length - 1] - tops[1]) / 2
+    if (Math.abs(delta) <= 1) tops = tops.map((t, i) => (i === 0 ? 0 : t + delta))
+  }
   return tops.map((top, i) => ({
     offsetInBlock: top,
     height: (i + 1 < tops.length ? tops[i + 1] : blockHeight) - top,
@@ -818,9 +829,7 @@ export function indexedRowBoxes(rowTops: number[], blockHeight: number): LineBox
 }
 
 function domTableRows(el: HTMLElement, blockHeight: number, zoomFactor: number): TableRowBox[] {
-  const gaps = Array.from(el.querySelectorAll('.page-gap-inline')).map((g) =>
-    g.getBoundingClientRect(),
-  )
+  const gaps = blockGapRects(el)
   const gapAbove = (top: number) => gaps.reduce((s, g) => (g.top <= top ? s + g.height : s), 0)
   const elTop = el.getBoundingClientRect().top
   const trs = outerTableRows(el)
@@ -970,7 +979,7 @@ function rowCutYs(
       range.selectNodeContents(n)
       for (const r of range.getClientRects()) {
         if (r.height <= 0 || r.width <= 0) continue
-        const band = toBand(r)
+        const band = toBand(unshiftRunRect(r, n, zoomFactor))
         bands.push(band)
         addEntry(band, n, para)
         if (para) {
@@ -1254,7 +1263,8 @@ function domLineRects(el: HTMLElement, zoomFactor: number): DomLineRect[] {
       if (n.parentElement?.closest('.page-gap, .page-float-host')) continue
       range.selectNodeContents(n)
       for (const r of range.getClientRects()) {
-        if (r.height > 0 && r.width > 0) rects.push({ r, node: n as Text })
+        if (r.height > 0 && r.width > 0)
+          rects.push({ r: unshiftRunRect(r, n, zoomFactor), node: n as Text })
       }
     }
   }
@@ -1265,6 +1275,16 @@ function domLineRects(el: HTMLElement, zoomFactor: number): DomLineRect[] {
     if (!inFlowWithin(im, (im.closest(PARA_SELECTOR) as HTMLElement | null) ?? el)) continue
     const r = im.getBoundingClientRect()
     if (r.height > 0 && r.width > 0) rects.push({ r, node: im })
+  }
+  // a <br> is the only box on a text-less row; without it a run of soft breaks
+  // is one ink gap whose midpoint boundary cuts the page half empty
+  for (const br of roots.flatMap((root) => Array.from(root.querySelectorAll('br')))) {
+    // a page / column break has no line of its own (innerBreaks cuts there)
+    if (br.classList.contains('doc-page-br') || br.classList.contains('doc-col-br')) continue
+    if (br.closest('.page-gap, .page-float-host')) continue
+    if (!inFlowWithin(br, (br.closest(PARA_SELECTOR) as HTMLElement | null) ?? el)) continue
+    const r = br.getBoundingClientRect()
+    if (r.height > 0) rects.push({ r, node: br })
   }
   rects.sort((a, b) => a.r.top - b.r.top)
   const elTop = el.getBoundingClientRect().top
@@ -1343,14 +1363,15 @@ export function anchorElement(a: LineAnchor): Element | null {
  * in-table cut markers before the table's first row where they inflate the canvas
  * table by an anonymous-row line-height and skew all pagination measurement below.
  */
-function lineStartCharOffset(node: Text, lineTop: number): number {
+function lineStartCharOffset(node: Text, lineTop: number, zoomFactor: number): number {
   const len = node.length
   if (len === 0) return 0
   const range = charRange()
   const topAt = (i: number): number => {
     range.setStart(node, i)
     range.setEnd(node, i + 1)
-    for (const r of range.getClientRects()) if (r.height > 0) return r.top
+    for (const r of range.getClientRects())
+      if (r.height > 0) return unshiftRunRect(r, node, zoomFactor).top
     // collapsed characters (e.g. wrap-point whitespace) have no rect: treat as belonging to an earlier line
     return -Infinity
   }
@@ -1370,10 +1391,10 @@ function lineStartCharOffset(node: Text, lineTop: number): number {
   return ans
 }
 
-const toAnchor = (ln: { node: Text | Element; top: number }): LineAnchor =>
+const toAnchor = (ln: { node: Text | Element; top: number }, zoomFactor: number): LineAnchor =>
   ln.node instanceof Element
     ? { node: ln.node, charOffset: 0 }
-    : { node: ln.node, charOffset: lineStartCharOffset(ln.node, ln.top) }
+    : { node: ln.node, charOffset: lineStartCharOffset(ln.node, ln.top, zoomFactor) }
 
 /**
  * DOM anchor of the line start matching an in-block virtual Y (offsetInBlock)
@@ -1387,7 +1408,7 @@ export function lineStartAnchor(
   rectsOf: DomLineRectsFn = domLineRects,
 ): LineAnchor | null {
   for (const ln of rectsOf(el, zoomFactor)) {
-    if (Math.abs(ln.offset - offsetInBlock) < 1.5) return toAnchor(ln)
+    if (Math.abs(ln.offset - offsetInBlock) < 1.5) return toAnchor(ln, zoomFactor)
   }
   return null
 }
@@ -1400,20 +1421,21 @@ export function nextLineAnchor(
   rectsOf: DomLineRectsFn = domLineRects,
 ): LineAnchor | null {
   for (const ln of rectsOf(el, zoomFactor)) {
-    if (ln.offset >= offsetInBlock - 1.5) return toAnchor(ln)
+    if (ln.offset >= offsetInBlock - 1.5) return toAnchor(ln, zoomFactor)
   }
   return null
 }
 
 /** Screen top of a cut anchor's line (the char rect at the anchor, else its parent box) */
-function anchorLineTop(a: LineAnchor): number | null {
+function anchorLineTop(a: LineAnchor, zoomFactor: number): number | null {
   if (a.node instanceof Element) return a.node.getBoundingClientRect().top
   if (a.node.length > 0) {
     const range = anchorRange()
     range.setStart(a.node, Math.min(a.charOffset, a.node.length - 1))
     range.setEnd(a.node, Math.min(a.charOffset + 1, a.node.length))
     // jsdom has no Range.getClientRects: fall through to the parent box
-    for (const r of range.getClientRects?.() ?? []) if (r.height > 0) return r.top
+    for (const r of range.getClientRects?.() ?? [])
+      if (r.height > 0) return unshiftRunRect(r, a.node, zoomFactor).top
   }
   return a.node.parentElement?.getBoundingClientRect().top ?? null
 }
@@ -1474,14 +1496,43 @@ function insideVerticalMerge(row: Element): boolean {
   return false
 }
 
+/**
+ * A middle/bottom-aligned *sibling* (non-host) cell is positioned against the
+ * whole row height, not against its own content. A band inside the host cell
+ * grows the row and re-places that sibling's text in the middle of the new
+ * blank, so the row's borders frame a page-tall empty area (the "long chin" of
+ * genoffice#2114, without a rowspan to trip the insideVerticalMerge guard).
+ * The previous pass's geometry (cellContentBottom) cannot catch this.
+ *
+ * Only a sibling that carries visible text shows the artefact: every unstyled
+ * <td> defaults to `vertical-align: middle` and html2docx writes that as
+ * `vAlign: 'center'`, so spacer-gif sliver cells (no text) and in-app tables
+ * must not lose their bands merely for being middle-aligned. The host cell is
+ * excluded too — a band inside the host is what we measure, so its own
+ * alignment is not the problem.
+ */
+function hasHeightCoupledCell(cells: readonly Element[], host: Element | null): boolean {
+  return cells.some((c) => {
+    if (c === host) return false
+    const va = (c as HTMLElement).style.verticalAlign
+    if (va !== 'middle' && va !== 'bottom') return false
+    return (c.textContent ?? '').trim() !== ''
+  })
+}
+
 /** In-row cut decoration policy: a single-cell row can host a real inline gap band
  *  (one cell spans the whole cut) — returns that cell. A multi-cell row can too when
  *  every other cell's content ends above the cut (nothing at the band's y to
  *  misalign — HTML→docx layout tables put whole articles in one cell next to
  *  spacer-gif sliver cells); otherwise the zero-height cut marker stays (same-y
  *  bands across cells are not modeled) — returns null. A row inside a vertical
- *  merge never hosts a band (see insideVerticalMerge). */
-export function singleCutCell(row: Element | null, anchor?: LineAnchor | null): Element | null {
+ *  merge never hosts a band (see insideVerticalMerge), and neither does a row
+ *  with a middle/bottom-aligned cell (see hasHeightCoupledCell). */
+export function singleCutCell(
+  row: Element | null,
+  anchor?: LineAnchor | null,
+  zoomFactor = 1,
+): Element | null {
   const cells = row
     ? Array.from(row.children).filter((c) => c.tagName === 'TD' || c.tagName === 'TH')
     : []
@@ -1495,7 +1546,12 @@ export function singleCutCell(row: Element | null, anchor?: LineAnchor | null): 
   const anchorCell = anchorElement(anchor)?.closest('td, th')
   const host = anchorCell && cells.find((c) => c === anchorCell || c.contains(anchorCell))
   if (!host) return null
-  const cutTop = anchorLineTop(anchor)
+  // A middle/bottom-aligned, text-bearing sibling is positioned against the
+  // whole row height; a band in the host would push its text into the blank.
+  // A cell whose own alignment (the host) or with no text (sliver cells) is
+  // unaffected, so it still hosts a band. See hasHeightCoupledCell / genoffice#2114.
+  if (hasHeightCoupledCell(cells, host)) return null
+  const cutTop = anchorLineTop(anchor, zoomFactor)
   if (cutTop === null) return null
   for (const c of cells) {
     if (c !== host && cellContentBottom(c) > cutTop + 1) return null

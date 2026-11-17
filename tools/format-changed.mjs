@@ -80,17 +80,30 @@ if (changedFiles.length === 0) {
 
 const prettierEntry = join(repoRoot, 'node_modules', 'prettier', 'bin', 'prettier.cjs')
 const prettierMode = mode === '--write' ? '--write' : '--check'
-const result = spawnSync(
-  process.execPath,
-  [prettierEntry, prettierMode, '--ignore-unknown', '--', ...changedFiles],
-  {
-    cwd: repoRoot,
-    stdio: 'inherit',
-  },
-)
-
-if (result.error) {
-  console.error(`Unable to run Prettier: ${result.error.message}`)
-  process.exit(1)
+// Large merges exceed Windows' command-line limit when every path is passed
+// to one process. Keep each batch comfortably below that limit.
+const batches = [[]]
+let batchLength = 0
+for (const file of changedFiles) {
+  const length = file.length + 3
+  if (batchLength + length > 16000) {
+    batches.push([])
+    batchLength = 0
+  }
+  batches.at(-1).push(file)
+  batchLength += length
 }
-process.exit(result.status ?? 1)
+let status = 0
+for (const batch of batches) {
+  const result = spawnSync(
+    process.execPath,
+    [prettierEntry, prettierMode, '--ignore-unknown', '--', ...batch],
+    { cwd: repoRoot, stdio: 'inherit' },
+  )
+  if (result.error) {
+    console.error(`Unable to run Prettier: ${result.error.message}`)
+    process.exit(1)
+  }
+  if (result.status !== 0) status = result.status ?? 1
+}
+process.exit(status)

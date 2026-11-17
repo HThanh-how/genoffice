@@ -49,6 +49,7 @@ export {
 } from './custom-profile'
 export type { ResolvedCustomProfile } from './custom-profile'
 export { endpointSupportsVision, getProviderAdapter, modelLacksVision } from './registry'
+export { thinkingShapeFor, type ThinkingEffort, type ThinkingShape } from './thinking-effort'
 export { AI_MEDIA_PROVIDERS, imageGenerationAvailable, mediaAnalysisAvailable } from './media'
 export { AI_SEARCH_PROVIDERS } from './search-settings'
 export { agyErrorText, formatAgyResetTime } from './agy-error-text'

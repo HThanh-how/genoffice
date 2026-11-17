@@ -89,13 +89,15 @@ export const AI_PROVIDERS: AiProviderMeta[] = [
     // current lineup per platform.claude.com models overview (2026-10-27):
     // Sonnet 5.5 (2026-09-28) replaces Sonnet 5 as the speed/intelligence
     // default; it accepts only tool_choice auto/none, which is all this
-    // adapter sends. Fable needs data retention enabled on the org, otherwise
-    // the API answers model_not_available; every other id is served to any key.
+    // adapter sends. Fable 5.2 (2026-11) supersedes 5.1 at a lower price.
+    // Fable needs data retention enabled on the org, otherwise the API
+    // answers model_not_available; every other id is served to any key.
     models: [
       'claude-opus-5-5',
       'claude-sonnet-5-5',
-      'claude-fable-5-1',
+      'claude-fable-5-2',
       'claude-haiku-5-5',
+      'claude-fable-5-1',
       'claude-sonnet-5',
       'claude-opus-5',
       'claude-fable-5',
@@ -298,6 +300,8 @@ export const AI_PROVIDERS: AiProviderMeta[] = [
     liveModels: true,
     models: [
       'openrouter/auto',
+      'anthropic/claude-opus-5.5',
+      'anthropic/claude-fable-5.2',
       'anthropic/claude-sonnet-5',
       'openai/gpt-6-astra',
       'openai/gpt-5.6-sol',
@@ -419,6 +423,46 @@ export const AI_PROVIDERS: AiProviderMeta[] = [
     keyPlaceholder: 'sk-...',
   },
   {
+    id: 'siliconflow',
+    label: 'SiliconFlow',
+    // Lab-namespaced ids exactly as the pricing page and GET
+    // api.siliconflow.cn/v1/models (type=text&sub_type=chat) list them
+    // (2026-11-02); the rest of the catalog works as-is when typed in, and a
+    // Pro/<id> prefix selects the accelerated serving. OpenAI-compatible
+    // /chat/completions; docs: https://api-docs.siliconflow.cn. The CN and
+    // global platforms (api.siliconflow.com) do not share keys or base URLs.
+    models: [
+      'deepseek-ai/DeepSeek-V4.1-Flash',
+      'deepseek-ai/DeepSeek-V4-Pro',
+      'deepseek-ai/DeepSeek-V3.2',
+      'zai-org/GLM-5.3',
+      'zai-org/GLM-5.3-Flash',
+      'moonshotai/Kimi-K2.7-Code',
+      'Qwen/Qwen3.8-27B',
+    ],
+    defaultModel: 'deepseek-ai/DeepSeek-V4-Pro',
+    keyPlaceholder: 'sk-...',
+  },
+  {
+    id: 'ppio',
+    label: 'PPIO',
+    // Lowercase lab-namespaced ids exactly as GET <base>/models lists them for
+    // the OpenAI-compatible endpoint (2026-11-02); the rest of the catalog
+    // works as-is when typed in. Docs: https://ppio.com/docs/model/llm — the
+    // official SDK base_url is https://api.ppio.com/openai, so the chat
+    // endpoint rides /openai/v1.
+    models: [
+      'deepseek/deepseek-v4.1-flash',
+      'deepseek/deepseek-v4-pro',
+      'moonshotai/kimi-k3',
+      'zai-org/glm-5.3',
+      'qwen/qwen3.8-max',
+      'minimax/minimax-m3.1-flash',
+    ],
+    defaultModel: 'deepseek/deepseek-v4.1-flash',
+    keyPlaceholder: 'sk-...',
+  },
+  {
     id: 'opencode-zen',
     label: 'OpenCode Zen',
     // Pay-as-you-go gateway (opencode.ai/docs/zen); ids exactly as GET
@@ -428,6 +472,7 @@ export const AI_PROVIDERS: AiProviderMeta[] = [
     models: [
       'claude-sonnet-5',
       'claude-opus-5',
+      'claude-fable-5-2',
       'claude-fable-5-1',
       'claude-haiku-5-5',
       'gemini-3.7-flash',
@@ -474,6 +519,37 @@ export const AI_PROVIDERS: AiProviderMeta[] = [
     ],
     defaultModel: 'kimi-k2.7-code',
     keyPlaceholder: 'API Key',
+  },
+  {
+    id: 'commandcode',
+    label: 'Command Code',
+    // Coding-plan gateway (commandcode.ai/docs/provider): one key serves
+    // OpenAI Chat Completions and Anthropic Messages at
+    // api.commandcode.ai/provider/v1; every plan except the $1 Go tier has
+    // API access (GOAT = $10/month). Vendor-prefixed ids exactly as the CLI
+    // model reference lists them (2026-11-03); the rest of the catalog works
+    // as-is when typed in. Claude ids answer only on /v1/messages, so they
+    // ride the Anthropic route. GPT-5.4+/6 call tools only over the Responses
+    // API, which this route does not take, so GPT and Grok stay out as on the
+    // OpenCode tiers.
+    models: [
+      'zai-org/GLM-5.3',
+      'zai-org/GLM-5.2',
+      'deepseek/deepseek-v4-pro',
+      'deepseek/deepseek-v4.1-flash',
+      'deepseek/deepseek-v4-flash',
+      'moonshotai/Kimi-K2.7-Code',
+      'moonshotai/Kimi-K3',
+      'Qwen/Qwen3.8-Max',
+      'Qwen/Qwen3.8-27B',
+      'MiniMaxAI/MiniMax-M3',
+      'minimax/minimax-m3.1-flash',
+      'tencent/hy3-paid',
+      'google/gemini-3.8-flash',
+      'google/gemini-3.7-flash',
+    ],
+    defaultModel: 'zai-org/GLM-5.3',
+    keyPlaceholder: 'CMD API key',
   },
   {
     id: 'custom',
