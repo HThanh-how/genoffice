@@ -8,6 +8,7 @@ import { getProviderAdapter } from './registry'
  * - 'agy-cli': local Antigravity CLI does not require an API key or explicit model in config
  * - 'codex-chatgpt': Codex app-server bridge uses the local Codex login session
  * - 'gsk-login': Genspark proxy requires a configured model
+ * - 'local-runtime': the managed local llama-server requires a configured model, no key
  * - 'api-key': direct providers require both a non-empty API key (or, for a custom endpoint,
  *   a named apiKeyEnv credential reference) and a model
  */
@@ -30,6 +31,9 @@ export function canAttemptChat(settings: AiSettings | null | undefined): boolean
       return true
     case 'gsk-login':
       return Boolean(config.model)
+    case 'local-runtime':
+      // the managed llama-server needs no key; the binary and model paths are checked at start-up
+      return Boolean(config.model?.trim())
     case 'api-key':
       // A custom endpoint may name an environment variable (profile.apiKeyEnv) instead of carrying
       // the key: the main process resolves it at request time, so the renderer only sees the name.

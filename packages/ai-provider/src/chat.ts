@@ -5,6 +5,7 @@ import { chatOpenAiResponses } from './protocols/openai-responses'
 import { ResponseBodyTooLargeError } from './protocols/shared'
 import { chatCodexAppServer } from './codex-app-server'
 import { chatAgy } from './agy-cli'
+import { chatLocal } from './local-llm/local-stream'
 import { getProviderAdapter, type ResolvedEndpoint } from './registry'
 import type { AiChatResponse, AiProviderConfig, AiProviderId } from './types'
 import { AI_CHAT_RESPONSE_TIMEOUT_MS, createStreamWatchdog } from './watchdog'
@@ -37,6 +38,8 @@ export async function chatForProvider(
         return chatCodexAppServer(config, system, user, wd.signal)
       case 'agy-cli':
         return chatAgy(config, system, user, wd.signal)
+      case 'local-llama':
+        return chatLocal(wd, config, system, user)
       case 'anthropic':
         return chatAnthropic(wd, config, system, user, endpoint.baseUrl, {
           headers: endpoint.headers,

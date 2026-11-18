@@ -129,6 +129,22 @@ const LOGOS: Record<AiProviderId, ReactNode> = {
       <path d="M12 3v9M8.5 6.5 12 3l3.5 3.5" />
     </svg>
   ),
+  // Neutral mark for the on-device llama.cpp provider: a processor chip (not vendor artwork).
+  local: (
+    <svg
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.8"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+    >
+      <rect x="6" y="6" width="12" height="12" rx="2" />
+      <rect x="9.5" y="9.5" width="5" height="5" rx="1" />
+      <path d="M9 3v3M15 3v3M9 18v3M15 18v3M3 9h3M3 15h3M18 9h3M18 15h3" />
+    </svg>
+  ),
   genspark: (
     <svg viewBox="0 0 24 24" fill="currentColor" fillRule="evenodd" aria-hidden="true">
       <path d="M12 0a12 12 0 100 24 12 12 0 000-24zM7.8 4.4Q8.6 8.5 12.7 9.3 8.6 10.1 7.8 14.2 7 10.1 2.9 9.3 7 8.5 7.8 4.4zM16.1 3.8Q16.6 6.4 19.2 6.9 16.6 7.4 16.1 10 15.6 7.4 13 6.9 15.6 6.4 16.1 3.8zm.5 6.8q.3 1.7 2 2-1.7.3-2 2-.3-1.7-2-2 1.7-.3 2-2zM6.1 16.8h11.8a1.1 1.1 0 010 2.2H6.1a1.1 1.1 0 010-2.2z" />

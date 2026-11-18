@@ -25,7 +25,10 @@ export interface ModelSource {
   canonical: boolean
 }
 
-export function modelFileUrl(profile: EmbeddingProfile, file: EmbeddingProfileFile): string {
+/** What a download source needs of a manifest (embedding profiles and other pinned models alike). */
+type SourceManifest = Pick<EmbeddingProfile, 'repo' | 'revision'>
+
+export function modelFileUrl(profile: SourceManifest, file: EmbeddingProfileFile): string {
   return `https://huggingface.co/${profile.repo}/resolve/${profile.revision}/${file.path}`
 }
 
@@ -79,7 +82,7 @@ function hostOf(url: string): string {
 
 /** Ordered, de-duplicated sources of one file. Profiles that are not mirrorable only get the origin. */
 export function modelSources(
-  profile: EmbeddingProfile,
+  profile: SourceManifest & Pick<EmbeddingProfile, 'mirrorable'>,
   file: EmbeddingProfileFile,
   templates?: readonly string[],
 ): ModelSource[] {

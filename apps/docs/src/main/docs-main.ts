@@ -124,11 +124,14 @@ import {
   type GenSparkAccountStatus,
   type LegacyAiSettings,
   prewarmAgy,
+  providerNeedsApiKey,
+  providerNeedsConfiguredModel,
   shutdownAgyResidentServers,
+  shutdownLocalLlm,
   retireAgyResidentScope,
 } from '@genoffice/ai-provider'
 import { listCodexModels, shutdownCodexAppServers } from '@genoffice/ai-provider/codex-app-server'
-import { isCliProvider, listAgyModels } from '@genoffice/ai-provider/agy-cli'
+import { listAgyModels } from '@genoffice/ai-provider/agy-cli'
 import { listProviderModelsForIpc } from '@genoffice/ai-provider/provider-models'
 import {
   listCustomModelsForIpc,
@@ -4469,6 +4472,7 @@ export function registerAiIpc(): void {
   // save prompt, and the app must keep its AI helpers when it goes on running.
   app.once('will-quit', () => {
     shutdownCodexAppServers()
+    shutdownLocalLlm()
     shutdownAgyResidentServers()
   })
   const watchedResidentSenders = new Set<number>()
@@ -4601,7 +4605,7 @@ export function registerAiIpc(): void {
     const send = (chunk: AiStreamChunk) => {
       if (!event.sender.isDestroyed()) event.sender.send('ai:stream-chunk', chunk)
     }
-    if (!config || (!isCliProvider(provider) && !config.apiKey)) {
+    if (!config || (providerNeedsApiKey(provider) && !config.apiKey)) {
       send({
         requestId,
         type: 'error',
@@ -4609,7 +4613,7 @@ export function registerAiIpc(): void {
       })
       return
     }
-    if (!isCliProvider(provider) && !config.model) {
+    if (providerNeedsConfiguredModel(provider) && !config.model) {
       send({ requestId, type: 'error', error: tm('errNoModel') })
       return
     }
@@ -4854,13 +4858,14 @@ export function registerAiIpc(): void {
     }
     // a custom endpoint may name an environment variable instead of storing a key
     config = config ? resolveProfileCredential(config) : config
-    if (!config || (!isCliProvider(provider) && !config.apiKey)) {
+    if (!config || (providerNeedsApiKey(provider) && !config.apiKey)) {
       return {
         ok: false,
         error: provider === 'genspark' ? tm('errGskNotLoggedIn') : tm('errNoApiKey', { provider }),
       }
     }
-    if (!isCliProvider(provider) && !config.model) return { ok: false, error: tm('errNoModel') }
+    if (providerNeedsConfiguredModel(provider) && !config.model)
+      return { ok: false, error: tm('errNoModel') }
     try {
       const result = await chatForProvider(provider, config, system, user)
       // the one-shot path reports HTTP failures as ok:false with the raw body —

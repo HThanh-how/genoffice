@@ -43,10 +43,14 @@ export function transferTuning(
   }
 }
 
-/** Why one source gave up. `status` is set for HTTP answers. */
+/**
+ * Why one source gave up. `status` is set for HTTP answers. `aborted` = the caller's signal fired
+ * (the `.part` is kept for a later resume); `disk` = the disk is full (ENOSPC), which no retry or
+ * other source can fix.
+ */
 export type SourceFailure =
   | { failure: 'access-denied' | 'not-found' | 'http'; status?: number }
-  | { failure: 'network' | 'size' }
+  | { failure: 'network' | 'size' | 'aborted' | 'disk' }
 
 type Attempt =
   | { kind: 'complete' }
@@ -57,6 +61,15 @@ type Attempt =
   | { kind: 'unusable' }
   /** more bytes than the manifest allows; the part is garbage */
   | { kind: 'oversize' }
+  /** the caller cancelled; the bytes written so far stay */
+  | { kind: 'aborted' }
+  /** writing failed because the disk is full */
+  | { kind: 'disk' }
+
+function isDiskFull(error: unknown): boolean {
+  const code = (error as NodeJS.ErrnoException | undefined)?.code
+  return code === 'ENOSPC' || code === 'EDQUOT'
+}
 
 /** `bytes a-b/total` of a 206 answer */
 function parseContentRange(
@@ -86,7 +99,9 @@ async function attempt(
   file: EmbeddingProfileFile,
   stallTimeoutMs: number,
   onBytes: (bytes: number) => void,
+  signal?: AbortSignal,
 ): Promise<Attempt> {
+  if (signal?.aborted) return { kind: 'aborted' }
   await mkdir(dirname(part), { recursive: true })
   let have = await partSize(part)
   if (file.bytes !== undefined && have > file.bytes) {
@@ -97,6 +112,9 @@ async function attempt(
   if (file.bytes !== undefined && have === file.bytes) return { kind: 'complete' }
 
   const controller = new AbortController()
+  // the caller's cancel aborts the same request the stall timer does
+  const onAbort = () => controller.abort()
+  signal?.addEventListener('abort', onAbort, { once: true })
   let timer: NodeJS.Timeout | undefined
   const arm = () => {
     clearTimeout(timer)
@@ -157,22 +175,37 @@ async function attempt(
     }
     await handle.sync()
     return { kind: 'complete' }
-  } catch {
+  } catch (error) {
+    if (signal?.aborted) return { kind: 'aborted' }
+    if (isDiskFull(error)) return { kind: 'disk' }
     return { kind: 'transient' } // the bytes written so far stay for the next attempt
   } finally {
     clearTimeout(timer)
+    signal?.removeEventListener('abort', onAbort)
     controller.abort() // really cancels a connection that is still open
     await handle?.close().catch(() => {})
   }
 }
 
-const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms))
+/** Waits `ms`, or less when `signal` fires first. */
+const sleep = (ms: number, signal?: AbortSignal) =>
+  new Promise<void>((resolve) => {
+    if (signal?.aborted) return resolve()
+    const timer = setTimeout(done, ms)
+    function done() {
+      clearTimeout(timer)
+      signal?.removeEventListener('abort', done)
+      resolve()
+    }
+    signal?.addEventListener('abort', done, { once: true })
+  })
 
 /**
  * Fetches the file from one source into `part`, resuming with Range after every interruption.
  * Network errors, 5xx answers and stalls are retried with the configured pauses; 401/403/404
  * and unusable answers end the source at once. On success `part` holds the whole body
- * (not yet verified) and the result is null.
+ * (not yet verified) and the result is null. `signal` cancels at any point, including a retry
+ * pause; the `.part` is kept so a later call resumes it.
  */
 export async function transferFromSource(
   fetchImpl: FetchLike,
@@ -181,12 +214,25 @@ export async function transferFromSource(
   file: EmbeddingProfileFile,
   tuning: TransferTuning,
   onBytes: (bytes: number) => void,
+  signal?: AbortSignal,
 ): Promise<SourceFailure | null> {
   for (let tried = 0; ; tried++) {
-    const outcome = await attempt(fetchImpl, url, part, file, tuning.stallTimeoutMs, onBytes)
+    const outcome = await attempt(
+      fetchImpl,
+      url,
+      part,
+      file,
+      tuning.stallTimeoutMs,
+      onBytes,
+      signal,
+    )
     switch (outcome.kind) {
       case 'complete':
         return null
+      case 'aborted':
+        return { failure: 'aborted' }
+      case 'disk':
+        return { failure: 'disk' }
       case 'oversize':
         return { failure: 'size' }
       case 'unusable':
@@ -203,6 +249,7 @@ export async function transferFromSource(
         if (tried >= tuning.retryDelaysMs.length) return { failure: 'network' }
         break
     }
-    await sleep(tuning.retryDelaysMs[tried]!)
+    await sleep(tuning.retryDelaysMs[tried]!, signal)
+    if (signal?.aborted) return { failure: 'aborted' }
   }
 }

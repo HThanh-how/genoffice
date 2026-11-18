@@ -29,6 +29,8 @@ import {
   setAiUserAgent,
   setRescueFetch,
   resolveProfileCredential,
+  providerNeedsApiKey,
+  providerNeedsConfiguredModel,
   streamForProvider,
   type AiSettings,
   type AiStreamChunk,
@@ -37,7 +39,7 @@ import {
   type LegacyAiSettings,
 } from '@genoffice/ai-provider'
 import { shutdownCodexAppServers } from '@genoffice/ai-provider/codex-app-server'
-import { isCliProvider, listAgyModels } from '@genoffice/ai-provider/agy-cli'
+import { listAgyModels } from '@genoffice/ai-provider/agy-cli'
 import { startAiTrace } from '@genoffice/ai-provider/trace'
 import {
   abortOnDestroyed,
@@ -227,7 +229,7 @@ export function registerAiIpc(): void {
     const send = (chunk: AiStreamChunk) => {
       if (!event.sender.isDestroyed()) event.sender.send('ai:stream-chunk', chunk)
     }
-    if (!config || (!isCliProvider(provider) && !config.apiKey)) {
+    if (!config || (providerNeedsApiKey(provider) && !config.apiKey)) {
       send({
         requestId,
         type: 'error',
@@ -235,7 +237,7 @@ export function registerAiIpc(): void {
       })
       return
     }
-    if (!isCliProvider(provider) && !config.model) {
+    if (providerNeedsConfiguredModel(provider) && !config.model) {
       send({ requestId, type: 'error', error: tm('errNoModel') })
       return
     }

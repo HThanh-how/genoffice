@@ -431,6 +431,7 @@ import {
 } from './fork/live-background'
 import { registerStorageStartup, type StorageStartupTracker } from './fork/storage-startup'
 import { registerAiInstructions } from './fork/ai-instructions-ipc'
+import { registerLocalModel } from './fork/local-model-ipc'
 import { registerAgyOcr } from './fork/agy-ocr-ipc'
 import { registerAgyChat } from './fork/agy-chat-ipc'
 import { startLoopMonitor } from './fork/loop-monitor'
@@ -565,7 +566,7 @@ import {
   initAutoUpdater,
   setManualUpdateCheck,
 } from './updater'
-import { setAiErrorLogger } from '@genoffice/ai-provider'
+import { setAiErrorLogger, setLocalModelResolver, shutdownLocalLlm } from '@genoffice/ai-provider'
 import { checkForkUpdates } from './fork-updater'
 import {
   applyUpdateSourceChange,
@@ -5826,6 +5827,16 @@ function registerHomeIpc(): void {
     },
   })
   registerAiInstructions({ ipcMain, settingsPath: APP_SETTINGS_PATH })
+  // The on-device chat model file (download / choose / delete). The local provider loads the
+  // verified file from it (GENOFFICE_LOCAL_MODEL_PATH still overrides it for development); a
+  // delete first stops llama-server, which holds the file open.
+  const localModel = registerLocalModel({
+    ipcMain,
+    userDataPath: () => app.getPath('userData'),
+    parentWindow: () => shellWindow,
+    beforeDelete: () => shutdownLocalLlm(),
+  })
+  setLocalModelResolver(() => localModel.readyPath())
   registerAgyChat({
     ipcMain,
     settingsPath: APP_SETTINGS_PATH,

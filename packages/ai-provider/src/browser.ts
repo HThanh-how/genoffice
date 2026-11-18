@@ -48,7 +48,14 @@ export {
   resolveCustomProfile,
 } from './custom-profile'
 export type { ResolvedCustomProfile } from './custom-profile'
-export { endpointSupportsVision, getProviderAdapter, modelLacksVision } from './registry'
+export {
+  endpointSupportsVision,
+  getProviderAdapter,
+  modelLacksVision,
+  providerNeedsApiKey,
+  providerNeedsConfiguredModel,
+} from './registry'
+export { LOCAL_PROVIDER_ID } from './local-llm/local-meta'
 export { AI_MEDIA_PROVIDERS, imageGenerationAvailable, mediaAnalysisAvailable } from './media'
 export { AI_SEARCH_PROVIDERS } from './search-settings'
 export { agyErrorText, formatAgyResetTime } from './agy-error-text'

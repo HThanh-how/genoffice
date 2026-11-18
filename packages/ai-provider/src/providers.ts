@@ -1,5 +1,6 @@
 import { agyDefaultsUsable } from './agy-default'
 import { AGY_PROVIDER_META } from './agy-meta'
+import { LOCAL_PROVIDER_META } from './local-llm/local-meta'
 import { normalizeCustomProfile } from './custom-profile'
 import { resolveCustomEndpoints } from './custom-endpoints'
 import { defaultAiMediaSettings, resolveAiMediaSettings } from './media'
@@ -83,6 +84,8 @@ export const AI_PROVIDERS: AiProviderMeta[] = [
     needsCliPath: true,
   },
   AGY_PROVIDER_META,
+  // managed llama-server on this machine (text-only LFM3 in milestone 1), see local-llm/
+  LOCAL_PROVIDER_META,
   {
     id: 'anthropic',
     label: 'Claude',

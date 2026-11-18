@@ -6,10 +6,16 @@ import { streamGemini } from './protocols/gemini'
 import { streamOpenAiCompatible } from './protocols/openai-compatible'
 import { streamOpenAiResponses } from './protocols/openai-responses'
 import { streamCodexAppServer } from './codex-app-server'
-import { isCliProvider, streamAgy } from './agy-cli'
+import { streamAgy } from './agy-cli'
+import { streamLocal } from './local-llm/local-stream'
 import type { StreamCallbacks } from './protocols/shared'
 import { withSystemAddendum } from './system-addendum'
-import { getProviderAdapter, type AiProtocol } from './registry'
+import {
+  getProviderAdapter,
+  providerNeedsApiKey,
+  providerNeedsConfiguredModel,
+  type AiProtocol,
+} from './registry'
 import type { AiProviderConfig, AiProviderId } from './types'
 
 export { streamAnthropic } from './protocols/anthropic'
@@ -30,12 +36,12 @@ async function streamForProviderInner(
   cb: StreamCallbacks,
 ): Promise<void> {
   if (provider === 'genspark') throw new Error('Genspark sign-in is disabled in this build')
-  if (!isCliProvider(provider) && !config.model?.trim()) {
+  if (providerNeedsConfiguredModel(provider) && !config.model?.trim()) {
     throw new Error('Choose an AI model in Settings → AI Model')
   }
   if (provider === 'custom') {
     if (!config.baseUrl?.trim()) throw new Error('Set the Base URL in Settings → AI Model')
-  } else if (!isCliProvider(provider) && !config.apiKey?.trim()) {
+  } else if (providerNeedsApiKey(provider) && !config.apiKey?.trim()) {
     throw new Error('Set an API key in Settings → AI Model')
   }
   const endpoint = getProviderAdapter(provider).resolveEndpoint(config)
@@ -49,7 +55,11 @@ async function streamForProviderInner(
   // A model the user declared a ceiling for outranks the caller's budget; the
   // endpoint's own 400 would otherwise cost a billed round trip.
   const cap = endpoint.maxTokens !== undefined ? Math.min(maxTokens, endpoint.maxTokens) : maxTokens
-  const protocol: Exclude<AiProtocol, 'codex-app-server' | 'agy-cli'> = endpoint.protocol
+  // the managed local llama-server: its cap keeps the request inside the server's context window
+  if (endpoint.protocol === 'local-llama')
+    return streamLocal(config, system, messages, tools, cap, cb)
+  const protocol: Exclude<AiProtocol, 'codex-app-server' | 'agy-cli' | 'local-llama'> =
+    endpoint.protocol
   return withOutputCapFallback(baseUrl, config.model, cap, (tokens) => {
     switch (protocol) {
       case 'anthropic':

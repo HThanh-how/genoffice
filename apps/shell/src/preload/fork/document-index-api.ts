@@ -11,11 +11,18 @@ import type { AiInstructionsApi } from '../../shared/fork/ai-instructions-meta'
 import { createAiInstructionsPreloadApi } from './ai-instructions-api'
 import type { StorageStartupApi } from '../../shared/fork/storage-startup'
 import { createStorageStartupPreloadApi } from './storage-startup-api'
+import type { LocalModelApi } from '../../shared/fork/local-model-api'
+import { createLocalModelPreloadApi } from './local-model-api'
 
 /** Preload half of the document-index popup additions (spread into the home API object). */
 export function createDocumentIndexPreloadApi(
   ipcRenderer: IpcRenderer,
-): DocumentIndexApi & IndexingModeApi & AgyOcrApi & AiInstructionsApi & StorageStartupApi {
+): DocumentIndexApi &
+  IndexingModeApi &
+  AgyOcrApi &
+  AiInstructionsApi &
+  StorageStartupApi &
+  LocalModelApi {
   return {
     async addIndexIgnore(path) {
       return ipcRenderer.invoke(DOCUMENT_INDEX_CHANNELS.addIndexIgnore, path)
@@ -30,6 +37,8 @@ export function createDocumentIndexPreloadApi(
       return ipcRenderer.invoke(DOCUMENT_INDEX_CHANNELS.enqueueDocumentIndex, ids)
     },
     ...createAiInstructionsPreloadApi(ipcRenderer),
+    // The on-device chat model (LFM3): state, download, cancel, delete, choose an existing file.
+    ...createLocalModelPreloadApi(ipcRenderer),
     // Progress of the index storage check / upgrade that runs while the window is already open.
     ...createStorageStartupPreloadApi(ipcRenderer),
     // Indexing effort setting (Light / Balanced / Fast), shown in the same Settings section.

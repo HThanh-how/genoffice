@@ -96,6 +96,8 @@ export {
   getProviderAdapter,
   modelLacksVision,
   normalizeBaseUrl,
+  providerNeedsApiKey,
+  providerNeedsConfiguredModel,
 } from './registry'
 export type {
   AiProtocol,
@@ -147,3 +149,9 @@ export type { AgyErrorKind } from './agy-errors'
 export { agyChoice } from './agy-choice'
 export type { AgyChoice } from './agy-choice'
 export { prewarmAgy, shutdownAgyResidentServers, retireAgyResidentScope } from './agy-resident'
+export { LOCAL_PROVIDER_ID } from './local-llm/local-meta'
+export {
+  LOCAL_MODEL_NOT_INSTALLED_MESSAGE,
+  setLocalModelResolver,
+  shutdownLocalLlm,
+} from './local-llm/llama-server-runtime'

@@ -1,4 +1,5 @@
 import { AGY_CAPABILITIES } from './agy-meta'
+import { LOCAL_CAPABILITIES, LOCAL_MAX_OUTPUT_TOKENS } from './local-llm/local-meta'
 import { ANTHROPIC_BASE_URL } from './protocols/anthropic'
 import { GEMINI_BASE_URL } from './protocols/gemini'
 import { AI_PROVIDERS, DEEPSEEK_V41_FLASH, GENSPARK_LLM_BASE_URLS } from './providers'
@@ -17,11 +18,20 @@ export { modelEchoesReasoning, modelHasFixedSampling, modelLacksVision } from '.
 
 /** Wire protocols every provider maps onto, including the official Codex app-server bridge. */
 export type AiProtocol =
-  'anthropic' | 'gemini' | 'openai-compatible' | 'openai-responses' | 'codex-app-server' | 'agy-cli'
+  | 'anthropic'
+  | 'gemini'
+  | 'openai-compatible'
+  | 'openai-responses'
+  | 'codex-app-server'
+  | 'agy-cli'
+  | 'local-llama'
 
 export interface ProviderCapabilities {
-  /** How the provider authenticates: app login, user key, or the Codex CLI's existing login. */
-  auth: 'gsk-login' | 'api-key' | 'codex-chatgpt' | 'agy-cli'
+  /**
+   * How the provider authenticates: app login, user key, the Codex / Antigravity CLI's existing
+   * login, or none at all for the managed local runtime ('local-runtime').
+   */
+  auth: 'gsk-login' | 'api-key' | 'codex-chatgpt' | 'agy-cli' | 'local-runtime'
   /** chat models accept image input (declarative; for custom endpoints it is assumed, not known) */
   vision: boolean
   /** the provider can call GenOffice tools (absent = yes) */
@@ -168,6 +178,19 @@ export const AI_PROVIDER_ADAPTERS: Record<AiProviderId, ProviderAdapter> = {
     meta: metaOf('agy'),
     capabilities: AGY_CAPABILITIES,
     resolveEndpoint: () => ({ protocol: 'agy-cli', baseUrl: '' }),
+  },
+  local: {
+    meta: metaOf('local'),
+    capabilities: LOCAL_CAPABILITIES,
+    // The port of the managed llama-server is only known at run time (local-llm/local-stream.ts),
+    // so the endpoint carries no base URL. Text-only, and the output cap keeps every request inside
+    // the server's context window.
+    resolveEndpoint: () => ({
+      protocol: 'local-llama',
+      baseUrl: '',
+      maxTokens: LOCAL_MAX_OUTPUT_TOKENS,
+      vision: false,
+    }),
   },
   anthropic: {
     meta: metaOf('anthropic'),
@@ -371,6 +394,33 @@ export function getProviderAdapter(provider: AiProviderId): ProviderAdapter {
   const adapter = AI_PROVIDER_ADAPTERS[provider]
   if (!adapter) throw new Error(`Unknown provider: ${provider}`)
   return adapter
+}
+
+function authOf(provider: string): ProviderCapabilities['auth'] | undefined {
+  return Object.prototype.hasOwnProperty.call(AI_PROVIDER_ADAPTERS, provider)
+    ? AI_PROVIDER_ADAPTERS[provider as AiProviderId].capabilities.auth
+    : undefined
+}
+
+/**
+ * Whether a request to this provider must carry an API key. Derived from the declared auth, not
+ * from a list of ids: user keys ('api-key') and the Genspark login key ('gsk-login', injected by
+ * the main process before the check) need one; CLI logins and the keyless local runtime do not.
+ * An unknown id answers true, so a hand-edited settings file still fails the key check.
+ */
+export function providerNeedsApiKey(provider: string): boolean {
+  const auth = authOf(provider)
+  return auth === undefined || auth === 'api-key' || auth === 'gsk-login'
+}
+
+/**
+ * Whether a request to this provider must name a model in its config. Only the CLI-backed
+ * providers pick their own model from a live catalog (Codex app-server, `agy models`); every other
+ * provider, the local runtime included, needs one. An unknown id answers true.
+ */
+export function providerNeedsConfiguredModel(provider: string): boolean {
+  const auth = authOf(provider)
+  return auth !== 'codex-chatgpt' && auth !== 'agy-cli'
 }
 
 /**
