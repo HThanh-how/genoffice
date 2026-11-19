@@ -46,3 +46,15 @@ it('ships the native CPU dependency closure, excludes other platforms and GPU pa
     )
   expect(existsSync(join(root, '../packages/local-llm/src/host/entry.ts'))).toBe(true)
 })
+
+it('bundles @genoffice/local-llm into the main process and keeps only the native binding as a runtime dependency', () => {
+  // electron-vite externalizes `dependencies`; a workspace package listed there is required at
+  // runtime as TypeScript source from app.asar and crashes the packaged app at startup.
+  const pkg = JSON.parse(readFileSync(join(__dirname, '../package.json'), 'utf8')) as {
+    dependencies: Record<string, string>
+    devDependencies: Record<string, string>
+  }
+  expect(pkg.dependencies['@genoffice/local-llm']).toBeUndefined()
+  expect(pkg.devDependencies['@genoffice/local-llm']).toBeDefined()
+  expect(pkg.dependencies['node-llama-cpp']).toBe('3.22.3')
+})
