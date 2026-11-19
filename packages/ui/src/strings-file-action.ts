@@ -21,6 +21,7 @@ import { strings as nl } from './i18n/file-action/nl'
 import { strings as ms } from './i18n/file-action/ms'
 import { strings as he } from './i18n/file-action/he'
 import { strings as hi } from './i18n/file-action/hi'
+import { strings as hu } from './i18n/file-action/hu'
 
 export const FILE_ACTION_LABELS = {
   zh: zh,
@@ -45,4 +46,5 @@ export const FILE_ACTION_LABELS = {
   ms: ms,
   he: he,
   hi: hi,
+  hu: hu,
 } satisfies Record<Lang, Record<keyof typeof zh, string>>

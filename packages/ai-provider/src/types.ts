@@ -1,6 +1,7 @@
 import type { AgentMessage, AgentToolCall, AgentToolDef } from '@genoffice/agent-core'
 
 export type AiProviderId =
+  | 'local'
   | 'genspark'
   | 'codex'
   | 'agy'
@@ -41,6 +42,8 @@ export interface GenSparkAccountStatus {
 }
 
 export interface AiProviderConfig {
+  local?: Partial<import('@genoffice/local-llm/protocol').LocalOptions>
+
   apiKey: string
   model: string
   /** required for custom; for other direct providers it overrides the default endpoint (regional mirrors) */

@@ -7,6 +7,7 @@ import es from './i18n/clarify/es'
 import fr from './i18n/clarify/fr'
 import he from './i18n/clarify/he'
 import hi from './i18n/clarify/hi'
+import hu from './i18n/clarify/hu'
 import id from './i18n/clarify/id'
 import it from './i18n/clarify/it'
 import ja from './i18n/clarify/ja'
@@ -32,6 +33,7 @@ const strings = {
   fr: fr,
   he: he,
   hi: hi,
+  hu: hu,
   id: id,
   it: it,
   ja: ja,

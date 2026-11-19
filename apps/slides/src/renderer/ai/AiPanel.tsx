@@ -445,6 +445,7 @@ export function AiPanel({
       window.removeEventListener('focus', refresh)
     }
   }, [])
+
   const imagesRef = useRef(images)
   imagesRef.current = images
   const attachedSkillsRef = useRef(attachedSkills)

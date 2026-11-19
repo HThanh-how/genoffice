@@ -122,6 +122,7 @@ const commandcodeLogo = (
 )
 
 const LOGOS: Record<AiProviderId, ReactNode> = {
+  local: <span aria-hidden="true">LFM</span>,
   // Neutral mark for the Antigravity CLI provider: an arrow lifting off an orbit ring (not vendor artwork).
   agy: (
     <svg

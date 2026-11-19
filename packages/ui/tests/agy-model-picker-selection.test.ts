@@ -154,7 +154,10 @@ async function openPicker(host: HTMLElement) {
   const chip = host.querySelector<HTMLButtonElement>('.ai-model-chip')
   expect(chip).not.toBeNull()
   await act(async () => chip!.click())
-  return Array.from(host.querySelectorAll<HTMLButtonElement>('.ai-model-item'))
+  // These cases exercise Agy validation; the independent local row remains usable.
+  return Array.from(
+    host.querySelectorAll<HTMLButtonElement>('.ai-model-item:not([data-provider="local"])'),
+  )
 }
 
 function teardown(f: ReturnType<typeof mount>) {

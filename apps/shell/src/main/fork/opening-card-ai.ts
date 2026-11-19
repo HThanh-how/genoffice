@@ -450,7 +450,13 @@ export async function generateAiCardWithRealProvider(
   }
 
   // Check if provider is usable
-  if (provider !== 'agy' && provider !== 'genspark' && !baseConfig.apiKey && !baseConfig.baseUrl) {
+  if (
+    provider !== 'local' &&
+    provider !== 'agy' &&
+    provider !== 'genspark' &&
+    !baseConfig.apiKey &&
+    !baseConfig.baseUrl
+  ) {
     return {
       ok: false,
       error: `No API key found for "${provider}". Please add an API key in Settings > AI.`,

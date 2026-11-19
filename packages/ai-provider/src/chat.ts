@@ -1,3 +1,4 @@
+import { chatLocal } from './local'
 import { chatAnthropic } from './protocols/anthropic'
 import { chatGemini } from './protocols/gemini'
 import { chatOpenAiCompatible } from './protocols/openai-compatible'
@@ -39,6 +40,8 @@ export async function chatForProvider(
   const result = wd.guard(() => {
     if (endpoint.model) config = { ...config, model: endpoint.model }
     switch (endpoint.protocol) {
+      case 'local-llm':
+        return chatLocal(config, system, user, wd.signal)
       case 'codex-app-server':
         return chatCodexAppServer(config, system, user, wd.signal)
       case 'agy-cli':

@@ -1,0 +1,29 @@
+import { copy as zh } from './zh'
+export const copy = {
+  title: 'स्थानीय चैट मॉडल',
+  missing: 'डाउनलोड नहीं हुआ',
+  checking: 'SHA-256 सत्यापन…',
+  downloading: 'डाउनलोड हो रहा है {n}%',
+  paused: 'रुका हुआ {n}%',
+  ready: 'तैयार',
+  error: 'त्रुटि',
+  download: 'डाउनलोड',
+  cancel: 'रद्द करें',
+  resume: 'जारी रखें',
+  remove: 'मॉडल मिटाएँ',
+  keepHot: 'मेमोरी में रखें (मिनट)',
+  thinking: 'तर्क (धीमा)',
+  autoDownload: 'ज़रूरत पर मॉडल डाउनलोड करें',
+  advanced: 'उन्नत',
+  threads: 'CPU थ्रेड',
+  gpu: 'बैकएंड',
+  context: 'कॉन्टेक्स्ट टोकन',
+  limits:
+    'केवल पाठ, चित्र अभी समर्थित नहीं हैं। कोडिंग, लंबी बातचीत या जटिल तर्क के लिए अनुशंसित नहीं है।',
+  license:
+    'LFM Open License v1.0: वार्षिक राजस्व 10 मिलियन USD से अधिक होने पर Liquid AI से अलग समझौता आवश्यक है।',
+  gpuWarning:
+    'डिफ़ॉल्ट CPU है। परीक्षण में Radeon 780M पर Vulkan क्रैश हुआ; GPU के लिए अलग संगत रनटाइम स्थापित करना होगा।',
+  offline: 'ऑफ़लाइन। स्थानीय मॉडल डाउनलोड करने के लिए कनेक्ट करें।',
+  metered: 'मीटर वाला नेटवर्क: स्वचालित डाउनलोड रुका है। जारी रखने के लिए मैन्युअल डाउनलोड करें।',
+} satisfies Record<keyof typeof zh, string>

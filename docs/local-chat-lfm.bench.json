@@ -1,0 +1,1226 @@
+{
+  "note": "Native 32768 rows are from a separate run confirming effectiveContextSize=32768; earlier requested-only rows are excluded. Samples ran during development with background checks.",
+  "native": {
+    "at": "2026-11-19T16:29:12.074Z",
+    "hardware": {
+      "cpu": "AMD Ryzen 7 8845H w/ Radeon 780M Graphics",
+      "logicalCpus": 16,
+      "totalGiB": 27.809436798095703,
+      "freeGiB": 8.589351654052734,
+      "os": "10.0.26200",
+      "node": "v22.19.0"
+    },
+    "measurements": [
+      {
+        "kind": "load",
+        "threads": 4,
+        "contextSize": 4096,
+        "hostStartMs": 1022.6211999999998,
+        "loadMs": 5149.1004,
+        "totalMs": 6174.0706,
+        "rssBytes": 1715245056
+      },
+      {
+        "kind": "chat",
+        "label": "short-off",
+        "threads": 4,
+        "contextSize": 4096,
+        "thinking": false,
+        "wallMs": 3119.8678999999993,
+        "inputTokens": 75,
+        "outputTokens": 73,
+        "evaluatedPromptTokens": 74,
+        "thoughtTokens": 1,
+        "elapsedMs": 3116.7456,
+        "ttftMs": 809.2916999999998,
+        "rssBytes": 2110316544,
+        "text": "- Tăng cường giao tiếp giữa các phòng ban.\n- Giảm thiểu thời gian mất mát do thông tin lan truyền không kịp thời.\n- Tạo không khí làm việc tập trung và giảm stress.\n- Hoàn thiện sự đồng thuận trong các quyết định quan trọng.\n- Đa dạng hóa ý tưởng qua việc tham gia trực tiếp.",
+        "calls": [],
+        "generationTokensPerSecond": 30.769845499405204,
+        "promptTokensPerSecond": 91.43798212684008
+      },
+      {
+        "kind": "chat",
+        "label": "short-on",
+        "threads": 4,
+        "contextSize": 4096,
+        "thinking": true,
+        "wallMs": 5813.261399999999,
+        "inputTokens": 75,
+        "outputTokens": 157,
+        "evaluatedPromptTokens": 73,
+        "thoughtTokens": 101,
+        "elapsedMs": 5811.767400000001,
+        "ttftMs": 4065.0910000000003,
+        "rssBytes": 2112569344,
+        "text": "- Tiết kiệm thời gian cho nhân viên.\n- Tăng cường giao tiếp giữa các bộ phận.\n- Cải thiện sự tham gia của mọi người.\n- Hỗ trợ ra quyết định nhanh hơn.\n- Tạo cảm giác gắn kết trong đội ngũ.",
+        "calls": [],
+        "generationTokensPerSecond": 31.488374148754737,
+        "promptTokensPerSecond": 17.957777574966954
+      },
+      {
+        "kind": "load",
+        "threads": 6,
+        "contextSize": 4096,
+        "hostStartMs": 1075.478500000001,
+        "loadMs": 5362.3785000000025,
+        "totalMs": 6439.0939,
+        "rssBytes": 1715466240
+      },
+      {
+        "kind": "chat",
+        "label": "short-off",
+        "threads": 6,
+        "contextSize": 4096,
+        "thinking": false,
+        "wallMs": 2820.985800000002,
+        "inputTokens": 75,
+        "outputTokens": 73,
+        "evaluatedPromptTokens": 74,
+        "thoughtTokens": 1,
+        "elapsedMs": 2818.4677,
+        "ttftMs": 658.5716000000002,
+        "rssBytes": 2111660032,
+        "text": "- Tăng cường giao tiếp giữa các phòng ban.\n- Giảm thiểu thời gian mất mát do thông tin lan truyền không kịp thời.\n- Tạo không khí làm việc tập trung và giảm stress.\n- Hoàn thiện sự đồng thuận trong các quyết định quan trọng.\n- Đa dạng hóa ý tưởng qua việc tham gia trực tiếp.",
+        "calls": [],
+        "generationTokensPerSecond": 32.87195157211497,
+        "promptTokensPerSecond": 112.36439591382315
+      },
+      {
+        "kind": "chat",
+        "label": "short-on",
+        "threads": 6,
+        "contextSize": 4096,
+        "thinking": true,
+        "wallMs": 5670.5372000000025,
+        "inputTokens": 75,
+        "outputTokens": 160,
+        "evaluatedPromptTokens": 73,
+        "thoughtTokens": 100,
+        "elapsedMs": 5669.0113,
+        "ttftMs": 3774.9040000000005,
+        "rssBytes": 2113523712,
+        "text": "- Tăng cường giao tiếp giữa các thành viên.\n- Tiết kiệm thời gian so sánh các cuộc họp dài.\n- Cải thiện sự tập trung trong quá trình làm việc.\n- Hỗ trợ ra quyết định nhanh hơn trong các tình huống khẩn cấp.\n- T",
+        "calls": [],
+        "generationTokensPerSecond": 31.14923848295184,
+        "promptTokensPerSecond": 19.33824012478198
+      },
+      {
+        "kind": "load",
+        "threads": 8,
+        "contextSize": 4096,
+        "hostStartMs": 1022.1219000000019,
+        "loadMs": 5146.324799999995,
+        "totalMs": 6169.142400000001,
+        "rssBytes": 1715470336
+      },
+      {
+        "kind": "chat",
+        "label": "short-off",
+        "threads": 8,
+        "contextSize": 4096,
+        "thinking": false,
+        "wallMs": 2854.2383999999947,
+        "inputTokens": 75,
+        "outputTokens": 76,
+        "evaluatedPromptTokens": 74,
+        "thoughtTokens": 1,
+        "elapsedMs": 2851.6435,
+        "ttftMs": 604.6556,
+        "rssBytes": 2112040960,
+        "text": "- Tăng cường giao tiếp giữa các phòng ban.\n- Giảm thiểu thời gian mất mát do thông tin lan truyền không kịp thời.\n- Tạo không khí làm việc tập trung và giảm stress.\n- Hoàn thiện thông tin trên hệ thống trước khi công bố.\n- Đảm bảo mọi người biết rõ trách nhiệm của mình trong mỗi dự án.",
+        "calls": [],
+        "generationTokensPerSecond": 32.93297663062627,
+        "promptTokensPerSecond": 122.38371727641321
+      },
+      {
+        "kind": "chat",
+        "label": "short-on",
+        "threads": 8,
+        "contextSize": 4096,
+        "thinking": true,
+        "wallMs": 5438.1932000000015,
+        "inputTokens": 75,
+        "outputTokens": 160,
+        "evaluatedPromptTokens": 73,
+        "thoughtTokens": 98,
+        "elapsedMs": 5436.649600000001,
+        "ttftMs": 3522.7477,
+        "rssBytes": 2114007040,
+        "text": "- Tăng cường giao tiếp giữa các thành viên.\n- Tiết kiệm thời gian so sánh với các buổi họp dài.\n- Cải thiện sự tập trung và hiệu suất làm việc.\n- Hỗ trợ ra quyết định nhanh hơn trong các tình huống khẩn cấp.\n- Tạo",
+        "calls": [],
+        "generationTokensPerSecond": 31.87206199022007,
+        "promptTokensPerSecond": 20.722460481629156
+      },
+      {
+        "kind": "load",
+        "threads": 16,
+        "contextSize": 4096,
+        "hostStartMs": 1046.3738000000012,
+        "loadMs": 5150.525900000001,
+        "totalMs": 6197.624400000001,
+        "rssBytes": 1715118080
+      },
+      {
+        "kind": "chat",
+        "label": "short-off",
+        "threads": 16,
+        "contextSize": 4096,
+        "thinking": false,
+        "wallMs": 93312.40949999998,
+        "error": "Benchmark request timed out after 90 seconds",
+        "events": []
+      },
+      {
+        "kind": "load",
+        "threads": 6,
+        "contextSize": 4096,
+        "hostStartMs": 1014.789300000004,
+        "loadMs": 5163.619200000016,
+        "totalMs": 6179.218300000008,
+        "rssBytes": 1717301248
+      },
+      {
+        "kind": "chat",
+        "label": "short-context",
+        "threads": 6,
+        "contextSize": 4096,
+        "thinking": false,
+        "wallMs": 2451.9137000000046,
+        "inputTokens": 71,
+        "outputTokens": 63,
+        "evaluatedPromptTokens": 70,
+        "thoughtTokens": 1,
+        "elapsedMs": 2449.158299999999,
+        "ttftMs": 630.8492999999999,
+        "rssBytes": 2109599744,
+        "text": "Chào anh/chị,\n\nCảm ơn quý vị đã cho phép nghỉ phép. Tôi xin nghỉ từ ngày 10 đến ngày 12, không có việc quan trọng nào cần thiết. Mong quý vị thông cảm và cho tôi biết nếu cần hỗ trợ thêm.\n\nTrân trọng,\n[Tên]",
+        "calls": [],
+        "generationTokensPerSecond": 33.54765334164877,
+        "promptTokensPerSecond": 110.96152440844433
+      },
+      {
+        "kind": "chat",
+        "label": "prefill-40",
+        "threads": 6,
+        "contextSize": 4096,
+        "thinking": false,
+        "wallMs": 7498.8763000000035,
+        "inputTokens": 1068,
+        "outputTokens": 27,
+        "evaluatedPromptTokens": 1067,
+        "thoughtTokens": 1,
+        "elapsedMs": 7496.8071,
+        "ttftMs": 6688.886199999999,
+        "rssBytes": 2173968384,
+        "text": "Nhóm văn phòng họp vào thứ hai. Báo cáo quý cần ghi rõ kết quả và kế hoạch tiếp theo.",
+        "calls": [],
+        "generationTokensPerSecond": 30.943623317579693,
+        "promptTokensPerSecond": 159.51833655056058
+      },
+      {
+        "kind": "load",
+        "threads": 6,
+        "contextSize": 16384,
+        "hostStartMs": 999.336100000015,
+        "loadMs": 5215.576100000006,
+        "totalMs": 6215.673800000019,
+        "rssBytes": 1867116544
+      },
+      {
+        "kind": "chat",
+        "label": "short-context",
+        "threads": 6,
+        "contextSize": 16384,
+        "thinking": false,
+        "wallMs": 2485.4684000000125,
+        "inputTokens": 71,
+        "outputTokens": 63,
+        "evaluatedPromptTokens": 70,
+        "thoughtTokens": 1,
+        "elapsedMs": 2482.6713999999993,
+        "ttftMs": 649.1888999999992,
+        "rssBytes": 2264268800,
+        "text": "Chào anh/chị,\n\nCảm ơn quý vị đã cho phép nghỉ phép. Tôi xin nghỉ từ ngày 10 đến ngày 12, không có việc quan trọng nào cần thiết. Mong quý vị thông cảm và cho tôi biết nếu cần hỗ trợ thêm.\n\nTrân trọng,\n[Tên]",
+        "calls": [],
+        "generationTokensPerSecond": 33.270020302893535,
+        "promptTokensPerSecond": 107.82685902362176
+      },
+      {
+        "kind": "chat",
+        "label": "prefill-40",
+        "threads": 6,
+        "contextSize": 16384,
+        "thinking": false,
+        "wallMs": 7437.382400000002,
+        "inputTokens": 1068,
+        "outputTokens": 27,
+        "evaluatedPromptTokens": 1067,
+        "thoughtTokens": 1,
+        "elapsedMs": 7434.652,
+        "ttftMs": 6614.270900000001,
+        "rssBytes": 2339229696,
+        "text": "Nhóm văn phòng họp vào thứ hai. Báo cáo quý cần ghi rõ kết quả và kế hoạch tiếp theo.",
+        "calls": [],
+        "generationTokensPerSecond": 30.473642067083265,
+        "promptTokensPerSecond": 161.31785591061893
+      },
+      {
+        "kind": "chat",
+        "label": "prefill-165",
+        "threads": 6,
+        "contextSize": 16384,
+        "thinking": false,
+        "wallMs": 28672.922499999986,
+        "inputTokens": 4193,
+        "outputTokens": 27,
+        "evaluatedPromptTokens": 4192,
+        "thoughtTokens": 1,
+        "elapsedMs": 28667.653899999998,
+        "ttftMs": 27692.718399999998,
+        "rssBytes": 2343260160,
+        "text": "Nhóm văn phòng họp vào thứ hai. Báo cáo quý cần ghi rõ kết quả và kế hoạch tiếp theo.",
+        "calls": [],
+        "generationTokensPerSecond": 25.642722005712184,
+        "promptTokensPerSecond": 151.37553271043265
+      },
+      {
+        "kind": "chat",
+        "label": "tool",
+        "threads": 6,
+        "contextSize": 16384,
+        "thinking": false,
+        "wallMs": 2839.478600000002,
+        "inputTokens": 277,
+        "outputTokens": 28,
+        "evaluatedPromptTokens": 285,
+        "thoughtTokens": 1,
+        "elapsedMs": 2835.7764000000025,
+        "ttftMs": null,
+        "rssBytes": 2351058944,
+        "text": "",
+        "calls": [
+          {
+            "id": "b92cb354-8d7d-4ca2-b7c5-2a3a23ad61de",
+            "name": "insertText",
+            "input": {
+              "text": "Báo cáo quý 3",
+              "position": "end"
+            }
+          }
+        ]
+      },
+      {
+        "kind": "chat",
+        "label": "tool",
+        "threads": 6,
+        "contextSize": 16384,
+        "thinking": false,
+        "wallMs": 2805.840599999996,
+        "inputTokens": 275,
+        "outputTokens": 26,
+        "evaluatedPromptTokens": 283,
+        "thoughtTokens": 1,
+        "elapsedMs": 2803.421699999999,
+        "ttftMs": null,
+        "rssBytes": 2357456896,
+        "text": "",
+        "calls": [
+          {
+            "id": "8c6b9600-39d3-4238-be85-5f9dcc6cd1f3",
+            "name": "insertText",
+            "input": {
+              "text": "Xin chào",
+              "position": "end"
+            }
+          }
+        ]
+      },
+      {
+        "kind": "chat",
+        "label": "tool",
+        "threads": 6,
+        "contextSize": 16384,
+        "thinking": false,
+        "wallMs": 2727.0983000000124,
+        "inputTokens": 275,
+        "outputTokens": 26,
+        "evaluatedPromptTokens": 283,
+        "thoughtTokens": 1,
+        "elapsedMs": 2724.6707000000024,
+        "ttftMs": null,
+        "rssBytes": 2364948480,
+        "text": "",
+        "calls": [
+          {
+            "id": "d9a442a2-fe9c-4790-b2ab-e8fca5d34cbe",
+            "name": "insertText",
+            "input": {
+              "text": "Kế hoạch tuần",
+              "position": "end"
+            }
+          }
+        ]
+      },
+      {
+        "kind": "chat",
+        "label": "tool",
+        "threads": 6,
+        "contextSize": 16384,
+        "thinking": false,
+        "wallMs": 2730.348900000012,
+        "inputTokens": 276,
+        "outputTokens": 27,
+        "evaluatedPromptTokens": 284,
+        "thoughtTokens": 1,
+        "elapsedMs": 2727.743699999999,
+        "ttftMs": null,
+        "rssBytes": 2189119488,
+        "text": "",
+        "calls": [
+          {
+            "id": "525edd51-ebde-4290-9177-4e24788b2463",
+            "name": "insertText",
+            "input": {
+              "text": "Biên bản họp",
+              "position": "end"
+            }
+          }
+        ]
+      },
+      {
+        "kind": "chat",
+        "label": "tool",
+        "threads": 6,
+        "contextSize": 16384,
+        "thinking": false,
+        "wallMs": 2519.2939999999944,
+        "inputTokens": 274,
+        "outputTokens": 25,
+        "evaluatedPromptTokens": 282,
+        "thoughtTokens": 1,
+        "elapsedMs": 2516.9130000000005,
+        "ttftMs": null,
+        "rssBytes": 2198016000,
+        "text": "",
+        "calls": [
+          {
+            "id": "4db66c36-28c2-4e22-8017-1425dda626b6",
+            "name": "insertText",
+            "input": {
+              "text": "Cảm ơn",
+              "position": "end"
+            }
+          }
+        ]
+      },
+      {
+        "kind": "chat",
+        "label": "tool",
+        "threads": 6,
+        "contextSize": 16384,
+        "thinking": false,
+        "wallMs": 2700.0930000000226,
+        "inputTokens": 275,
+        "outputTokens": 26,
+        "evaluatedPromptTokens": 283,
+        "thoughtTokens": 1,
+        "elapsedMs": 2697.296900000001,
+        "ttftMs": null,
+        "rssBytes": 2206994432,
+        "text": "",
+        "calls": [
+          {
+            "id": "ec329b39-cd98-422d-8fbb-9298e6edd4e2",
+            "name": "insertText",
+            "input": {
+              "text": "Lịch họp",
+              "position": "start"
+            }
+          }
+        ]
+      },
+      {
+        "kind": "chat",
+        "label": "tool",
+        "threads": 6,
+        "contextSize": 16384,
+        "thinking": false,
+        "wallMs": 2667.4697999999917,
+        "inputTokens": 275,
+        "outputTokens": 26,
+        "evaluatedPromptTokens": 283,
+        "thoughtTokens": 1,
+        "elapsedMs": 2665.514000000003,
+        "ttftMs": null,
+        "rssBytes": 2213552128,
+        "text": "",
+        "calls": [
+          {
+            "id": "7223072e-f087-4b22-ac01-a3311317c41d",
+            "name": "insertText",
+            "input": {
+              "text": "Mục lục",
+              "position": "start"
+            }
+          }
+        ]
+      },
+      {
+        "kind": "chat",
+        "label": "tool",
+        "threads": 6,
+        "contextSize": 16384,
+        "thinking": false,
+        "wallMs": 2717.8445000000065,
+        "inputTokens": 274,
+        "outputTokens": 25,
+        "evaluatedPromptTokens": 282,
+        "thoughtTokens": 1,
+        "elapsedMs": 2715.255599999997,
+        "ttftMs": null,
+        "rssBytes": 2159128576,
+        "text": "",
+        "calls": [
+          {
+            "id": "4c23c3af-a147-4b4c-834b-c8373780f88f",
+            "name": "insertText",
+            "input": {
+              "text": "Giới thiệu",
+              "position": "start"
+            }
+          }
+        ]
+      },
+      {
+        "kind": "chat",
+        "label": "tool",
+        "threads": 6,
+        "contextSize": 16384,
+        "thinking": false,
+        "wallMs": 2845.277299999987,
+        "inputTokens": 275,
+        "outputTokens": 26,
+        "evaluatedPromptTokens": 283,
+        "thoughtTokens": 1,
+        "elapsedMs": 2840.928899999999,
+        "ttftMs": null,
+        "rssBytes": 2161467392,
+        "text": "",
+        "calls": [
+          {
+            "id": "c13d3e92-ffc3-4e09-91aa-1192f2a77981",
+            "name": "insertText",
+            "input": {
+              "text": "Tóm tắt",
+              "position": "start"
+            }
+          }
+        ]
+      },
+      {
+        "kind": "chat",
+        "label": "tool",
+        "threads": 6,
+        "contextSize": 16384,
+        "thinking": false,
+        "wallMs": 2737.864100000006,
+        "inputTokens": 274,
+        "outputTokens": 25,
+        "evaluatedPromptTokens": 282,
+        "thoughtTokens": 1,
+        "elapsedMs": 2734.153900000005,
+        "ttftMs": null,
+        "rssBytes": 2163064832,
+        "text": "",
+        "calls": [
+          {
+            "id": "d8875595-d1e2-4dd9-84c9-846c86727094",
+            "name": "insertText",
+            "input": {
+              "text": "Thông báo",
+              "position": "start"
+            }
+          }
+        ]
+      },
+      {
+        "kind": "chat",
+        "label": "tool",
+        "threads": 6,
+        "contextSize": 16384,
+        "thinking": false,
+        "wallMs": 2582.784800000023,
+        "inputTokens": 269,
+        "outputTokens": 23,
+        "evaluatedPromptTokens": 287,
+        "thoughtTokens": 1,
+        "elapsedMs": 2579.827799999999,
+        "ttftMs": null,
+        "rssBytes": 2157846528,
+        "text": "",
+        "calls": [
+          {
+            "id": "09338b74-1fb1-4c24-8a8e-7d45b7a5c3c1",
+            "name": "deleteBlocks",
+            "input": {
+              "target": {
+                "blockIds": ["b2"]
+              }
+            }
+          }
+        ]
+      },
+      {
+        "kind": "chat",
+        "label": "tool",
+        "threads": 6,
+        "contextSize": 16384,
+        "thinking": false,
+        "wallMs": 2769.8922999999777,
+        "inputTokens": 272,
+        "outputTokens": 27,
+        "evaluatedPromptTokens": 294,
+        "thoughtTokens": 1,
+        "elapsedMs": 2766.7494000000006,
+        "ttftMs": null,
+        "rssBytes": 2158235648,
+        "text": "",
+        "calls": [
+          {
+            "id": "3a5ba89e-24aa-4f40-bdf3-050c7602935d",
+            "name": "deleteBlocks",
+            "input": {
+              "target": {
+                "blockIds": ["b2", "b5"]
+              }
+            }
+          }
+        ]
+      },
+      {
+        "kind": "chat",
+        "label": "tool",
+        "threads": 6,
+        "contextSize": 16384,
+        "thinking": false,
+        "wallMs": 2687.9568000000145,
+        "inputTokens": 269,
+        "outputTokens": 23,
+        "evaluatedPromptTokens": 287,
+        "thoughtTokens": 1,
+        "elapsedMs": 2685.1812000000064,
+        "ttftMs": null,
+        "rssBytes": 2160984064,
+        "text": "",
+        "calls": [
+          {
+            "id": "e9de92dd-fc77-4d5d-b604-a533ceaf9bdc",
+            "name": "deleteBlocks",
+            "input": {
+              "target": {
+                "blockIds": ["b7"]
+              }
+            }
+          }
+        ]
+      },
+      {
+        "kind": "chat",
+        "label": "tool",
+        "threads": 6,
+        "contextSize": 16384,
+        "thinking": false,
+        "wallMs": 2803.4040000000095,
+        "inputTokens": 272,
+        "outputTokens": 27,
+        "evaluatedPromptTokens": 294,
+        "thoughtTokens": 1,
+        "elapsedMs": 2800.6138000000064,
+        "ttftMs": null,
+        "rssBytes": 2165608448,
+        "text": "",
+        "calls": [
+          {
+            "id": "6782b150-a6d6-4555-b90c-dddfcb276117",
+            "name": "deleteBlocks",
+            "input": {
+              "target": {
+                "blockIds": ["b1", "b3"]
+              }
+            }
+          }
+        ]
+      },
+      {
+        "kind": "chat",
+        "label": "tool",
+        "threads": 6,
+        "contextSize": 16384,
+        "thinking": false,
+        "wallMs": 2593.714099999983,
+        "inputTokens": 269,
+        "outputTokens": 23,
+        "evaluatedPromptTokens": 287,
+        "thoughtTokens": 1,
+        "elapsedMs": 2591.1906000000017,
+        "ttftMs": null,
+        "rssBytes": 2162769920,
+        "text": "",
+        "calls": [
+          {
+            "id": "36564966-c9a4-45b3-b153-865a6e3ce357",
+            "name": "deleteBlocks",
+            "input": {
+              "target": {
+                "blockIds": ["b9"]
+              }
+            }
+          }
+        ]
+      },
+      {
+        "kind": "chat",
+        "label": "tool",
+        "threads": 6,
+        "contextSize": 16384,
+        "thinking": false,
+        "wallMs": 2438.393400000001,
+        "inputTokens": 269,
+        "outputTokens": 20,
+        "evaluatedPromptTokens": 284,
+        "thoughtTokens": 1,
+        "elapsedMs": 2436.1775999999954,
+        "ttftMs": null,
+        "rssBytes": 2159132672,
+        "text": "",
+        "calls": [
+          {
+            "id": "98faf931-5f0e-4dac-80fb-d943ea500a10",
+            "name": "readBlocks",
+            "input": {
+              "blockIds": ["b2"]
+            }
+          }
+        ]
+      },
+      {
+        "kind": "chat",
+        "label": "tool",
+        "threads": 6,
+        "contextSize": 16384,
+        "thinking": false,
+        "wallMs": 2704.6455000000133,
+        "inputTokens": 272,
+        "outputTokens": 24,
+        "evaluatedPromptTokens": 291,
+        "thoughtTokens": 1,
+        "elapsedMs": 2702.064799999993,
+        "ttftMs": null,
+        "rssBytes": 2157711360,
+        "text": "",
+        "calls": [
+          {
+            "id": "18ba59c6-0dca-4c9d-b5b8-edfd14de80a3",
+            "name": "readBlocks",
+            "input": {
+              "blockIds": ["b4", "b6"]
+            }
+          }
+        ]
+      },
+      {
+        "kind": "chat",
+        "label": "tool",
+        "threads": 6,
+        "contextSize": 16384,
+        "thinking": false,
+        "wallMs": 2530.823299999989,
+        "inputTokens": 269,
+        "outputTokens": 20,
+        "evaluatedPromptTokens": 284,
+        "thoughtTokens": 1,
+        "elapsedMs": 2528.1305999999895,
+        "ttftMs": null,
+        "rssBytes": 2163015680,
+        "text": "",
+        "calls": [
+          {
+            "id": "b8723c61-0a38-4467-905a-7eee18960b12",
+            "name": "readBlocks",
+            "input": {
+              "blockIds": ["b8"]
+            }
+          }
+        ]
+      },
+      {
+        "kind": "chat",
+        "label": "tool",
+        "threads": 6,
+        "contextSize": 16384,
+        "thinking": false,
+        "wallMs": 2886.9390999999887,
+        "inputTokens": 273,
+        "outputTokens": 40,
+        "evaluatedPromptTokens": 272,
+        "thoughtTokens": 1,
+        "elapsedMs": 2884.4887000000017,
+        "ttftMs": 1714.5212000000029,
+        "rssBytes": 2158964736,
+        "text": "- Xin chào! Tôi có thể giúp bạn soạn thảo văn bản, chỉnh sửa nội dung, hoặc xử lý các khối tài liệu.\n- Bạn cần hỗ trợ gì cụ thể?",
+        "calls": [],
+        "generationTokensPerSecond": 32.479534687929394,
+        "promptTokensPerSecond": 158.64487414912077
+      },
+      {
+        "kind": "chat",
+        "label": "tool",
+        "threads": 6,
+        "contextSize": 16384,
+        "thinking": false,
+        "wallMs": 2517.74549999999,
+        "inputTokens": 275,
+        "outputTokens": 19,
+        "evaluatedPromptTokens": 289,
+        "thoughtTokens": 1,
+        "elapsedMs": 2514.189699999988,
+        "ttftMs": null,
+        "rssBytes": 2171039744,
+        "text": "",
+        "calls": [
+          {
+            "id": "8cd2cccb-033a-4a4b-b1db-350dbdb05771",
+            "name": "readBlocks",
+            "input": {
+              "blockIds": ["1"]
+            }
+          }
+        ]
+      },
+      {
+        "kind": "chat",
+        "label": "rag",
+        "threads": 6,
+        "contextSize": 16384,
+        "thinking": false,
+        "wallMs": 1428.795599999983,
+        "inputTokens": 118,
+        "outputTokens": 23,
+        "evaluatedPromptTokens": 117,
+        "thoughtTokens": 1,
+        "elapsedMs": 1427.2202999999863,
+        "ttftMs": 787.1343999999954,
+        "rssBytes": 2169131008,
+        "text": "Chị Lan phụ trách và nộp báo cáo vào ngày 18/12/2026.",
+        "calls": [],
+        "generationTokensPerSecond": 32.80809653829321,
+        "promptTokensPerSecond": 148.64043548344563
+      }
+    ],
+    "tools": [
+      {
+        "prompt": "Chèn đúng câu \"Báo cáo quý 3\" vào cuối tài liệu.",
+        "expected": "insertText",
+        "correct": true,
+        "calls": [
+          {
+            "id": "b92cb354-8d7d-4ca2-b7c5-2a3a23ad61de",
+            "name": "insertText",
+            "input": {
+              "text": "Báo cáo quý 3",
+              "position": "end"
+            }
+          }
+        ]
+      },
+      {
+        "prompt": "Chèn đúng câu \"Xin chào\" vào cuối tài liệu.",
+        "expected": "insertText",
+        "correct": true,
+        "calls": [
+          {
+            "id": "8c6b9600-39d3-4238-be85-5f9dcc6cd1f3",
+            "name": "insertText",
+            "input": {
+              "text": "Xin chào",
+              "position": "end"
+            }
+          }
+        ]
+      },
+      {
+        "prompt": "Chèn đúng câu \"Kế hoạch tuần\" vào cuối tài liệu.",
+        "expected": "insertText",
+        "correct": true,
+        "calls": [
+          {
+            "id": "d9a442a2-fe9c-4790-b2ab-e8fca5d34cbe",
+            "name": "insertText",
+            "input": {
+              "text": "Kế hoạch tuần",
+              "position": "end"
+            }
+          }
+        ]
+      },
+      {
+        "prompt": "Chèn đúng câu \"Biên bản họp\" vào cuối tài liệu.",
+        "expected": "insertText",
+        "correct": true,
+        "calls": [
+          {
+            "id": "525edd51-ebde-4290-9177-4e24788b2463",
+            "name": "insertText",
+            "input": {
+              "text": "Biên bản họp",
+              "position": "end"
+            }
+          }
+        ]
+      },
+      {
+        "prompt": "Chèn đúng câu \"Cảm ơn\" vào cuối tài liệu.",
+        "expected": "insertText",
+        "correct": true,
+        "calls": [
+          {
+            "id": "4db66c36-28c2-4e22-8017-1425dda626b6",
+            "name": "insertText",
+            "input": {
+              "text": "Cảm ơn",
+              "position": "end"
+            }
+          }
+        ]
+      },
+      {
+        "prompt": "Chèn đúng câu \"Lịch họp\" vào đầu tài liệu.",
+        "expected": "insertText",
+        "correct": true,
+        "calls": [
+          {
+            "id": "ec329b39-cd98-422d-8fbb-9298e6edd4e2",
+            "name": "insertText",
+            "input": {
+              "text": "Lịch họp",
+              "position": "start"
+            }
+          }
+        ]
+      },
+      {
+        "prompt": "Chèn đúng câu \"Mục lục\" vào đầu tài liệu.",
+        "expected": "insertText",
+        "correct": true,
+        "calls": [
+          {
+            "id": "7223072e-f087-4b22-ac01-a3311317c41d",
+            "name": "insertText",
+            "input": {
+              "text": "Mục lục",
+              "position": "start"
+            }
+          }
+        ]
+      },
+      {
+        "prompt": "Chèn đúng câu \"Giới thiệu\" vào đầu tài liệu.",
+        "expected": "insertText",
+        "correct": true,
+        "calls": [
+          {
+            "id": "4c23c3af-a147-4b4c-834b-c8373780f88f",
+            "name": "insertText",
+            "input": {
+              "text": "Giới thiệu",
+              "position": "start"
+            }
+          }
+        ]
+      },
+      {
+        "prompt": "Chèn đúng câu \"Tóm tắt\" vào đầu tài liệu.",
+        "expected": "insertText",
+        "correct": true,
+        "calls": [
+          {
+            "id": "c13d3e92-ffc3-4e09-91aa-1192f2a77981",
+            "name": "insertText",
+            "input": {
+              "text": "Tóm tắt",
+              "position": "start"
+            }
+          }
+        ]
+      },
+      {
+        "prompt": "Chèn đúng câu \"Thông báo\" vào đầu tài liệu.",
+        "expected": "insertText",
+        "correct": true,
+        "calls": [
+          {
+            "id": "d8875595-d1e2-4dd9-84c9-846c86727094",
+            "name": "insertText",
+            "input": {
+              "text": "Thông báo",
+              "position": "start"
+            }
+          }
+        ]
+      },
+      {
+        "prompt": "Xóa các khối có id b2.",
+        "expected": "deleteBlocks",
+        "correct": true,
+        "calls": [
+          {
+            "id": "09338b74-1fb1-4c24-8a8e-7d45b7a5c3c1",
+            "name": "deleteBlocks",
+            "input": {
+              "target": {
+                "blockIds": ["b2"]
+              }
+            }
+          }
+        ]
+      },
+      {
+        "prompt": "Xóa các khối có id b2 và b5.",
+        "expected": "deleteBlocks",
+        "correct": true,
+        "calls": [
+          {
+            "id": "3a5ba89e-24aa-4f40-bdf3-050c7602935d",
+            "name": "deleteBlocks",
+            "input": {
+              "target": {
+                "blockIds": ["b2", "b5"]
+              }
+            }
+          }
+        ]
+      },
+      {
+        "prompt": "Xóa các khối có id b7.",
+        "expected": "deleteBlocks",
+        "correct": true,
+        "calls": [
+          {
+            "id": "e9de92dd-fc77-4d5d-b604-a533ceaf9bdc",
+            "name": "deleteBlocks",
+            "input": {
+              "target": {
+                "blockIds": ["b7"]
+              }
+            }
+          }
+        ]
+      },
+      {
+        "prompt": "Xóa các khối có id b1 và b3.",
+        "expected": "deleteBlocks",
+        "correct": true,
+        "calls": [
+          {
+            "id": "6782b150-a6d6-4555-b90c-dddfcb276117",
+            "name": "deleteBlocks",
+            "input": {
+              "target": {
+                "blockIds": ["b1", "b3"]
+              }
+            }
+          }
+        ]
+      },
+      {
+        "prompt": "Xóa các khối có id b9.",
+        "expected": "deleteBlocks",
+        "correct": true,
+        "calls": [
+          {
+            "id": "36564966-c9a4-45b3-b153-865a6e3ce357",
+            "name": "deleteBlocks",
+            "input": {
+              "target": {
+                "blockIds": ["b9"]
+              }
+            }
+          }
+        ]
+      },
+      {
+        "prompt": "Đọc các khối có id b2.",
+        "expected": "readBlocks",
+        "correct": true,
+        "calls": [
+          {
+            "id": "98faf931-5f0e-4dac-80fb-d943ea500a10",
+            "name": "readBlocks",
+            "input": {
+              "blockIds": ["b2"]
+            }
+          }
+        ]
+      },
+      {
+        "prompt": "Đọc các khối có id b4 và b6.",
+        "expected": "readBlocks",
+        "correct": true,
+        "calls": [
+          {
+            "id": "18ba59c6-0dca-4c9d-b5b8-edfd14de80a3",
+            "name": "readBlocks",
+            "input": {
+              "blockIds": ["b4", "b6"]
+            }
+          }
+        ]
+      },
+      {
+        "prompt": "Đọc các khối có id b8.",
+        "expected": "readBlocks",
+        "correct": true,
+        "calls": [
+          {
+            "id": "b8723c61-0a38-4467-905a-7eee18960b12",
+            "name": "readBlocks",
+            "input": {
+              "blockIds": ["b8"]
+            }
+          }
+        ]
+      },
+      {
+        "prompt": "Xin chào, hôm nay bạn có thể giúp gì?",
+        "expected": null,
+        "correct": true,
+        "calls": []
+      },
+      {
+        "prompt": "Giải thích lợi ích của mục lục, chưa sửa tài liệu.",
+        "expected": null,
+        "correct": false,
+        "calls": [
+          {
+            "id": "8cd2cccb-033a-4a4b-b1db-350dbdb05771",
+            "name": "readBlocks",
+            "input": {
+              "blockIds": ["1"]
+            }
+          }
+        ]
+      }
+    ],
+    "hashMs": 1013.4144999999999,
+    "ragCorrect": true
+  },
+  "context32768": {
+    "at": "2026-11-19T16:35:54.233Z",
+    "hardware": {
+      "cpu": "AMD Ryzen 7 8845H w/ Radeon 780M Graphics",
+      "logicalCpus": 16,
+      "totalGiB": 27.809436798095703,
+      "freeGiB": 8.161731719970703,
+      "os": "10.0.26200",
+      "node": "v22.19.0"
+    },
+    "measurements": [
+      {
+        "kind": "load",
+        "threads": 6,
+        "contextSize": 32768,
+        "effectiveContextSize": 32768,
+        "hostStartMs": 1075.5559,
+        "loadMs": 5396.1565,
+        "totalMs": 6474.2662,
+        "rssBytes": 2069245952
+      },
+      {
+        "kind": "chat",
+        "label": "short-context",
+        "threads": 6,
+        "contextSize": 32768,
+        "thinking": false,
+        "wallMs": 2325.7875999999997,
+        "inputTokens": 71,
+        "outputTokens": 53,
+        "evaluatedPromptTokens": 70,
+        "thoughtTokens": 1,
+        "elapsedMs": 2322.4769000000006,
+        "ttftMs": 666.3429999999998,
+        "rssBytes": 2468605952,
+        "text": "Chào anh/chị,\n\nEm xin nghỉ phép trong 2 ngày, từ ngày hôm nay đến ngày thứ 4 sau này. Mọi công việc đang thực hiện sẽ được hoàn thành trước khi đi làm.\n\nTrân trọng,\n[Tên]",
+        "calls": [],
+        "generationTokensPerSecond": 30.794611474349974,
+        "promptTokensPerSecond": 105.05100226159804
+      },
+      {
+        "kind": "chat",
+        "label": "prefill-40",
+        "threads": 6,
+        "contextSize": 32768,
+        "thinking": false,
+        "wallMs": 8312.3552,
+        "inputTokens": 1068,
+        "outputTokens": 26,
+        "evaluatedPromptTokens": 1067,
+        "thoughtTokens": 1,
+        "elapsedMs": 8309.353100000002,
+        "ttftMs": 7429.151600000001,
+        "rssBytes": 2556420096,
+        "text": "Nhóm văn phòng họp vào thứ hai và báo cáo quý cần ghi rõ kết quả và kế hoạch tiếp theo.",
+        "calls": [],
+        "generationTokensPerSecond": 27.266483867614372,
+        "promptTokensPerSecond": 143.62339839720056
+      },
+      {
+        "kind": "chat",
+        "label": "prefill-165",
+        "threads": 6,
+        "contextSize": 32768,
+        "thinking": false,
+        "wallMs": 30432.5295,
+        "inputTokens": 4193,
+        "outputTokens": 27,
+        "evaluatedPromptTokens": 4192,
+        "thoughtTokens": 1,
+        "elapsedMs": 30426.930500000002,
+        "ttftMs": 29332.3597,
+        "rssBytes": 2560610304,
+        "text": "Nhóm văn phòng họp vào thứ hai. Báo cáo quý cần ghi rõ kết quả và kế hoạch tiếp theo.",
+        "calls": [],
+        "generationTokensPerSecond": 22.840002675021083,
+        "promptTokensPerSecond": 142.91383451158208
+      }
+    ],
+    "tools": [],
+    "hashMs": 1009.0453
+  },
+  "http": {
+    "version": "llama.cpp b12110 (v0.9.0)",
+    "threads": 6,
+    "contextSize": 4096,
+    "measurements": [
+      {
+        "thinking": false,
+        "ttftMs": 668.8747000000003,
+        "elapsedMs": 2823.5725,
+        "timings": {
+          "cache_n": 0,
+          "prompt_n": 74,
+          "prompt_ms": 594.379,
+          "prompt_per_token_ms": 8.032148648648649,
+          "prompt_per_second": 124.49968790956612,
+          "predicted_n": 74,
+          "predicted_ms": 2218.25,
+          "predicted_per_token_ms": 30.386986301369863,
+          "predicted_per_second": 32.90882452383636
+        },
+        "text": "- Tăng cường giao tiếp giữa các phòng ban.\n- Giảm thiểu thời gian mất mát do thông tin lan truyền sai lệch.\n- Tạo không khí làm việc tập trung và giảm stress.\n- Hoàn thiện quy trình ra quyết định nhanh hơn.\n- Khuyến khích sự tham gia của mọi người trong các dự án.",
+        "rssBytes": 1968365568
+      }
+    ],
+    "hostAndLoadMs": 2657.7134000000005
+  }
+}

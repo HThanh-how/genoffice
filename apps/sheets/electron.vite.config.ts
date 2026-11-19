@@ -1,3 +1,4 @@
+import { localLlmHostPlugin } from '../../tools/local-llm-host.mjs'
 import react from '@vitejs/plugin-react'
 import { defineConfig, externalizeDepsPlugin } from 'electron-vite'
 
@@ -8,8 +9,12 @@ export default defineConfig({
     // to resolve their relative imports at runtime and fail. Bundle those;
     // externalize everything else (Electron, zod, node builtins).
     plugins: [
+      localLlmHostPlugin(),
       externalizeDepsPlugin({
         exclude: [
+          '@genoffice/local-llm',
+          '@genoffice/ai-provider',
+          '@genoffice/agent-core',
           '@genoffice/ai-provider',
           '@genoffice/agent-core',
           '@genoffice/ai-search',
@@ -29,7 +34,15 @@ export default defineConfig({
     // in electron-utils imports the channel names from ai-provider: that has to be bundled too, or the
     // preload throws "module not found" at load and the whole tab stays white.
     plugins: [
-      externalizeDepsPlugin({ exclude: ['@genoffice/electron-utils', '@genoffice/ai-provider'] }),
+      externalizeDepsPlugin({
+        exclude: [
+          '@genoffice/local-llm',
+          '@genoffice/ai-provider',
+          '@genoffice/agent-core',
+          '@genoffice/electron-utils',
+          '@genoffice/ai-provider',
+        ],
+      }),
     ],
   },
   renderer: {

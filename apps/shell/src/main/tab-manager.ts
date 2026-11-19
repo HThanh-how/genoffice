@@ -8,6 +8,8 @@ import {
   docsQueryDirty,
   markDocsNewBlank,
   queueDocsAiContent,
+  queueDocsResultDoc,
+  type ResultDoc,
   requestDocsClose,
   setActiveDocsResolver,
   teardownDocsRenderer,
@@ -489,7 +491,7 @@ export class TabManager {
 
   openDocsTab(
     openPath?: string,
-    options?: { newBlank?: boolean; aiContent?: AiDocContent },
+    options?: { newBlank?: boolean; aiContent?: AiDocContent; resultDoc?: ResultDoc },
   ): string {
     if (openPath && !options?.newBlank) {
       const existing = this.findDocsTabByPath(openPath)
@@ -502,6 +504,7 @@ export class TabManager {
     const id = `t${this.nextId++}`
     if (options?.newBlank) markDocsNewBlank(view.webContents.id)
     if (options?.aiContent) queueDocsAiContent(view.webContents.id, options.aiContent)
+    if (options?.resultDoc) queueDocsResultDoc(view.webContents.id, options.resultDoc)
     this.shellWindow.contentView.addChildView(view)
     view.setVisible(false)
     this.trackHtmlFullScreen(view)

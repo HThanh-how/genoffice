@@ -29,6 +29,7 @@
 
 // Buffer comes from node:buffer, not the global: this file is evaluated
 // inside a vm sandbox (the packaging tests) that has no Buffer global.
+const { nativeRuntimeUnpack } = require('../../tools/local-llm-packaging.cjs')
 const { Buffer } = require('node:buffer')
 const { execFileSync } = require('node:child_process')
 const { closeSync, existsSync, openSync, readFileSync, readSync, rmSync } = require('node:fs')
@@ -100,6 +101,21 @@ const winSidecarCandidates = [
 ]
 const WIN_SIDECAR =
   winSidecarCandidates.find((rel) => existsSync(join(__dirname, rel))) ?? winSidecarCandidates[0]
+
+// Same layout rule as the sidecar: cross-build triple from the release
+// pipeline, or the host-native MSVC build on a matching Windows contributor
+// machine. Windows-only by purpose — the EMF clipboard helper has no role off
+// Windows, so its absence from other platforms' bundles is the normal state
+// and the sheets resolver degrades to a silent no-op when it is missing.
+const winClipboardCandidates = [
+  `../sheets/native/win-clipboard-helper/target/${winSidecarTarget}/release/win-clipboard-helper.exe`,
+  ...(process.platform === 'win32' && (process.arch === 'arm64') === winArm64
+    ? ['../sheets/native/win-clipboard-helper/target/release/win-clipboard-helper.exe']
+    : []),
+]
+const WIN_CLIPBOARD_HELPER =
+  winClipboardCandidates.find((rel) => existsSync(join(__dirname, rel))) ??
+  winClipboardCandidates[0]
 
 // GENOFFICE_LINUX_ARM64=1 — package the arm64 Linux artifacts instead of x64.
 // Config support only: no CI job runs a second Linux pass yet, and whether
@@ -601,6 +617,11 @@ const config = {
   },
   files: [
     'out/**',
+    '!node_modules/@node-llama-cpp/*cuda*/**',
+    '!node_modules/@node-llama-cpp/*vulkan*/**',
+    '!node_modules/@node-llama-cpp/**',
+    'node_modules/@node-llama-cpp/${os}-${arch}{,-metal}/**',
+    '!node_modules/node-llama-cpp/llama/localBuilds/**',
     // tesseract.js-core ships six builds x (wasm + wasm.js); Node reads the plain .wasm next to the .js
     // (never the base64 .wasm.js browser twin). All six builds stay: tesseract.js 7.0.0's Node getCore
     // is handed a boolean where it expects an OEM number, so it always asks for the NON-LSTM build
@@ -609,6 +630,10 @@ const config = {
     '!node_modules/tesseract.js-core/*.wasm.js',
   ],
   asarUnpack: [
+    'out/main/local-llm-host.mjs',
+    ...nativeRuntimeUnpack(join(__dirname, '../..')),
+    'node_modules/node-llama-cpp/**',
+    'node_modules/@node-llama-cpp/**',
     'node_modules/onnxruntime-node/**',
     // Tesseract.js recognises in a worker thread started from a script FILE, which must be a real file
     // (resolved as app.asar.unpacked by local-ocr/resources.ts), with every package that script requires.
@@ -792,6 +817,10 @@ const config = {
         to: 'native/xlsx-sidecar.exe',
       },
       {
+        from: WIN_CLIPBOARD_HELPER,
+        to: 'native/win-clipboard-helper.exe',
+      },
+      {
         from: 'build/shell-new',
         to: 'shell-new',
         filter: ['*.docx', '*.xlsx', '*.pptx'],
@@ -960,9 +989,9 @@ const config = {
 // scripts/win-sign.cjs, whose env-var contract applies here too), every
 // binary electron-builder signs for win (GenOffice.exe, the NSIS
 // uninstaller, and the installer) goes through that script. The static
-// extraResources binaries (xlsx-sidecar.exe, win-ocr.exe) are signed by the
-// workflow before packaging since electron-builder does not sign
-// extraResources. Unset (local / fork builds) keeps the old behavior:
+// extraResources binaries (xlsx-sidecar.exe, win-clipboard-helper.exe,
+// win-ocr.exe) are signed by the workflow before packaging since
+// electron-builder does not sign extraResources. Unset (local / fork builds) keeps the old behavior:
 // electron-builder has no signing config and packages everything unsigned.
 const winSignMode = process.env.GENOFFICE_WIN_SIGN_MODE
 if (winSignMode) {

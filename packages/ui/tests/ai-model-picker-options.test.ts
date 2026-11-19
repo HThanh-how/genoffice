@@ -9,35 +9,47 @@ import {
 } from '../src/ai-model-picker-options'
 
 const anthropicModels = AI_PROVIDERS.find((m) => m.id === 'anthropic')!.models
+const localGroup = expect.objectContaining({ id: 'local', models: ['LFM3-VL-2B-Q4_K_M'] })
 
 describe('aiModelPickerGroups', () => {
-  it('lists nothing while signed out with no keys', () => {
-    expect(aiModelPickerGroups(defaultAiSettings(), false)).toEqual([])
+  it('offers local while signed out with no keys', () => {
+    expect(aiModelPickerGroups(defaultAiSettings(), false)).toEqual([localGroup])
   })
 
   it('never lists Genspark, signed in or not (this build does not route through it)', () => {
     const ids = aiModelPickerGroups(defaultAiSettings(), true).map((g) => g.id)
-    expect(ids).toEqual([])
+    expect(ids).toEqual(['local'])
   })
 
   it('adds a vendor once its key is set and puts an off-catalog model first', () => {
     const settings = defaultAiSettings()
     settings.providers.anthropic = { apiKey: 'k', model: 'claude-next' }
     const groups = aiModelPickerGroups(settings, false)
-    expect(groups.map((g) => g.id)).toEqual(['anthropic'])
-    expect(groups[0]!.models).toEqual(['claude-next', ...anthropicModels])
+    expect(groups.map((g) => g.id)).toEqual(['local', 'anthropic'])
+    expect(groups.find((g) => g.id === 'anthropic')!.models).toEqual([
+      'claude-next',
+      ...anthropicModels,
+    ])
   })
 
   it('needs a base URL for custom endpoints', () => {
     const settings = defaultAiSettings()
     settings.providers.custom = { apiKey: '', model: 'llama', baseUrl: '' }
-    expect(aiModelPickerGroups(settings, false)).toEqual([])
+    expect(aiModelPickerGroups(settings, false)).toEqual([localGroup])
     settings.providers.custom = { apiKey: '', model: 'llama', baseUrl: 'http://localhost:11434/v1' }
-    expect(aiModelPickerGroups(settings, false).map((g) => g.id)).toEqual(['custom'])
+    expect(aiModelPickerGroups(settings, false).map((g) => g.id)).toEqual(['local', 'custom'])
   })
 })
 
 describe('selection round trip', () => {
+  it('switches a saved cloud selection to local without credentials', () => {
+    const settings = defaultAiSettings()
+    settings.provider = 'gemini'
+    const next = withAiModelSelection(settings, { provider: 'local', model: 'LFM3-VL-2B-Q4_K_M' })
+    expect(aiModelPickerSelection(next)).toEqual({ provider: 'local', model: 'LFM3-VL-2B-Q4_K_M' })
+    expect(next.providers.local.apiKey).toBe('')
+    expect(settings.provider).toBe('gemini')
+  })
   it('switches provider and model in one write and reads back', () => {
     const settings = defaultAiSettings()
     settings.providers.anthropic = { apiKey: 'k', model: anthropicModels[0]! }
@@ -64,9 +76,10 @@ describe('selection round trip', () => {
 describe('CLI vendors', () => {
   it('lists Codex only after the settings page stored a path or model', () => {
     const settings = defaultAiSettings()
-    expect(aiModelPickerGroups(settings, false)).toEqual([])
+    expect(aiModelPickerGroups(settings, false)).toEqual([localGroup])
     settings.providers.codex = { apiKey: '', model: '', cliPath: '/usr/local/bin/codex' }
     expect(aiModelPickerGroups(settings, false)).toEqual([
+      localGroup,
       { id: 'codex', label: 'Codex CLI', models: [] },
     ])
   })
@@ -176,6 +189,7 @@ describe('custom endpoints', () => {
   it('lists one group per configured endpoint with its cached models', () => {
     const groups = aiModelPickerGroups(settings(), false)
     expect(groups).toEqual([
+      localGroup,
       { id: 'custom', endpoint: 'a', label: 'Ollama', models: ['llama3'] },
       { id: 'custom', endpoint: 'b', label: 'gw.example.com', models: ['gpt-x', 'gpt-y'] },
     ])

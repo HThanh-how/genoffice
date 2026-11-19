@@ -40,10 +40,10 @@ afterEach(() => {
   clearAgyChatDefaults()
 })
 
-describe('agy-first defaults', () => {
+describe('local chat defaults and independent agy media/search defaults', () => {
   it("keeps today's fallbacks while agy is not known to be usable", () => {
     const settings = defaultAiSettings()
-    expect(settings.provider).toBe('gemini')
+    expect(settings.provider).toBe('local')
     expect(settings.media).toMatchObject({
       imageProvider: 'gemini',
       analysisProvider: 'gemini',
@@ -51,13 +51,13 @@ describe('agy-first defaults', () => {
     })
     expect(settings.search?.provider).toBe('parallel')
     setAgyUsable(false)
-    expect(defaultAiSettings().provider).toBe('gemini')
+    expect(defaultAiSettings().provider).toBe('local')
   })
 
-  it('starts every feature on agy once it is usable', () => {
+  it('keeps chat local while usable Agy supplies media and search defaults', () => {
     setAgyUsable(true)
     const settings = defaultAiSettings()
-    expect(settings.provider).toBe('agy')
+    expect(settings.provider).toBe('local')
     expect(settings.media).toMatchObject({
       imageProvider: 'agy',
       analysisProvider: 'agy',
@@ -65,7 +65,7 @@ describe('agy-first defaults', () => {
     })
     expect(settings.search?.provider).toBe('agy')
     // the selection is real, not just a label: the active resolvers honor it
-    expect(activeProvider(settings)).toBe('agy')
+    expect(activeProvider(settings)).toBe('local')
     expect(activeSearchProvider(settings)).toBe('agy')
     for (const capability of ['image', 'analysis', 'video'] as const) {
       expect(activeMediaProvider(settings, capability)).toBe('agy')
@@ -74,23 +74,23 @@ describe('agy-first defaults', () => {
   })
 
   it('takes the usability as an explicit argument too (no module state needed)', () => {
-    expect(defaultAiSettings(undefined, true).provider).toBe('agy')
-    expect(defaultAiSettings(undefined, false).provider).toBe('gemini')
+    expect(defaultAiSettings(undefined, true).provider).toBe('local')
+    expect(defaultAiSettings(undefined, false).provider).toBe('local')
     expect(defaultAiMediaSettings(true).imageProvider).toBe('agy')
     expect(defaultAiSearchSettings(true).provider).toBe('agy')
     setAgyUsable(true)
-    expect(defaultAiSettings(undefined, false).provider).toBe('gemini')
+    expect(defaultAiSettings(undefined, false).provider).toBe('local')
   })
 
-  it('a fresh install (no stored settings) resolves to agy when usable, to the old defaults otherwise', () => {
+  it('a fresh install keeps local chat independently of Agy media and search defaults', () => {
     setAgyUsable(true)
     const fresh = resolveAiSettings(undefined, defaultAiSettings())
-    expect(fresh.provider).toBe('agy')
+    expect(fresh.provider).toBe('local')
     expect(fresh.media?.imageProvider).toBe('agy')
     expect(fresh.search?.provider).toBe('agy')
     setAgyUsable(false)
     const fallback = resolveAiSettings({}, defaultAiSettings())
-    expect(fallback.provider).toBe('gemini')
+    expect(fallback.provider).toBe('local')
     expect(fallback.media?.imageProvider).toBe('gemini')
     expect(fallback.search?.provider).toBe('parallel')
   })
@@ -156,7 +156,7 @@ describe('agy-first defaults', () => {
     expect(resolved.search?.provider).toBe('parallel')
   })
 
-  it('a stored genspark selection is normalised to the agy default (or the old fallback)', () => {
+  it('a stored genspark chat selection is normalised to local', () => {
     const stored = {
       provider: 'genspark',
       providers: {} as never,
@@ -169,7 +169,7 @@ describe('agy-first defaults', () => {
     }
     setAgyUsable(true)
     const viaAgy = resolveAiSettings(stored, defaultAiSettings())
-    expect(viaAgy.provider).toBe('agy')
+    expect(viaAgy.provider).toBe('local')
     expect(viaAgy.media).toMatchObject({
       imageProvider: 'agy',
       analysisProvider: 'agy',
@@ -178,7 +178,7 @@ describe('agy-first defaults', () => {
     expect(viaAgy.search?.provider).toBe('agy')
     setAgyUsable(false)
     const fallback = resolveAiSettings(stored, defaultAiSettings())
-    expect(fallback.provider).toBe('gemini')
+    expect(fallback.provider).toBe('local')
     expect(fallback.media?.imageProvider).toBe('gemini')
     expect(fallback.search?.provider).toBe('parallel')
   })
@@ -369,7 +369,7 @@ describe('first-run chat model, scoped to the CLI that was configured', () => {
     setAgyUsable(true)
     const settings = defaultAiSettings()
     expect(settings.providers.agy.model).toBe('')
-    expect(settings.provider).toBe('agy')
+    expect(settings.provider).toBe('local')
     // the picker still has something to offer for a provider nobody configured
     expect(AGY_PROVIDER_META.defaultModel).toBe('gemini-3.8-flash-high')
   })
@@ -532,7 +532,7 @@ describe('CLI usability is scoped to the configured CLI (U1-U12)', () => {
     await probeAgyUsable('/cli/new', { list: async () => ({ models: [] }), now: () => 2 })
     setAgyUsable(true)
     const settings = defaultAiSettings()
-    expect(settings.provider).toBe('agy')
+    expect(settings.provider).toBe('local')
     expect(settings.providers.agy.model).toBe('')
     expect(agyChatDefaultModel('/cli/new')).toBeUndefined()
     expect(agyChatDefaultModel('/cli/old')).toBe('gemini-3.1-pro-low')
@@ -713,7 +713,7 @@ describe('CLI usability is scoped to the configured path (D1-D16)', () => {
     await probeAgyUsable('/cli/a', { list: async () => ok, now: () => 1 })
     await probeAgyUsable('/cli/b', { list: async () => bad, now: () => 2 })
     const settings = defaultAiSettings()
-    expect(settings.provider).toBe('gemini')
+    expect(settings.provider).toBe('local')
     expect(settings.providers.agy.model).toBe('')
     expect(agyChatDefaultModel('/cli/a')).toBe('gemini-3.8-flash-high')
     expect(agyChatDefaultModel('/cli/b')).toBeUndefined()

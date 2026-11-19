@@ -46,6 +46,7 @@ export function ClipboardHistoryItems({ editor, lang, variant, wrap, limit }: Pr
   const ctx = variant === 'ctx'
   const item = ctx ? 'ctx-item' : 'paste-history-item'
   const label = ctx ? 'ctx-label' : undefined
+  // always-disabled: a status row (feature off / nothing copied yet), not an action
   const notice = (text: string) => (
     <button className={item} role={ctx ? undefined : 'menuitem'} disabled>
       <span className={label}>{text}</span>

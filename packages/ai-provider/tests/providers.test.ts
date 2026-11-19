@@ -16,7 +16,7 @@ import type { AiProviderId } from '../src/types'
 describe('defaultAiSettings', () => {
   it('gives every provider its default model and an empty key by default', () => {
     const settings = defaultAiSettings()
-    expect(settings.provider).toBe('gemini')
+    expect(settings.provider).toBe('local')
     for (const meta of AI_PROVIDERS) {
       expect(settings.providers[meta.id].apiKey).toBe('')
       // Antigravity is seeded empty on purpose: its first-run model comes from `agy models`,
@@ -432,7 +432,7 @@ describe('clampMaxOutputTokens', () => {
 describe('activeProvider', () => {
   it('keeps the selected provider while its key is being configured', () => {
     const settings = defaultAiSettings()
-    expect(activeProvider(settings)).toBe('gemini')
+    expect(activeProvider(settings)).toBe('local')
     settings.provider = 'kimi'
     expect(activeProvider(settings)).toBe('kimi')
     settings.provider = 'custom'
@@ -444,9 +444,9 @@ describe('activeProvider', () => {
   it('never selects Genspark or an unknown provider from saved settings', () => {
     const settings = defaultAiSettings()
     settings.provider = 'genspark'
-    expect(activeProvider(settings)).toBe('gemini')
+    expect(activeProvider(settings)).toBe('local')
     settings.provider = 'nonsense' as AiProviderId
-    expect(activeProvider(settings)).toBe('gemini')
+    expect(activeProvider(settings)).toBe('local')
   })
 })
 
@@ -457,7 +457,7 @@ describe('gskToolsEnabled', () => {
       { provider: 'genspark', providers: {}, gskToolsEnabled: true },
       defaultAiSettings(),
     )
-    expect(resolved.provider).toBe('gemini')
+    expect(resolved.provider).toBe('local')
     expect(cloudToolsEnabled(resolved)).toBe(false)
   })
 })

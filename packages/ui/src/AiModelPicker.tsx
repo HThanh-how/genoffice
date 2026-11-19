@@ -357,6 +357,7 @@ export function AiModelPicker({
                         key={`${g.id}:${g.endpoint ?? ''}:${m}`}
                         type="button"
                         role="option"
+                        data-provider={g.id}
                         aria-selected={selected}
                         aria-disabled={blocked}
                         disabled={blocked}
@@ -387,6 +388,7 @@ export function AiModelPicker({
                   <button
                     type="button"
                     role="option"
+                    data-provider={g.id}
                     aria-selected={false}
                     className="ai-model-item"
                   >

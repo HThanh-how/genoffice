@@ -1,3 +1,5 @@
+import { registerLocalModel } from './local-model/ipc'
+import { shutdownLocalChat } from '@genoffice/electron-utils/local-chat'
 import './uv-threadpool'
 import { watchRootAvailability } from './document-memory/runtime/root-lifecycle'
 import { powerMonitor as rootPowerMonitor } from 'electron'
@@ -103,7 +105,7 @@ import {
   shell,
   webContents,
 } from 'electron'
-import type { MenuItemConstructorOptions, NativeImage, WebContents } from 'electron'
+import type { MenuItemConstructorOptions, NativeImage, Rectangle, WebContents } from 'electron'
 import { atomicCopyFile, atomicWriteFile } from './atomic-write'
 import { convertLegacyDoc, DEFAULT_LEGACY_DOC_SERVICE } from './legacy-doc'
 import {
@@ -184,6 +186,7 @@ import {
   readPdfDefaultZoom,
   sanitizePdfDefaultZoom,
   writePdfDefaultZoom,
+  tileWindows,
 } from '@genoffice/electron-utils'
 import { installThemedDialogs } from '@genoffice/electron-utils/message-box'
 import { createMainProcessProxyDispatcher } from '@genoffice/electron-utils/main-proxy'
@@ -244,6 +247,7 @@ import {
   genofficeLogout,
   gskLoginInfo,
   loadGenofficeAuth,
+  setGenofficeLoginSuccessListener,
   setGskProxyUrl,
   startGenofficeLogin,
   watchGskApiKey,
@@ -550,7 +554,10 @@ import {
   detachedWebContentsFor,
   detachedSetTitleFor,
   detachedWindowForWebContents,
+  detachedWindowsOf,
+  holdDocking,
   dockBandFor,
+  releaseDetachedOf,
   dragTornWindow,
   endTornDrag,
   findDetachedTabByPath,
@@ -818,7 +825,13 @@ const publishOpenDocumentsIfOwner = (paths: readonly string[]) => {
 function publishAllOpenDocuments(): void {
   publishOpenDocumentsIfOwner([...(tabManager?.openFilePaths() ?? []), ...detachedFilePaths()])
 }
-setDetachedChangedListener(publishAllOpenDocuments)
+setDetachedChangedListener(() => {
+  publishAllOpenDocuments()
+  // Docs greys Merge All Windows while no window of its own stands outside the strip
+  const count = detachedWindowsOf('docs').length
+  for (const wc of webContents.getAllWebContents())
+    if (!wc.isDestroyed()) wc.send('win:detached-changed', count)
+})
 
 let uiLang: Lang | null = null
 
@@ -1587,6 +1600,137 @@ const tMain = createI18n({
     dlgPickSaveDir: 'Varsayılan Kayıt Konumunu Seçin',
     errSaveDirUnusable:
       'Seçilen klasör yazılabilir değil ve varsayılan kayıt konumu olarak kullanılamaz',
+  },
+  hu: {
+    menuTabSave: 'Mentés',
+    menuTabSaveAs: 'Mentés másként…',
+    menuTabPrint: 'Nyomtatás…',
+    menuTabRename: 'Átnevezés',
+    menuTabDuplicate: 'Duplikálás (a mentett fájl másolása)',
+    menuTabSplitBeside: 'Felosztás egymás mellett',
+    menuTabCopyPath: 'Elérési út másolása',
+    menuTabCopyName: 'Fájlnév másolása',
+    menuTabReveal: 'Megjelenítés a mappában',
+    menuTabOpenDefault: 'Megnyitás az alapértelmezett alkalmazással',
+    menuTabMoveLeft: 'Mozgatás balra',
+    menuTabMoveRight: 'Mozgatás jobbra',
+    menuTabCloseOthers: 'Többi lap bezárása',
+    menuTabCloseRight: 'Jobbra lévő lapok bezárása',
+    menuTabCloseAll: 'Az összes lap bezárása',
+    menuTabReopen: 'Bezárt lap újranyitása',
+    menuTabPin: 'Lap rögzítése (betöltve marad)',
+    menuTabUnpin: 'Lap rögzítésének feloldása',
+    dlgAddFolderRoot: 'Mappa hozzáadása a kezdőképernyőhöz',
+    watchdogTitle: 'A dokumentum túl sok erőforrást használ',
+    watchdogBody:
+      'A(z) „{title}” már több perce jelentős memória- vagy CPU-használatot mutat ({memory} MB, {cpu}% CPU). Várhatsz tovább, vagy bezárhatod a dokumentumot (a bezárás előtt megkérdezzük az elmentetlen módosítások mentését). A diagnosztikai adatok rögzítésre kerültek.',
+    watchdogWait: 'Várakozás folytatása',
+    watchdogClose: 'Dokumentum bezárása',
+    watchdogIgnore: 'Ne emlékeztessen többé',
+    errFolderRootUnusable: 'A kijelölt mappa nem olvasható',
+    menuFile: 'Fájl',
+    menuSectionNew: 'Új',
+    menuView: 'Nézet',
+    menuUiZoomIn: 'Felület nagyítása',
+    menuUiZoomOut: 'Felület kicsinyítése',
+    menuUiZoomReset: 'Felületi nagyítás visszaállítása',
+    menuOpenInNewWindow: 'Megnyitás új ablakban',
+    menuNewDoc: 'AI Docs',
+    menuNewSheet: 'AI Sheets',
+    untitledSheet: 'Névtelen táblázat',
+    untitledDoc: 'Névtelen dokumentum',
+    untitledDeck: 'Névtelen bemutató',
+    untitledMarkdown: 'Névtelen Markdown',
+    untitledHtml: 'Névtelen HTML',
+    untitledPdf: 'Névtelen PDF',
+    menuNewSlide: 'AI Slides',
+    menuNewMarkdown: 'AI Markdown',
+    menuNewHtml: 'AI HTML',
+    menuNewPdf: 'AI PDF',
+    menuExportPdf: 'Exportálás PDF-ként…',
+    menuExportImages: 'Exportálás képként…',
+    menuExportHtml: 'Exportálás egyetlen HTML-fájlként…',
+    menuOpenInDocs: 'Átalakítás és megnyitás a Docsban',
+    menuPrint: 'Nyomtatás…',
+    menuOpen: 'Megnyitás…',
+    menuSave: 'Mentés',
+    menuSaveAs: 'Mentés másként…',
+    menuClose: 'Bezárás',
+    menuEdit: 'Szerkesztés',
+    menuWindow: 'Ablak',
+    menuHome: 'Kezdőképernyő',
+    backToHome: 'Vissza a kezdőképernyőre',
+    dlgOpenTitle: 'Fájl megnyitása',
+    filterSupported: 'Támogatott fájlok',
+    filterWord: 'Word-dokumentumok',
+    filterExcel: 'Excel-munkafüzetek',
+    filterPpt: 'PowerPoint-bemutatók',
+    filterMarkdown: 'Szöveges fájlok (Markdown, TXT, JSON)',
+    filterHtml: 'HTML-dokumentumok',
+    filterPdf: 'PDF-dokumentumok',
+    errBadArgs: 'Érvénytelen argumentumok',
+    errBadName: 'Érvénytelen fájlnév',
+    errBadExtension: 'Ez a kiterjesztés nem támogatott, és a fájl a továbbiakban nem nyílna meg',
+    errMissing: 'A fájl nem található',
+    errExists: 'Már létezik ilyen nevű fájl',
+    errRenameFailed: 'Az átnevezés nem sikerült',
+    errPdfSaveAsFailed: 'Nem sikerült menteni a PDF-másolatot',
+    errNewTabFailed: 'Nem sikerült létrehozni az új dokumentumot',
+    errDuplicateFailed: 'Nem sikerült másolatot készíteni a fájlról',
+    errUnsupportedExt: 'A .{ext} kiterjesztésű fájlok nem támogatottak',
+    copySuffix: 'másolat',
+    menuHelp: 'Súgó',
+    menuUserGuide: 'Felhasználói útmutató',
+    thirdPartyNotices: 'Harmadik felek közleményei',
+    menuExportDocx: 'Exportálás Word formátumba…',
+    btnCancel: 'Mégse',
+    pdfDocxFailedMsg: 'Nem sikerült az exportálás Word formátumba',
+    pdfConvertFailedMsg: 'Nem sikerült az exportálás Markdown / HTML formátumba',
+    pdfDocxBusyMsg: 'Már folyamatban van egy Word-exportálás. Várj, amíg befejeződik.',
+    menuExportPptx: 'Exportálás PowerPoint formátumba…',
+    pdfPptxFailedMsg: 'Nem sikerült az exportálás PowerPoint formátumba',
+    pdfPptxBusyMsg: 'Már folyamatban van egy exportálás. Várj, amíg befejeződik.',
+    pdfPptxLocalScannedDetail:
+      'Minden oldal teljes oldalas képként lett exportálva; a diákon lévő szöveg nem szerkeszthető.',
+    menuExportXlsx: 'Exportálás Excel formátumba…',
+    pdfXlsxFailedMsg: 'Nem sikerült az exportálás Excel formátumba',
+    pdfXlsxBusyMsg: 'Már folyamatban van egy exportálás. Várj, amíg befejeződik.',
+    pdfXlsxLocalScannedDetail:
+      'A beolvasott oldalak nem alakíthatók cellákká; helyettük minden oldal munkalapján egy figyelmeztető sor szerepel.',
+    pdfXlsxLocalSkippedMsg: 'Néhány oldalt nem sikerült cellákká alakítani',
+    pdfXlsxLocalSkippedDetail:
+      'Ezeket az oldalakat nem sikerült cellákká alakítani: {pages}; helyettük a munkalapjaikon egy figyelmeztető sor szerepel.',
+    pdfDocxLocalScannedMsg: 'Beolvasott dokumentum észlelve',
+    pdfMdLocalMissingMsg: 'A Markdownból hiányzik néhány tartalomrész',
+    pdfMdLocalScannedDetail:
+      'Nem volt felismerhető szerkeszthető szöveg, ezért a Markdown-fájl nem tartalmaz használható tartalmat.',
+    pdfMdLocalDroppedDetail:
+      'Ezeket az oldalakat nem sikerült megbízhatóan rekonstruálni: {pages}; a Markdown nem tud képeket tárolni, így a tartalmuk hiányzik.',
+    pdfDocxLocalScannedDetail:
+      'Az oldalakat a megjelenésük megőrzése érdekében képként exportáltuk; szerkeszthető szöveg nem volt felismerhető.',
+    pdfDocxLocalDegradedMsg: 'Néhány oldal képként lett exportálva',
+    pdfDocxLocalDegradedDetail:
+      'Ezeket az oldalakat nem sikerült megbízhatóan rekonstruálni: {pages}; teljes oldalas képként lettek exportálva.',
+    pdfDocxLocalOcrMsg: 'Beolvasott oldalak szerkeszthető szöveggé alakítva',
+    pdfDocxLocalOcrDetail:
+      'Ezek az oldalak beolvasottak voltak: {pages}; a szövegüket az eszközön végzett OCR-rel sikerült helyreállítani. Ellenőrizd az eredményt.',
+    pdfDocxLocalEncryptedDetail:
+      'Ez a PDF titkosított, és a helyes jelszó nélkül nem nyitható meg.',
+    pdfDocxLocalUnsupportedEncDetail:
+      'Ez a PDF tanúsítványalapú vagy más módon nem támogatott titkosítást használ, ezért nem alakítható át.',
+    pdfPwdTitle: 'Jelszó megadása',
+    pdfPwdPrompt: 'Ez a PDF titkosított. A megnyitáshoz add meg a jelszót:',
+    pdfPwdRetryPrompt: 'Hibás jelszó. Próbáld újra.',
+    pdfPwdOk: 'OK',
+    pdfPwdVerifying: 'Jelszó ellenőrzése…',
+    pdfPwdLabel: 'Jelszó',
+    pdfPwdPlaceholder: 'Add meg a megnyitási jelszót',
+    pdfPwdShow: 'Jelszó megjelenítése',
+    pdfPwdHide: 'Jelszó elrejtése',
+    pdfDocxLocalCorruptDetail: 'A fájl sérült, vagy nem érvényes PDF, ezért nem alakítható át.',
+    dlgPickSaveDir: 'Alapértelmezett mentési hely kiválasztása',
+    errSaveDirUnusable:
+      'A kiválasztott mappa nem írható, ezért nem használható alapértelmezett mentési helyként',
   },
   ja: {
     menuTabSave: '保存',
@@ -3994,6 +4138,16 @@ function insideAnyRoot(path: string): boolean {
   return folderRootPaths().some((root) => isInsideRoot(root, path))
 }
 
+/** Whether the home UI can legitimately be showing this path: the folder
+ *  tree's roots (save folder + added roots) plus the exact recent and starred
+ *  files, which may live anywhere. The reveal channel opens Finder at the
+ *  path a renderer names, so it stays limited to that set. */
+function isRevealablePath(path: string): boolean {
+  if (insideAnyRoot(path)) return true
+  const key = resolve(path)
+  return [...readRecentFiles(), ...readStarredFiles()].some((p) => resolve(p) === key)
+}
+
 function isAnyRoot(path: string): boolean {
   const key = resolve(path)
   return folderRootPaths().some((root) => resolve(root) === key)
@@ -4319,23 +4473,32 @@ function applyMenuFor(kind: TabKind): void {
  * tab. CmdOrCtrl+Alt (not Shift): Shift+= is Sheets insert-cells and Docs
  * superscript, and the View menu now exists on editor tabs too, where those
  * accelerators are taken.
+ *
+ * On macOS it is Cmd+Ctrl instead: Sheets binds Cmd+Opt+- / Cmd+Opt+0 to the
+ * Excel-for-Mac border chords and the sheet swallows Cmd+Opt+= as well, so the
+ * Option chords never reached this menu on the one tab the scale applies to.
  */
+const UI_ZOOM_ACCEL =
+  process.platform === 'darwin'
+    ? { in: 'Cmd+Ctrl+=', out: 'Cmd+Ctrl+-', reset: 'Cmd+Ctrl+0' }
+    : { in: 'CmdOrCtrl+Alt+=', out: 'CmdOrCtrl+Alt+-', reset: 'CmdOrCtrl+Alt+0' }
+
 function uiScaleMenuItems(): MenuItemConstructorOptions[] {
   return [
     {
       label: tm('menuUiZoomIn'),
-      accelerator: 'CmdOrCtrl+Alt+=',
+      accelerator: UI_ZOOM_ACCEL.in,
       click: () => changeUiScale(APP_SETTINGS_PATH(), 1),
     },
     {
       label: tm('menuUiZoomOut'),
-      accelerator: 'CmdOrCtrl+Alt+-',
+      accelerator: UI_ZOOM_ACCEL.out,
       click: () => changeUiScale(APP_SETTINGS_PATH(), -1),
     },
     { type: 'separator' },
     {
       label: tm('menuUiZoomReset'),
-      accelerator: 'CmdOrCtrl+Alt+0',
+      accelerator: UI_ZOOM_ACCEL.reset,
       click: () => changeUiScale(APP_SETTINGS_PATH(), 0),
     },
   ]
@@ -4358,7 +4521,7 @@ function withViewMenu(): void {
   const menu = Menu.getApplicationMenu()
   if (!menu) return
   const hasScale = menu.items.some((item) =>
-    item.submenu?.items.some((i) => i.accelerator === 'CmdOrCtrl+Alt+='),
+    item.submenu?.items.some((i) => i.accelerator === UI_ZOOM_ACCEL.in),
   )
   if (hasScale) return
   const view = menu.items.find((item) => item.label === tm('menuView'))
@@ -4369,12 +4532,18 @@ function withViewMenu(): void {
       .items) {
       view.submenu.append(item)
     }
+    // Items appended to the live application menu stay in the Electron model
+    // but never reach the native macOS bar (Sheets: View showed only the system
+    // "Full Screen"). Setting the menu again rebuilds the bar from the model.
+    Menu.setApplicationMenu(menu)
     return
   }
   const viewItem = Menu.buildFromTemplate([viewMenuTemplate()]).items[0]!
   const helpIdx = menu.items.findIndex((item) => item.role === 'help')
   if (helpIdx === -1) menu.append(viewItem)
   else menu.insert(helpIdx, viewItem)
+  // Same as above: rebuild the native bar from the updated model.
+  Menu.setApplicationMenu(menu)
 }
 
 /// Interface scale (genoffice#1913). Read once at boot, then replaced by the View menu.
@@ -4677,11 +4846,15 @@ function createShellWindow(): void {
     openTab: (openPath, options) => ensureTabManager().openDocsTab(openPath, options),
     openAiDocTab: (content) =>
       ensureTabManager().openDocsTab(undefined, { newBlank: true, aiContent: content }),
+    openResultDocTab: (doc) => ensureTabManager().openDocsTab(undefined, { resultDoc: doc }),
     listTabs: () =>
       (tabManager?.list() ?? [])
         .filter((t) => t.kind === 'docs')
         .map((t) => ({ id: t.id, title: t.title, focused: t.active })),
     focusTab: (id) => tabManager?.activateTab(id),
+    arrangeAll: arrangeDocsWindows,
+    gatherWindows: gatherDocsWindows,
+    detachedWindowCount: () => detachedWindowsOf('docs').length,
     // ⌘W in a detached docs window closes that window (its own close guard runs)
     closeActiveTab: () => {
       const focused = BrowserWindow.getFocusedWindow()
@@ -4690,6 +4863,7 @@ function createShellWindow(): void {
     },
     openGeneratedPath: (path) => openGeneratedDocument(path),
     openDocumentPath,
+    fileMoved: afterFileMoved,
   })
   setSheetsCloseTabHook(() => {
     const focused = BrowserWindow.getFocusedWindow()
@@ -6436,7 +6610,8 @@ function registerHomeIpc(): void {
   })
 
   ipcMain.handle(HOME_CHANNELS.revealPath, (_event, path: unknown) => {
-    if (typeof path === 'string' && existsSync(path)) shell.showItemInFolder(path)
+    if (typeof path === 'string' && isRevealablePath(path) && existsSync(path))
+      shell.showItemInFolder(path)
   })
 
   ipcMain.handle(
@@ -7651,6 +7826,57 @@ function detachTabToWindow(id: string): void {
   if (!record) return
   const win = createDetachedEditorWindow({ ...record, applyMenuFor })
   win.focus()
+}
+
+/** Docs' Arrange All: the shell window is a tile only while its active tab is a Docs document */
+function arrangeDocsWindows(from: WebContents): void {
+  const fromWindow = detachedWindowForWebContents(from.id) ?? shellWindow
+  if (!fromWindow || fromWindow.isDestroyed()) return
+  let shellShowsDocs = false
+  if (tabManager && shellWindow && !shellWindow.isDestroyed()) {
+    for (const tab of tabManager.list()) {
+      if (tab.kind !== 'docs') continue
+      if (tab.active) {
+        shellShowsDocs = true
+        continue
+      }
+      tabManager.webContentsForTab(tab.id)
+      const record = tabManager.detachTab(tab.id)
+      if (record) createDetachedEditorWindow({ ...record, applyMenuFor })
+    }
+  }
+  const windows = [
+    ...(shellShowsDocs && shellWindow ? [shellWindow] : []),
+    ...detachedWindowsOf('docs'),
+  ]
+  const ordered = [fromWindow, ...windows.filter((w) => w !== fromWindow)].filter((w) =>
+    windows.includes(w),
+  )
+  if (shellShowsDocs && shellWindow && windows.length > 1)
+    shellBoundsBeforeArrange ??= shellWindow.getBounds()
+  tileWindows(ordered, screen.getDisplayMatching(fromWindow.getBounds()).workArea, holdDocking)
+  fromWindow.focus()
+  if (!from.isDestroyed()) from.focus()
+}
+
+/** the shell window's place before Arrange All made a tile of it */
+let shellBoundsBeforeArrange: Rectangle | null = null
+
+/** the inverse of Arrange All: every detached Docs window becomes a tab of the shell window again */
+function gatherDocsWindows(from: WebContents): void {
+  const tabs = releaseDetachedOf('docs')
+  const manager = ensureTabManager()
+  for (const tab of tabs) manager.attachTab(tab)
+  const win = shellWindow
+  if (!win || win.isDestroyed()) return
+  if (shellBoundsBeforeArrange && tabs.length > 0) win.setBounds(shellBoundsBeforeArrange)
+  shellBoundsBeforeArrange = null
+  const fromTab = from.isDestroyed() ? undefined : manager.tabIdForWebContents(from.id)
+  if (fromTab) manager.activateTab(fromTab)
+  if (win.isMinimized()) win.restore()
+  win.show()
+  win.focus()
+  if (!from.isDestroyed()) from.focus()
 }
 
 /** Tear-off: the tab leaves the strip for a window created under the held
@@ -8924,6 +9150,7 @@ app.on('second-instance', (_event, argv, _cwd, additionalData) => {
 
 installNavigationGuard(app)
 installContextMenu(app, () => contextMenuLabels(currentLang()))
+registerLocalModel(currentLang)
 registerAiIpc()
 const openHomeSettings = (section: 'aiModel' | 'skills'): void => {
   const win = shellWindow
@@ -9047,6 +9274,8 @@ async function startShell(): Promise<void> {
   // optional live background media (serves only the file the user chose in Settings)
   liveBackground?.installProtocol()
   if (headlessArgv.kind !== 'none') {
+    // Headless renderers use the same shared language as editor tabs.
+    currentLang()
     await runHeadlessExportEntry(headlessArgv)
     return
   }
@@ -9167,6 +9396,21 @@ async function startShell(): Promise<void> {
     if (!loadGenofficeAuth()) return
     for (const w of BrowserWindow.getAllWindows())
       w.webContents.send(HOME_CHANNELS.accountLoginEvent, { phase: 'success' })
+  })
+  // A browser-approved login is otherwise invisible from the app: the approval
+  // happens in the system browser and nothing navigates back. Pull the window
+  // the user left back to the front and tell every view, so the surface they
+  // logged in from — an editor AI panel included — confirms the login at once.
+  setGenofficeLoginSuccessListener(() => {
+    if (shellWindow && !shellWindow.isDestroyed()) {
+      if (shellWindow.isMinimized()) shellWindow.restore()
+      shellWindow.show()
+      shellWindow.moveTop()
+      shellWindow.focus()
+    }
+    app.focus({ steal: true })
+    for (const wc of webContents.getAllWebContents())
+      if (!wc.isDestroyed()) wc.send('ai:gsk-login-landed')
   })
   // a registry left by a crashed instance must not block genoffice writes
   ownsOpenDocumentsRegistry = true
@@ -9535,6 +9779,7 @@ app.on('will-quit', (event) => {
     documentMemory?.dbPath ?? join(resolveDbDir(app.getPath('userData')), 'document-memory.db')
   const indexDbPath = join(app.getPath('userData'), 'file-index.db')
   const steps: QuitStep[] = [
+    { name: 'local-chat-stop', essential: true, run: shutdownLocalChat },
     {
       name: 'stop-background',
       essential: true,

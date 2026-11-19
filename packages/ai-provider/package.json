@@ -20,7 +20,9 @@
     "./provider-models": "./src/provider-models.ts",
     "./trace": "./src/trace.ts",
     "./agy-resident": "./src/agy-resident.ts",
-    "./diag-hook": "./src/diag-hook.ts"
+    "./diag-hook": "./src/diag-hook.ts",
+    "./local": "./src/local.ts",
+    "./local-copy": "./src/local-copy.ts"
   },
   "scripts": {
     "typecheck": "tsc --noEmit",
@@ -28,7 +30,9 @@
     "test:watch": "vitest"
   },
   "dependencies": {
-    "@genoffice/agent-core": "*"
+    "@genoffice/agent-core": "*",
+    "@genoffice/local-llm": "*",
+    "@genoffice/i18n": "*"
   },
   "devDependencies": {
     "typescript": "^5.9.3",

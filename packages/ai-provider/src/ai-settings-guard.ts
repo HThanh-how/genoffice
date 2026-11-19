@@ -1,3 +1,4 @@
+import { localOptions } from '@genoffice/local-llm/protocol'
 /**
  * Schema check for renderer-supplied AI settings. Apps wire it into their AI
  * IPC handlers: 'ai:set-settings' (what gets persisted), 'ai:stream' and
@@ -86,6 +87,9 @@ function sanitizeBaseUrl(raw: unknown): string | undefined {
 function sanitizeProviderConfig(input: unknown): AiProviderConfig {
   const raw = (typeof input === 'object' && input !== null ? input : {}) as Record<string, unknown>
   const config: AiProviderConfig = {
+    ...(raw.local && typeof raw.local === 'object'
+      ? { local: localOptions(raw.local as Parameters<typeof localOptions>[0]) }
+      : {}),
     apiKey: String(raw.apiKey ?? '').slice(0, MAX_API_KEY_LENGTH),
     model: String(raw.model ?? '').slice(0, MAX_MODEL_LENGTH),
   }

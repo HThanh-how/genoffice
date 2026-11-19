@@ -170,6 +170,49 @@ const dicts = defineStrings({
     backupFailed: 'Yedek silinemedi: {error}',
     backupBlocked: 'Yedek şu anda silinemiyor (bir yükseltme hâlâ sürüyor olabilir).',
   },
+  hu: {
+    title: 'Index mérete',
+    hint: 'A dokumentumindex által felhasználható legnagyobb lemezterület. Az eredeti fájljaidhoz soha nem nyúl.',
+    presetSaver: 'Takarékos',
+    presetDefault: 'Alapértelmezett',
+    presetHigh: 'Magas',
+    presetCustom: 'Egyéni',
+    forRam: '4 GB RAM-os számítógépekhez',
+    recommended: 'Ehhez a számítógéphez ajánlott',
+    customLabel: 'Egyéni méret (MB, legalább 500)',
+    save: 'Mentés',
+    saved: 'Az index mérete frissítve',
+    savedPending: 'Mentve. Várakozás az indexelő alkalmazására…',
+    invalid: 'A méretnek 500 MB és 100 GB között kell lennie',
+    used: '{used} használatban a(z) {quota} keretből ({pct}%)',
+    estimate: 'Becslés: szemantikus kereséssel kb. {n} szöveges dokumentum fér el',
+    estimateLexical: 'csak szöveges keresés megtartásával kb. {n}',
+    estimateNote:
+      'Átlagos szöveges dokumentumokra vonatkozó becslés; a beolvasott lapok, a képek és a nagyon hosszú fájlok több helyet foglalnak.',
+    nameFull:
+      'A név/útvonal terület megtelt. Az automatikus tömörítés nem tudja felszabadítani a használatban lévő fájlazonosítókat; válassz kevesebb mappát.',
+    nameReserve:
+      'Fájlnevek és útvonalak: {used} a(z) {quota} keretből, a kiválasztott kvótán belül lefoglalva.',
+    grace: 'Önrendezés közben az index átmenetileg legfeljebb 10%-kal túllépheti ezt a méretet.',
+    graceActive:
+      'A korlát {over} értékkel túllépve. Az index automatikusan rendezi magát; az új fájlok továbbra is hozzáadódnak.',
+    full: 'Az index megtelt. Szabadíts fel helyet, vagy növeld a méretet. A keresés és az olvasás továbbra is működik.',
+    lowerNote:
+      'A méret csökkentése automatikusan tömöríti az indexet. Az eredeti fájljaidhoz soha nem nyúl.',
+    statusApplied: 'Alkalmazva',
+    statusPending: 'Várakozás az indexelőre…',
+    statusError: 'Nem sikerült alkalmazni: {error}',
+    backupTitle: 'Régi indexmentés',
+    backupText:
+      'A frissítés előtti index ({size}) mentésként megmarad. Nem számít bele az index méretébe, és {days} nap után automatikusan törlődik. Az eredeti fájljaidhoz soha nem nyúl.',
+    backupDelete: 'Régi indexmentés törlése ({size} szabadul fel)',
+    backupConfirm:
+      'Törlöd a régi indexmentést, és felszabadítasz {size} területet? Az aktuális indexet és az eredeti fájljaidat ez nem érinti. A mentés később nem állítható vissza.',
+    backupConfirmLabel: 'Mentés törlése',
+    backupDeleted: 'A régi indexmentés törölve. {size} felszabadítva.',
+    backupFailed: 'A mentést nem sikerült törölni: {error}',
+    backupBlocked: 'A mentés jelenleg nem törölhető (lehet, hogy még fut egy frissítés).',
+  },
   ja: {
     title: '索引のサイズ',
     hint: 'ドキュメント索引が使えるディスク容量の上限です。元のファイルには一切手を加えません。',

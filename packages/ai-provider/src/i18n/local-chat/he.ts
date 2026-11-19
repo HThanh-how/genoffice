@@ -1,0 +1,27 @@
+import { copy as zh } from './zh'
+export const copy = {
+  title: 'מודל צ׳אט מקומי',
+  missing: 'לא הורד',
+  checking: 'אימות SHA-256…',
+  downloading: 'מוריד {n}%',
+  paused: 'מושהה {n}%',
+  ready: 'מוכן',
+  error: 'שגיאה',
+  download: 'הורדה',
+  cancel: 'ביטול',
+  resume: 'המשך',
+  remove: 'מחיקת מודל',
+  keepHot: 'שמירה בזיכרון (דקות)',
+  thinking: 'הסקה (איטי יותר)',
+  autoDownload: 'הורדת מודל לפי הצורך',
+  advanced: 'מתקדם',
+  threads: 'תהליכוני CPU',
+  gpu: 'מנוע',
+  context: 'טוקנים בהקשר',
+  limits: 'טקסט בלבד, תמונות עדיין אינן נתמכות. לא מומלץ לקוד, לשיחות ארוכות או להסקה מורכבת.',
+  license: 'LFM Open License v1.0: הכנסות שנתיות מעל 10 מיליון USD דורשות הסכם נפרד עם Liquid AI.',
+  gpuWarning:
+    'ברירת המחדל היא CPU. Vulkan קרס ב-Radeon 780M בבדיקה; GPU דורש סביבת ריצה תואמת המותקנת בנפרד.',
+  offline: 'אין חיבור. התחבר להורדת המודל המקומי.',
+  metered: 'רשת בתשלום לפי שימוש: ההורדה האוטומטית מושהית. הורד ידנית כדי להמשיך.',
+} satisfies Record<keyof typeof zh, string>

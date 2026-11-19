@@ -17,6 +17,7 @@ import { nl } from './i18n/agy-errors/nl'
 import { ms } from './i18n/agy-errors/ms'
 import { he } from './i18n/agy-errors/he'
 import { hi } from './i18n/agy-errors/hi'
+import { hu } from './i18n/agy-errors/hu'
 import { zhTW } from './i18n/agy-errors/zh-TW'
 import { vi } from './i18n/agy-errors/vi'
 import { tr } from './i18n/agy-errors/tr'
@@ -48,6 +49,7 @@ export type AgyErrorLang =
   | 'ms'
   | 'he'
   | 'hi'
+  | 'hu'
   | 'zh-TW'
   | 'vi'
   | 'tr'
@@ -74,6 +76,7 @@ const DICTS: Record<AgyErrorLang, Dict> = {
   ms: ms,
   he: he,
   hi: hi,
+  hu: hu,
   'zh-TW': zhTW,
   vi: vi,
   tr: tr,

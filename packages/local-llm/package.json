@@ -1,0 +1,27 @@
+{
+  "name": "@genoffice/local-llm",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "license": "Apache-2.0",
+  "exports": {
+    ".": "./src/index.ts",
+    "./manifest": "./src/manifest.ts",
+    "./host": "./src/host/entry.ts",
+    "./protocol": "./src/protocol.ts"
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "build": "node scripts/build.mjs"
+  },
+  "dependencies": {
+    "node-llama-cpp": "3.22.3"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "esbuild": "^0.25.0",
+    "typescript": "^5.9.3",
+    "vitest": "^4.1.12"
+  }
+}

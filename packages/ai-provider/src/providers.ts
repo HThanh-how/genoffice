@@ -52,6 +52,13 @@ export const DEEPSEEK_V41_FLASH = 'deep-seek-v4.1-flash'
 
 export const AI_PROVIDERS: AiProviderMeta[] = [
   {
+    id: 'local',
+    label: 'Local ? LFM3-VL-2B',
+    models: ['LFM3-VL-2B-Q4_K_M'],
+    defaultModel: 'LFM3-VL-2B-Q4_K_M',
+    keyPlaceholder: '',
+  },
+  {
     id: 'genspark',
     label: 'Genspark',
     // must stay within the proxy's served set (GET /api/llm_proxy/v1/models);
@@ -584,8 +591,8 @@ export function defaultAiSettings(
     }
   }
   return {
-    // agy-first: the Antigravity CLI when it is installed and signed in, otherwise the old default
-    provider: agyUsable ? 'agy' : 'gemini',
+    // A saved provider is preserved by resolveAiSettings; only fresh settings use local.
+    provider: 'local',
     providers,
     gskToolsEnabled: false,
     media: defaultAiMediaSettings(agyUsable),
@@ -601,9 +608,7 @@ export function cloudToolsEnabled(settings: Pick<AiSettings, 'gskToolsEnabled'>)
 /** Keep the user's choice even before its key is configured; never silently route through Genspark. */
 export function activeProvider(settings: AiSettings): AiProviderId {
   const provider = settings.provider
-  return provider !== 'genspark' && AI_PROVIDERS.some((m) => m.id === provider)
-    ? provider
-    : 'gemini'
+  return provider !== 'genspark' && AI_PROVIDERS.some((m) => m.id === provider) ? provider : 'local'
 }
 
 /**
@@ -730,6 +735,12 @@ export function resolveAiSettings(stored: unknown, defaults: AiSettings): AiSett
         baseUrl: str(settings.baseUrl) || 'https://api.openai.com/v1',
       }
     }
+    if (
+      settings.provider &&
+      settings.provider !== 'genspark' &&
+      AI_PROVIDERS.some((p) => p.id === settings.provider)
+    )
+      defaults = { ...defaults, provider: settings.provider }
     return resolveCustomEndpoints(defaults)
   }
   return resolveCustomEndpoints({

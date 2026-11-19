@@ -17,11 +17,17 @@ export { modelEchoesReasoning, modelHasFixedSampling, modelLacksVision } from '.
 
 /** Wire protocols every provider maps onto, including the official Codex app-server bridge. */
 export type AiProtocol =
-  'anthropic' | 'gemini' | 'openai-compatible' | 'openai-responses' | 'codex-app-server' | 'agy-cli'
+  | 'anthropic'
+  | 'gemini'
+  | 'openai-compatible'
+  | 'openai-responses'
+  | 'codex-app-server'
+  | 'agy-cli'
+  | 'local-llm'
 
 export interface ProviderCapabilities {
   /** How the provider authenticates: app login, user key, or the Codex CLI's existing login. */
-  auth: 'gsk-login' | 'api-key' | 'codex-chatgpt' | 'agy-cli'
+  auth: 'gsk-login' | 'api-key' | 'codex-chatgpt' | 'agy-cli' | 'local'
   /** chat models accept image input (declarative; for custom endpoints it is assumed, not known) */
   vision: boolean
   /** the provider can call GenOffice tools (absent = yes) */
@@ -141,6 +147,16 @@ function fixedEndpoint(
 }
 
 export const AI_PROVIDER_ADAPTERS: Record<AiProviderId, ProviderAdapter> = {
+  local: {
+    meta: metaOf('local'),
+    capabilities: { auth: 'local', vision: false, tools: true },
+    resolveEndpoint: () => ({
+      protocol: 'local-llm',
+      baseUrl: '',
+      vision: false,
+      maxTokens: 16384,
+    }),
+  },
   genspark: {
     meta: metaOf('genspark'),
     capabilities: { auth: 'gsk-login', vision: true },

@@ -52,11 +52,24 @@ const tr = {
     'AI Modeli ayarlarındaki yolu kullanmak için boş bırakın, ardından otomatik algılanır ({where}).',
 } satisfies Dict
 
+const hu = {
+  agyMediaHint:
+    'Az Antigravity-fiókodat használja, API-kulcs nélkül. Lassabb a közvetlen API-hívásnál (képenként kb. 10–40 mp), és az Antigravity-keretedet terheli.',
+  agyMediaLimits:
+    'Kérésenként egy képet generál; az elemzés képeket, rövid videót és hangot olvas (fájlonként legfeljebb 20 MB).',
+  agyMediaTest: 'Kapcsolat tesztelése',
+  agyMediaTestOk: 'Csatlakoztatva · {n} modell (nem használt keretet)',
+  agyMediaPathPlaceholderShared: 'Üresen hagyva az AI-modell útvonalát használja: {path}',
+  agyMediaPathHint:
+    'Hagyd üresen, hogy az AI-modell beállításaiban megadott útvonalat használja, majd automatikus felismerés ({where}).',
+} satisfies Dict
+
 const dicts: LangDicts<Dict> = {
   zh,
   en,
   vi,
   tr,
+  hu,
   ja: en,
   ko: en,
   'zh-TW': en,
