@@ -24,7 +24,9 @@
     "./local-vlm": "./src/local-vlm-manager.ts",
     "./local-vlm-meta": "./src/local-vlm-meta.ts",
     "./local-vlm-fallback": "./src/local-vlm-fallback.ts",
-    "./local-vlm-native": "./src/local-vlm-native.ts"
+    "./local-vlm-native": "./src/local-vlm-native.ts",
+    "./local-vlm-tokenizer": "./src/local-vlm-tokenizer.ts",
+    "./local-vlm-scheduler": "./src/local-vlm-scheduler.ts"
   },
   "scripts": {
     "typecheck": "tsc --noEmit",

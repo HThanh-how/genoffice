@@ -14,7 +14,13 @@ import {
   localVlmRequestConfig,
   shouldFallbackFromAgyToLocalVlm,
 } from './local-vlm-fallback'
-import { LOCAL_VLM_IDLE_TIMEOUT_MS, LOCAL_VLM_SAMPLING_DEFAULTS } from './local-vlm-meta'
+import {
+  LOCAL_VLM_DEFAULT_CTX_SIZE,
+  LOCAL_VLM_IDLE_TIMEOUT_MS,
+  LOCAL_VLM_SAMPLING_DEFAULTS,
+} from './local-vlm-meta'
+import { planContextBudget } from './local-vlm-tokenizer'
+import { getLocalVlmScheduler, InferencePriority } from './local-vlm-scheduler'
 import type { StreamCallbacks } from './protocols/shared'
 import { withSystemAddendum } from './system-addendum'
 import { getProviderAdapter, type AiProtocol } from './registry'
@@ -433,41 +439,59 @@ async function streamLocalVlmOpenAi(
   const { effectiveTools, isDocEditor } = selectEffectiveToolsForLocalVlm(tools)
   const slimSystem = pruneSystemForLocalVlm(system, isDocEditor)
   const windowedMessages = trimMessagesForLocalVlm(messages)
+
+  // ── Precise BPE / Multimodal Budgeting (Issue 6.1) ─────────────────────────
+  const budget = planContextBudget({
+    system: slimSystem,
+    tools: effectiveTools,
+    messages: windowedMessages,
+    maxContextSize: LOCAL_VLM_DEFAULT_CTX_SIZE,
+    maxOutputTokens: maxTokens,
+  })
+  const budgetedMessages = budget.prunedMessages
   const filteredCb = wrapWithToolCallFilter(cb, effectiveTools)
 
-  try {
-    await streamOpenAiCompatible(
-      local.baseUrl,
-      localConfig,
-      slimSystem,
-      windowedMessages,
-      effectiveTools,
-      maxTokens,
-      filteredCb,
-      options,
-    )
-    filteredCb.flush()
-  } catch (err) {
-    if (
-      /exceed_context_size_error|exceeds the available context size|context.*exceed/i.test(
-        err instanceof Error ? err.message : String(err),
-      )
-    ) {
-      // Preserve essential instructions instead of dropping system prompt completely (Issue 6.1)
-      const emergencySystem = slimSystem ? slimSystem.slice(0, 800) : ''
-      return await streamOpenAiCompatible(
-        local.baseUrl,
-        localConfig,
-        emergencySystem,
-        messages.slice(-2),
-        [],
-        maxTokens,
-        filteredCb,
-        options,
-      )
-    }
-    throw err
-  }
+  // ── Priority Queue & Inference Scheduling (Issue 7.4) ──────────────────────
+  // User chat has top priority (INTERACTIVE) to preempt background OCR / indexing.
+  return getLocalVlmScheduler().schedule(
+    InferencePriority.INTERACTIVE,
+    async () => {
+      try {
+        await streamOpenAiCompatible(
+          local.baseUrl,
+          localConfig,
+          slimSystem,
+          budgetedMessages,
+          effectiveTools,
+          maxTokens,
+          filteredCb,
+          options,
+        )
+        filteredCb.flush()
+      } catch (err) {
+        if (
+          /exceed_context_size_error|exceeds the available context size|context.*exceed/i.test(
+            err instanceof Error ? err.message : String(err),
+          )
+        ) {
+          // Preserve essential instructions instead of dropping system prompt completely (Issue 6.1)
+          const emergencySystem = slimSystem ? slimSystem.slice(0, 800) : ''
+          return await streamOpenAiCompatible(
+            local.baseUrl,
+            localConfig,
+            emergencySystem,
+            budgetedMessages.slice(-2),
+            [],
+            maxTokens,
+            filteredCb,
+            options,
+          )
+        }
+        throw err
+      }
+    },
+    { signal: cb.signal, label: 'streamLocalVlmOpenAi' },
+  )
 }
 
 /** route a streaming, tool-calling-capable turn by provider id */

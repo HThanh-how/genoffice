@@ -191,4 +191,24 @@ export type {
   LocalVlmBinaryInferResult,
   LocalVlmNativeHostBridge,
 } from './local-vlm-native'
+export {
+  LFM3_VL_DEFAULT_VISION_TOKENS_PER_IMAGE,
+  LFM3_VL_SPECIAL_TOKENS,
+  LFM3_VL_THUMBNAIL_VISION_TOKENS,
+  countImageTokens,
+  countTextTokens,
+  countToolsTokens,
+  estimateMessageTokens,
+  planContextBudget,
+  type ContextBudgetPlan,
+} from './local-vlm-tokenizer'
+export {
+  InferencePriority,
+  LocalVlmInferenceScheduler,
+  getLocalVlmScheduler,
+  setLocalVlmScheduler,
+  type QueuedInferenceTask,
+  type SchedulerStats,
+} from './local-vlm-scheduler'
+
 

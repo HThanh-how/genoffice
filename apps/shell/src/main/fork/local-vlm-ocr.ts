@@ -4,6 +4,10 @@ import {
   getLocalVlmNativeHost,
   type LocalVlmBinaryInferFn,
 } from '@genoffice/ai-provider/local-vlm-native'
+import {
+  getLocalVlmScheduler,
+  InferencePriority,
+} from '@genoffice/ai-provider/local-vlm-scheduler'
 import { OCR_PAGE_MARKER_PREFIX } from '@genoffice/ai-provider/agy-ocr'
 import type { OcrRecognizeInput } from '../document-memory/agy-ocr-job'
 
@@ -70,7 +74,11 @@ export async function recognizeWithLocalVlm(
 
     // ── Native Host Path: Direct binary Buffer transfer (no Base64, no HTTP) ──
     if (nativeHost) {
-      const res = await nativeHost(pagePrompt, subImages, input.signal)
+      const res = await getLocalVlmScheduler().schedule(
+        InferencePriority.BACKGROUND_OCR,
+        () => nativeHost(pagePrompt, subImages, input.signal),
+        { signal: input.signal, label: 'localVlmOcrNative' },
+      )
       const rawText = res.text
       if (!rawText.trim()) {
         chunks.push(subPages.map((n) => `${OCR_PAGE_MARKER_PREFIX}${n} ===`).join('\n'))
@@ -95,27 +103,33 @@ export async function recognizeWithLocalVlm(
       })),
     ]
 
-    const response = await fetchFn(`${endpoint.baseUrl}/chat/completions`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        model: endpoint.model,
-        messages: [{ role: 'user', content }],
-        max_tokens: 4096,
-        ...LOCAL_VLM_SAMPLING_DEFAULTS,
-      }),
-      signal: input.signal,
-    })
-    if (!response.ok) {
-      const detail = await response.text().catch(() => '')
-      throw new Error(
-        `Local LFM3-VL-2B OCR returned HTTP ${response.status}${detail ? `: ${detail.slice(0, 200)}` : ''}`,
-      )
-    }
-    const json = (await response.json()) as {
-      choices?: Array<{ message?: { content?: unknown }; finish_reason?: string | null }>
-      usage?: { prompt_tokens?: number; completion_tokens?: number }
-    }
+    const json = await getLocalVlmScheduler().schedule(
+      InferencePriority.BACKGROUND_OCR,
+      async () => {
+        const response = await fetchFn(`${endpoint.baseUrl}/chat/completions`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            model: endpoint.model,
+            messages: [{ role: 'user', content }],
+            max_tokens: 4096,
+            ...LOCAL_VLM_SAMPLING_DEFAULTS,
+          }),
+          signal: input.signal,
+        })
+        if (!response.ok) {
+          const detail = await response.text().catch(() => '')
+          throw new Error(
+            `Local LFM3-VL-2B OCR returned HTTP ${response.status}${detail ? `: ${detail.slice(0, 200)}` : ''}`,
+          )
+        }
+        return (await response.json()) as {
+          choices?: Array<{ message?: { content?: unknown }; finish_reason?: string | null }>
+          usage?: { prompt_tokens?: number; completion_tokens?: number }
+        }
+      },
+      { signal: input.signal, label: 'localVlmOcrHttp' },
+    )
     const choice = json.choices?.[0]
     if (choice?.finish_reason === 'length') {
       throw new Error(
