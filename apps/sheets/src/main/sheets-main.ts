@@ -1,3 +1,4 @@
+import { registerLocalChat } from '@genoffice/electron-utils/local-chat'
 import { createHash, randomUUID } from 'node:crypto'
 import {
   createReadStream,
@@ -95,7 +96,6 @@ import {
   chatForProvider,
   defaultAiSettings,
   activeProvider,
-  agyUsableForDefaults,
   probeAgyUsable,
   maxOutputTokensOf,
   resolveAiSettings,
@@ -4504,6 +4504,7 @@ export function registerSheetsIpc(): void {
 let aiIpcRegistered = false
 
 export function registerSheetsAiIpc(): void {
+  registerLocalChat()
   if (aiIpcRegistered) return
   aiIpcRegistered = true
   // at 'will-quit': 'before-quit' also fires when the user cancels the save prompt
@@ -4517,8 +4518,7 @@ export function registerSheetsAiIpc(): void {
   ipcMain.handle(IPC_CHANNELS.aiGetSettings, async (event): Promise<AiSettings> => {
     sessionFor(event)
     const stored = readJson<Partial<AiSettings> & LegacyAiSettings>(SETTINGS_PATH(), {})
-    // agy-first defaults: only fills what the user never chose (see agyUsableForDefaults)
-    await agyUsableForDefaults(stored.providers?.agy?.cliPath)
+    // Chat defaults are local; Agy catalog discovery is independent.
     // heal the file mode of a settings file saved by an older build: BYOK keys
     // are credentials and must not stay readable by other local accounts
     restrictFileToOwner(SETTINGS_PATH())
@@ -4588,14 +4588,15 @@ export function registerSheetsAiIpc(): void {
     }
     // a custom endpoint may name an environment variable instead of storing a key
     config = config ? resolveProfileCredential(config) : config
-    if (!config || (!isCliProvider(provider) && !config.apiKey)) {
+    if (!config || (provider !== 'local' && !isCliProvider(provider) && !config.apiKey)) {
       return {
         ok: false,
         error:
           provider === 'genspark' ? tm('errGskNotLoggedIn') : missingKeyMessage(provider, config),
       }
     }
-    if (!isCliProvider(provider) && !config.model) return { ok: false, error: tm('errNoModel') }
+    if (provider !== 'local' && !isCliProvider(provider) && !config.model)
+      return { ok: false, error: tm('errNoModel') }
     try {
       const result = await chatForProvider(provider, config, request.system, request.user)
       // the one-shot path reports HTTP failures as ok:false with the raw body —
@@ -4642,7 +4643,7 @@ export function registerSheetsAiIpc(): void {
     const send = (chunk: AiStreamChunk) => {
       if (!event.sender.isDestroyed()) event.sender.send(IPC_CHANNELS.aiStreamChunk, chunk)
     }
-    if (!config || (!isCliProvider(provider) && !config.apiKey)) {
+    if (!config || (provider !== 'local' && !isCliProvider(provider) && !config.apiKey)) {
       send({
         requestId,
         type: 'error',
@@ -4651,7 +4652,7 @@ export function registerSheetsAiIpc(): void {
       })
       return
     }
-    if (!isCliProvider(provider) && !config.model) {
+    if (provider !== 'local' && !isCliProvider(provider) && !config.model) {
       send({ requestId, type: 'error', error: tm('errNoModel') })
       return
     }

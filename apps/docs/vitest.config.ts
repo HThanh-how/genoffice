@@ -9,6 +9,11 @@ const local = (rel: string) => fileURLToPath(new URL(rel, import.meta.url))
 export default defineConfig({
   resolve: {
     alias: {
+      '@genoffice/electron-utils/local-chat': local(
+        '../../packages/electron-utils/src/local-chat.ts',
+      ),
+      '@genoffice/ai-provider/local': local('../../packages/ai-provider/src/local.ts'),
+      '@genoffice/ai-provider/local-copy': local('../../packages/ai-provider/src/local-copy.ts'),
       '@genoffice/docx-engine/lazy-media': local('../../packages/docx-engine/src/lazy-media.ts'),
       '@genoffice/docx-engine/zip-splice': local('../../packages/docx-engine/src/zip-splice.ts'),
       '@genoffice/docx-engine': local('../../packages/docx-engine/src/index.ts'),

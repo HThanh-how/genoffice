@@ -99,6 +99,7 @@
     "pdfjs-dist": "^6.2.108",
     "@genoffice/pptx-render": "*",
     "@genoffice/xlsx-gateway": "*",
-    "@genoffice/agent-core": "*"
+    "@genoffice/agent-core": "*",
+    "@genoffice/local-llm": "*"
   }
 }

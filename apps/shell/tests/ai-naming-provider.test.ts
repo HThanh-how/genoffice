@@ -12,7 +12,7 @@ import { resolveNamingProvider } from '../src/main/ai-naming-provider'
  * the rest of the app resolves it.
  *
  * Fork policy: Genspark is never selected from saved settings. `activeProvider`
- * maps a saved Genspark selection, or an unknown provider id, to `gemini`, and
+ * maps a saved Genspark selection, or an unknown provider id, to `local`, and
  * an incomplete provider (missing key or model) is not replaced by another one.
  * A naming request whose provider is not usable is therefore declined (null),
  * and the Genspark login key is never handed to another provider.
@@ -20,20 +20,24 @@ import { resolveNamingProvider } from '../src/main/ai-naming-provider'
 
 describe('resolveNamingProvider', () => {
   it('never hands the Genspark login key to the default provider', () => {
-    // default selection is gemini, which has no key; the Genspark login key is not used
-    expect(resolveNamingProvider({}, 'gsk-live-key')).toBeNull()
+    expect(resolveNamingProvider({}, 'gsk-live-key')).toMatchObject({
+      provider: 'local',
+      config: { apiKey: '' },
+    })
   })
 
-  it('declines when Genspark is selected and nobody is signed in', () => {
-    expect(resolveNamingProvider({}, '')).toBeNull()
+  it('uses local without a sign-in on fresh settings', () => {
+    expect(resolveNamingProvider({}, '')?.provider).toBe('local')
   })
 
-  it('declines a saved Genspark selection even when signed in', () => {
-    expect(resolveNamingProvider({ provider: 'genspark', providers: {} }, 'gsk-live-key')).toBeNull()
+  it('uses local for a retired Genspark selection without forwarding its key', () => {
+    expect(
+      resolveNamingProvider({ provider: 'genspark', providers: {} }, 'gsk-live-key'),
+    ).toMatchObject({ provider: 'local', config: { apiKey: '' } })
   })
 
-  it('declines when the settings file could not be read at all', () => {
-    expect(resolveNamingProvider(null, '')).toBeNull()
+  it('uses local when the settings file does not exist', () => {
+    expect(resolveNamingProvider(null, '')?.provider).toBe('local')
   })
 
   it('honors a configured provider', () => {
@@ -62,13 +66,12 @@ describe('resolveNamingProvider', () => {
     expect(resolved).toBeNull()
   })
 
-  it('declines a provider this build does not have instead of falling back to Genspark', () => {
-    // an unknown id maps to gemini, which has no key here: declined, no Genspark fallback
+  it('uses local for an unknown id without forwarding the Genspark key', () => {
     const resolved = resolveNamingProvider(
       { provider: 'not-a-provider', providers: {} },
       'gsk-live-key',
     )
-    expect(resolved).toBeNull()
+    expect(resolved).toMatchObject({ provider: 'local', config: { apiKey: '' } })
   })
 
   it('does not need a key for codex', () => {

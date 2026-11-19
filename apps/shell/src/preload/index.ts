@@ -175,6 +175,9 @@ const homeApi: HomeApi = {
   ...createClipboardSuggestPreloadApi(ipcRenderer),
   ...createClipboardHistoryPreloadApi(ipcRenderer),
   ...createDocumentIndexPreloadApi(ipcRenderer),
+  localModelLicense: () => ipcRenderer.invoke('local-model:license'),
+  localModelStatus: () => ipcRenderer.invoke('local-model:status'),
+  localModelAction: (action) => ipcRenderer.invoke('local-model:action', action),
   ...createHomeChatPreloadApi(ipcRenderer),
   ...createLiveBackgroundPreloadApi(ipcRenderer),
   async recents(query) {

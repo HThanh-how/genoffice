@@ -1,3 +1,4 @@
+import { streamLocal } from './local'
 import type { AgentMessage, AgentToolDef } from '@genoffice/agent-core'
 import { isAiOverloadedError } from './overload-error'
 import { withOutputCapFallback } from './output-cap'
@@ -35,6 +36,7 @@ async function streamForProviderInner(
   maxTokens: number,
   cb: StreamCallbacks,
 ): Promise<void> {
+  if (provider === 'local') return streamLocal(config, system, messages, tools, maxTokens, cb)
   if (provider === 'genspark') throw new Error('Genspark sign-in is disabled in this build')
   if (!isCliProvider(provider) && !config.model?.trim()) {
     throw new Error('Choose an AI model in Settings → AI Model')
@@ -50,12 +52,15 @@ async function streamForProviderInner(
   if (endpoint.protocol === 'codex-app-server') {
     return streamCodexAppServer(config, system, messages, tools, maxTokens, cb)
   }
+  if (endpoint.protocol === 'local-llm')
+    return streamLocal(config, system, messages, tools, maxTokens, cb)
   if (endpoint.protocol === 'agy-cli')
     return streamAgy(config, system, messages, tools, maxTokens, cb)
   // A model the user declared a ceiling for outranks the caller's budget; the
   // endpoint's own 400 would otherwise cost a billed round trip.
   const cap = endpoint.maxTokens !== undefined ? Math.min(maxTokens, endpoint.maxTokens) : maxTokens
-  const protocol: Exclude<AiProtocol, 'codex-app-server' | 'agy-cli'> = endpoint.protocol
+  const protocol: Exclude<AiProtocol, 'codex-app-server' | 'agy-cli' | 'local-llm'> =
+    endpoint.protocol
   return withOutputCapFallback(baseUrl, config.model, cap, (tokens) => {
     switch (protocol) {
       case 'anthropic':

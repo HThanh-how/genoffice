@@ -29,6 +29,7 @@
 
 // Buffer comes from node:buffer, not the global: this file is evaluated
 // inside a vm sandbox (the packaging tests) that has no Buffer global.
+const { nativeRuntimeUnpack } = require('../../tools/local-llm-packaging.cjs')
 const { Buffer } = require('node:buffer')
 const { execFileSync } = require('node:child_process')
 const { closeSync, existsSync, openSync, readFileSync, readSync, rmSync } = require('node:fs')
@@ -616,6 +617,11 @@ const config = {
   },
   files: [
     'out/**',
+    '!node_modules/@node-llama-cpp/*cuda*/**',
+    '!node_modules/@node-llama-cpp/*vulkan*/**',
+    '!node_modules/@node-llama-cpp/**',
+    'node_modules/@node-llama-cpp/${os}-${arch}{,-metal}/**',
+    '!node_modules/node-llama-cpp/llama/localBuilds/**',
     // tesseract.js-core ships six builds x (wasm + wasm.js); Node reads the plain .wasm next to the .js
     // (never the base64 .wasm.js browser twin). All six builds stay: tesseract.js 7.0.0's Node getCore
     // is handed a boolean where it expects an OEM number, so it always asks for the NON-LSTM build
@@ -624,6 +630,10 @@ const config = {
     '!node_modules/tesseract.js-core/*.wasm.js',
   ],
   asarUnpack: [
+    'out/main/local-llm-host.mjs',
+    ...nativeRuntimeUnpack(join(__dirname, '../..')),
+    'node_modules/node-llama-cpp/**',
+    'node_modules/@node-llama-cpp/**',
     'node_modules/onnxruntime-node/**',
     // Tesseract.js recognises in a worker thread started from a script FILE, which must be a real file
     // (resolved as app.asar.unpacked by local-ocr/resources.ts), with every package that script requires.

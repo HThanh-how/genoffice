@@ -1,3 +1,4 @@
+import { registerLocalChat } from '@genoffice/electron-utils/local-chat'
 /**
  * AI IPC for the slides main process, extracted from slides-main.ts:
  * settings persistence, the streaming proxy (main process does the networking
@@ -20,7 +21,6 @@ import {
   listGeminiModels,
   defaultAiSettings,
   activeProvider,
-  agyUsableForDefaults,
   probeAgyUsable,
   maxOutputTokensOf,
   resolveAiSettings,
@@ -127,6 +127,7 @@ function appendRunFailure(entry: AiRunFailure): void {
 const webSearchAborts = createSearchAbortRegistry()
 
 export function registerAiIpc(): void {
+  registerLocalChat()
   // at 'will-quit': 'before-quit' also fires when the user cancels the save prompt
   app.once('will-quit', shutdownCodexAppServers)
   // Node fetch (undici) direct connections get reset under VPN/tun setups; retry over Chromium's stack
@@ -137,8 +138,7 @@ export function registerAiIpc(): void {
 
   ipcMain.handle('ai:get-settings', async (): Promise<AiSettings> => {
     const stored = readJson<Partial<AiSettings> & LegacyAiSettings>(AI_SETTINGS_PATH(), {})
-    // agy-first defaults: only fills what the user never chose (see agyUsableForDefaults)
-    await agyUsableForDefaults(stored.providers?.agy?.cliPath)
+    // Chat defaults are local; Agy catalog discovery is independent.
     // heal the file mode of a settings file saved by an older build: BYOK keys
     // are credentials and must not stay readable by other local accounts
     restrictFileToOwner(AI_SETTINGS_PATH())
@@ -231,7 +231,7 @@ export function registerAiIpc(): void {
     const send = (chunk: AiStreamChunk) => {
       if (!event.sender.isDestroyed()) event.sender.send('ai:stream-chunk', chunk)
     }
-    if (!config || (!isCliProvider(provider) && !config.apiKey)) {
+    if (!config || (provider !== 'local' && !isCliProvider(provider) && !config.apiKey)) {
       send({
         requestId,
         type: 'error',
@@ -239,7 +239,7 @@ export function registerAiIpc(): void {
       })
       return
     }
-    if (!isCliProvider(provider) && !config.model) {
+    if (provider !== 'local' && !isCliProvider(provider) && !config.model) {
       send({ requestId, type: 'error', error: tm('errNoModel') })
       return
     }

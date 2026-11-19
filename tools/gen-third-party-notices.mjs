@@ -90,6 +90,7 @@ const NOTE = {
  * port that its repository documents separately.
  */
 const EXTRA_NOTICE = {
+  'node-llama-cpp': 'tools/notices/llama-cpp.txt',
   '@rhwp/core': 'tools/notices/rhwp-core.txt',
   // the hyphenation pattern sets Docs loads keep their own licences
   hyphen: 'tools/notices/hyphen-patterns.txt',
@@ -418,6 +419,10 @@ for (const term of ['@embedpdf/pdfium', 'Copyright 2014 PDFium Authors', 'Apache
   }
 }
 
+out += hr('5. Optional downloaded local chat model ? LFM3-VL-2B')
+out +=
+  'LiquidAI/LFM3-VL-2B-GGUF @ 1add221a5ea6c047fcf1eaaf2d247939d7cf8849\nLFM Open License v1.0 (lfm1.0). Weights are downloaded directly from Hugging Face, not bundled or mirrored.\nEntities with annual revenue above USD 10 million require a separate agreement with Liquid AI.\n'
+out += readFileSync(join(ROOT, 'tools/notices/lfm-open-license-1.0.txt'), 'utf8') + '\n'
 const dest = join(ROOT, 'apps/shell/build/THIRD-PARTY-NOTICES.txt')
 mkdirSync(dirname(dest), { recursive: true })
 writeFileSync(dest, out)

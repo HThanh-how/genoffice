@@ -1,3 +1,4 @@
+import { localLlmHostPlugin } from '../../tools/local-llm-host.mjs'
 import { dirname, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import react from '@vitejs/plugin-react'
@@ -55,8 +56,12 @@ export default defineConfig({
     resolve: { alias: workspaceAlias },
     // Bundle opentype.js too (the packaged app ships only out/**, so external deps are unresolvable at runtime)
     plugins: [
+      localLlmHostPlugin(),
       externalizeDepsPlugin({
         exclude: [
+          '@genoffice/local-llm',
+          '@genoffice/ai-provider',
+          '@genoffice/agent-core',
           '@genoffice/pptx-engine',
           '@genoffice/pptx-ops',
           '@genoffice/pptx-render',
@@ -72,7 +77,16 @@ export default defineConfig({
   },
   preload: {
     // electron-utils ships raw TS source — must be bundled, not left external
-    plugins: [externalizeDepsPlugin({ exclude: ['@genoffice/electron-utils'] })],
+    plugins: [
+      externalizeDepsPlugin({
+        exclude: [
+          '@genoffice/local-llm',
+          '@genoffice/ai-provider',
+          '@genoffice/agent-core',
+          '@genoffice/electron-utils',
+        ],
+      }),
+    ],
   },
   renderer: {
     resolve: { alias: workspaceAlias },

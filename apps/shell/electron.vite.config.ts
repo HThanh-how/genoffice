@@ -1,3 +1,4 @@
+import { localLlmHostPlugin } from '../../tools/local-llm-host.mjs'
 import { execFileSync } from 'node:child_process'
 import { resolve } from 'node:path'
 import react from '@vitejs/plugin-react'
@@ -22,6 +23,7 @@ export default defineConfig({
   // imported docs/sheets main modules are TS source with no build artifacts,
   // so externalizing them would break Node ESM resolution at runtime.
   main: {
+    plugins: [localLlmHostPlugin()],
     // the diagnostic log names the commit it was produced by
     define: { 'process.env.GENOFFICE_BUILD_COMMIT': JSON.stringify(buildCommit()) },
     // node:sqlite is a Node 22+ builtin the bundler's builtin list may predate

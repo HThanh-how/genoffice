@@ -1258,6 +1258,16 @@ export class AgentLoop<TSnapshot = unknown> {
     let executedInTurn = false
     for (const rawCall of toolCalls) {
       const tool = skill.tools.find((t) => t.name === rawCall.name)
+      if (!tool) {
+        results.push({
+          id: rawCall.id,
+          name: rawCall.name,
+          output: 'Tool is not granted for this turn; it was not executed.',
+          isError: true,
+        })
+        unusableInTurn = true
+        continue
+      }
       const call =
         rawCall.truncated || rawCall.inputError
           ? rawCall

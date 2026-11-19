@@ -73,6 +73,20 @@ describe('runtimePreamble', () => {
 })
 
 describe('AgentLoop', () => {
+  it('never dispatches a tool outside the per-turn grant', async () => {
+    const execute = vi.fn(() => ({ output: 'unsafe', summary: 'unsafe' }))
+    const transport = scriptedTransport([
+      (cb) => {
+        cb.onToolCall({ id: '1', name: 'deleteBlocks', input: { target: { scope: 'document' } } })
+        cb.onDone()
+      },
+      (cb) => cb.onDone(),
+    ])
+    const loop = new AgentLoop({ transport, skill: makeSkill(execute) })
+    loop.run('Read only')
+    for (let i = 0; i < 5; i++) await flush()
+    expect(execute).not.toHaveBeenCalled()
+  })
   it('tells the model the current date at the top of the system prompt', async () => {
     const transport = scriptedTransport([(cb) => cb.onDone()])
     const loop = new AgentLoop({ transport, skill: makeSkill(), systemSuffix: () => '\nSUFFIX' })
@@ -569,14 +583,14 @@ describe('AgentLoop', () => {
   it('aborts after eight consecutive turns where every tool call failed', async () => {
     const failingTurn = (n: number) => (cb: AgentStreamCallbacks) => {
       // vary the input so the identical-turn guard does not trip first
-      cb.onToolCall({ id: `t${n}`, name: 'nope', input: { n } })
+      cb.onToolCall({ id: `t${n}`, name: 'do_thing', input: { n } })
       cb.onDone()
     }
     const transport = scriptedTransport(Array.from({ length: 10 }, (_, i) => failingTurn(i)))
     const onError = vi.fn()
     const loop = new AgentLoop({
       transport,
-      skill: makeSkill(() => ({ output: 'Unknown tool: nope', isError: true, summary: 'nope' })),
+      skill: makeSkill(() => ({ output: 'Operation failed', isError: true, summary: 'do_thing' })),
       events: { onError },
     })
     loop.run('go')

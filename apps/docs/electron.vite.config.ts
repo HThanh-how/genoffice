@@ -1,3 +1,4 @@
+import { localLlmHostPlugin } from '../../tools/local-llm-host.mjs'
 import { resolve } from 'node:path'
 import react from '@vitejs/plugin-react'
 import { defineConfig, externalizeDepsPlugin } from 'electron-vite'
@@ -25,8 +26,12 @@ export default defineConfig({
   // (same setup as apps/slides).
   main: {
     plugins: [
+      localLlmHostPlugin(),
       externalizeDepsPlugin({
         exclude: [
+          '@genoffice/local-llm',
+          '@genoffice/ai-provider',
+          '@genoffice/agent-core',
           '@genoffice/docx-engine',
           '@genoffice/electron-utils',
           '@genoffice/font-metrics',
@@ -40,7 +45,15 @@ export default defineConfig({
     // Sandboxed preload scripts cannot require arbitrary npm packages at
     // runtime, so the drop-open bridge must be bundled, not externalized.
     plugins: [
-      externalizeDepsPlugin({ exclude: ['@genoffice/electron-utils', '@genoffice/agent-core'] }),
+      externalizeDepsPlugin({
+        exclude: [
+          '@genoffice/local-llm',
+          '@genoffice/ai-provider',
+          '@genoffice/agent-core',
+          '@genoffice/electron-utils',
+          '@genoffice/agent-core',
+        ],
+      }),
     ],
   },
   renderer: {

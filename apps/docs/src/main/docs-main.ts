@@ -1,3 +1,4 @@
+import { registerLocalChat } from '@genoffice/electron-utils/local-chat'
 import { diagHook } from '@genoffice/ai-provider/diag-hook'
 import { AiRequestLog } from './ai-request-log'
 import { createHash, randomUUID } from 'node:crypto'
@@ -110,7 +111,6 @@ import {
   chatForProvider,
   defaultAiSettings,
   activeProvider,
-  agyUsableForDefaults,
   onAgyUsableChange,
   probeAgyUsable,
   testMediaProvider,
@@ -7889,6 +7889,7 @@ function broadcastAiSettingsChanged(): void {
 const webSearchAborts = createSearchAbortRegistry()
 
 export function registerAiIpc(): void {
+  registerLocalChat()
   // At 'will-quit', not 'before-quit': that one fires first also when the user cancels the
   // save prompt, and the app must keep its AI helpers when it goes on running.
   app.once('will-quit', () => {
@@ -7904,8 +7905,7 @@ export function registerAiIpc(): void {
       shutdownAgyResidentServers()
     }
   }
-  // Which defaults apply (agy or the old ones) depends on whether Antigravity is usable: find out
-  // once the app is up, and tell every window when the answer changes.
+  // Agy availability still informs independent media/search defaults; chat stays local.
   onAgyUsableChange(broadcastAiSettingsChanged)
   void app.whenReady().then(async () => {
     await probeAgyUsable()
@@ -7925,8 +7925,7 @@ export function registerAiIpc(): void {
       stored.gskToolsEnabled = true
       writeJsonAtomic(SETTINGS_PATH(), stored, 0o600)
     }
-    // agy-first defaults: only fills what the user never chose (see agyUsableForDefaults)
-    await agyUsableForDefaults(stored.providers?.agy?.cliPath)
+    // Chat defaults are local; Agy catalog discovery is independent.
     // heal the file mode of a settings file saved by an older build: BYOK keys
     // are credentials and must not stay readable by other local accounts
     restrictFileToOwner(SETTINGS_PATH())
@@ -8028,7 +8027,7 @@ export function registerAiIpc(): void {
     const send = (chunk: AiStreamChunk) => {
       if (!event.sender.isDestroyed()) event.sender.send('ai:stream-chunk', chunk)
     }
-    if (!config || (!isCliProvider(provider) && !config.apiKey)) {
+    if (!config || (provider !== 'local' && !isCliProvider(provider) && !config.apiKey)) {
       send({
         requestId,
         type: 'error',
@@ -8036,7 +8035,7 @@ export function registerAiIpc(): void {
       })
       return
     }
-    if (!isCliProvider(provider) && !config.model) {
+    if (provider !== 'local' && !isCliProvider(provider) && !config.model) {
       send({ requestId, type: 'error', error: tm('errNoModel') })
       return
     }
@@ -8281,13 +8280,14 @@ export function registerAiIpc(): void {
     }
     // a custom endpoint may name an environment variable instead of storing a key
     config = config ? resolveProfileCredential(config) : config
-    if (!config || (!isCliProvider(provider) && !config.apiKey)) {
+    if (!config || (provider !== 'local' && !isCliProvider(provider) && !config.apiKey)) {
       return {
         ok: false,
         error: provider === 'genspark' ? tm('errGskNotLoggedIn') : tm('errNoApiKey', { provider }),
       }
     }
-    if (!isCliProvider(provider) && !config.model) return { ok: false, error: tm('errNoModel') }
+    if (provider !== 'local' && !isCliProvider(provider) && !config.model)
+      return { ok: false, error: tm('errNoModel') }
     try {
       const result = await chatForProvider(provider, config, system, user)
       // the one-shot path reports HTTP failures as ok:false with the raw body —

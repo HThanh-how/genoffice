@@ -1,3 +1,4 @@
+import { localChatCopy } from '../i18n/strings-local-chat'
 import { SettingsRow } from './settings-ui/SettingsCard'
 import { useCallback, useEffect, useRef, useState, type Dispatch, type SetStateAction } from 'react'
 import type { AiProviderConfig } from '@genoffice/ai-provider/browser'
@@ -45,6 +46,7 @@ export function testAiSettingsFor(
 /** The one-paragraph description under the provider picker (agy's is honest about its limits). */
 export function ProviderNote({ provider, t }: { provider: string; t: TFunc }) {
   const { lang } = useI18n()
+  if (provider === 'local') return <>{localChatCopy(lang).limits}</>
   if (provider === 'genspark') return <>{t('setAiGensparkHint')}</>
   if (provider === 'codex') return <>{t('setAiCodexHint')}</>
   return <>{provider === 'agy' ? agyString(lang, 'agyNote') : t('setAiByokNote')}</>

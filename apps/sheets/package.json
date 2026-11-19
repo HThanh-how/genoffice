@@ -56,7 +56,8 @@
     "react": "^19.2.4",
     "react-dom": "^19.2.4",
     "rxjs": "^7.8.2",
-    "zod": "^4.6.7"
+    "zod": "^4.6.7",
+    "@genoffice/local-llm": "*"
   },
   "devDependencies": {
     "@genoffice/project-store": "*",

@@ -18,6 +18,7 @@ import {
   defaultAiSettings,
   resolveAiSettings,
   resolveProfileCredential,
+  getProviderAdapter,
 } from '@genoffice/ai-provider'
 
 /** The provider to call, and the credentials to call it with. */
@@ -36,8 +37,7 @@ export interface NamingProvider {
  */
 export function resolveNamingProvider(stored: unknown, gskKey: string): NamingProvider | null {
   const settings = resolveAiSettings(stored, defaultAiSettings())
-  // a stored BYOK provider is honored when usable; a half-filled one falls back
-  // to genspark rather than silently disabling AI
+  // Keep a saved provider; missing credentials never authorize another provider.
   settings.provider = activeProvider(settings)
   const provider = settings.provider
   const storedConfig = settings.providers?.[provider]
@@ -50,8 +50,9 @@ export function resolveNamingProvider(stored: unknown, gskKey: string): NamingPr
   }
   // a custom endpoint may name an environment variable instead of storing a key
   config = resolveProfileCredential(config)
-  // codex drives its own executable and needs neither a key nor a model id
-  if (provider !== 'codex' && !config.apiKey?.trim()) return null
-  if (provider !== 'codex' && !config.model?.trim()) return null
+  const auth = getProviderAdapter(provider).capabilities.auth
+  const native = auth === 'local' || auth === 'agy-cli' || auth === 'codex-chatgpt'
+  if (!native && !config.apiKey?.trim()) return null
+  if (!native && !config.model?.trim()) return null
   return { provider, config }
 }

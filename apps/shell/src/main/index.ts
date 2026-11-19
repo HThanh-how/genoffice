@@ -1,3 +1,5 @@
+import { registerLocalModel } from './local-model/ipc'
+import { shutdownLocalChat } from '@genoffice/electron-utils/local-chat'
 import './uv-threadpool'
 import { watchRootAvailability } from './document-memory/runtime/root-lifecycle'
 import { powerMonitor as rootPowerMonitor } from 'electron'
@@ -9148,6 +9150,7 @@ app.on('second-instance', (_event, argv, _cwd, additionalData) => {
 
 installNavigationGuard(app)
 installContextMenu(app, () => contextMenuLabels(currentLang()))
+registerLocalModel(currentLang)
 registerAiIpc()
 const openHomeSettings = (section: 'aiModel' | 'skills'): void => {
   const win = shellWindow
@@ -9776,6 +9779,7 @@ app.on('will-quit', (event) => {
     documentMemory?.dbPath ?? join(resolveDbDir(app.getPath('userData')), 'document-memory.db')
   const indexDbPath = join(app.getPath('userData'), 'file-index.db')
   const steps: QuitStep[] = [
+    { name: 'local-chat-stop', essential: true, run: shutdownLocalChat },
     {
       name: 'stop-background',
       essential: true,

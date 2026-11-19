@@ -9,6 +9,8 @@ const local = (rel: string) => fileURLToPath(new URL(rel, import.meta.url))
 export default defineConfig({
   resolve: {
     alias: {
+      '@genoffice/ai-provider/local': local('../../packages/ai-provider/src/local.ts'),
+      '@genoffice/ai-provider/local-copy': local('../../packages/ai-provider/src/local-copy.ts'),
       '@genoffice/ai-provider/browser': local('../../packages/ai-provider/src/browser.ts'),
       '@genoffice/ai-provider': local('../../packages/ai-provider/src/index.ts'),
     },

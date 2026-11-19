@@ -28,7 +28,10 @@ it('an Antigravity editor composer has exactly one model selector alongside usag
     mediaBeforeSelection,
   )
   const liveModels = [{ id: 'gemini-flash', label: 'Gemini Flash' }]
-  expect(aiModelPickerGroups(settings, false, liveModels).map((group) => group.id)).toEqual(['agy'])
+  expect(aiModelPickerGroups(settings, false, liveModels).map((group) => group.id)).toEqual([
+    'local',
+    'agy',
+  ])
   const usage = { groups: null, readAt: Date.now(), refreshing: false, failed: false }
   const agy: AgyBarApi = {
     getAgyChatState: async () => ({
@@ -131,7 +134,7 @@ it('T37: the Antigravity chip shows the model the chat box is actually using, an
     aiModelPickerGroups(settings, false, [
       { id: 'gemini-3.8-flash-low', label: 'Low', enabled: true, verified: true },
     ]).map((g) => g.id),
-  ).toEqual(['agy'])
+  ).toEqual(['local', 'agy'])
   await act(async () => root2.unmount())
   host2.remove()
 })

@@ -34,7 +34,8 @@
     "./renderer-protocol": "./src/renderer-protocol.ts",
     "./renderer-scheme": "./src/renderer-scheme.ts",
     "./safe-external-url": "./src/safe-external-url.ts",
-    "./safe-remote-url": "./src/safe-remote-url.ts"
+    "./safe-remote-url": "./src/safe-remote-url.ts",
+    "./local-chat": "./src/local-chat.ts"
   },
   "scripts": {
     "typecheck": "tsc --noEmit",
@@ -49,6 +50,8 @@
     "@genoffice/ai-provider": "*",
     "officecrypto-tool": "^0.0.19",
     "parse5": "^8.0.1",
-    "undici": "^6.29.1"
+    "undici": "^6.29.1",
+    "@genoffice/local-llm": "*",
+    "@genoffice/i18n": "*"
   }
 }

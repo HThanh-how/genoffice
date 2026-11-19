@@ -1,3 +1,4 @@
+import type { LocalModelApi } from '../local-model'
 import type { ClipboardSuggestApi } from '../clipboard-suggest-api'
 import type { ClipboardHistoryApi } from '../clipboard-history-api'
 import type { AgyOcrApi } from './agy-ocr'
@@ -11,6 +12,7 @@ import type { LiveBackgroundApi } from './live-background'
 /** Every fork-only method on window.aiOffice; HomeApi extends this so upstream stays untouched. */
 export interface ForkHomeApi
   extends
+    LocalModelApi,
     ClipboardSuggestApi,
     ClipboardHistoryApi,
     HomeChatApi,

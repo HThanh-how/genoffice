@@ -1,3 +1,4 @@
+import { LocalModelSettings } from './fork/LocalModelSettings'
 import { appNotify } from './ui-feedback'
 import { useCallback, useEffect, useRef, useState } from 'react'
 import type { ReactNode } from 'react'
@@ -559,6 +560,7 @@ function AiModelPane({ t }: { t: TFunc }) {
   const isGenspark = provider === 'genspark'
   const isCodex = provider === 'codex'
   const isAgy = provider === 'agy'
+  const isLocal = provider === 'local'
 
   const touch = () => {
     setDirty(true)
@@ -854,7 +856,7 @@ function AiModelPane({ t }: { t: TFunc }) {
             />
           )}
         </SettingsRow>
-        {!isCodex && !isGenspark && !isAgy && (
+        {!isLocal && !isCodex && !isGenspark && !isAgy && (
           <div className="set-field-desc set-model-discovery" aria-live="polite">
             <span>
               {modelListState === 'loading'
@@ -936,6 +938,8 @@ function AiModelPane({ t }: { t: TFunc }) {
               }}
             />
           </SettingsRow>
+        ) : isLocal ? (
+          <LocalModelSettings config={config} update={updateConfig} />
         ) : isAgy ? (
           <>
             <AgyProviderFields config={config} update={updateConfig} setCatalog={setCatalog} />

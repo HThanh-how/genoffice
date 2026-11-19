@@ -25,6 +25,7 @@ export function canAttemptChat(settings: AiSettings | null | undefined): boolean
   }
 
   switch (auth) {
+    case 'local':
     case 'agy-cli':
     case 'codex-chatgpt':
       return true

@@ -82,6 +82,7 @@ function pickerProviderUsable(
   liveAgyModels?: readonly AiModelItemMeta[],
 ): boolean {
   if (meta.id === 'genspark') return false
+  if (meta.id === 'local') return true
   const config = settings.providers?.[meta.id]
   const stored = config?.model?.trim() ?? ''
   if (meta.needsCliPath) {
