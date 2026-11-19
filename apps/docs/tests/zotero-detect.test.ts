@@ -39,7 +39,7 @@ describe('Zotero detection', () => {
   it('finds an install on disk without probing the port', async () => {
     // ProgramFiles keeps the Windows branch non-empty, so the probe passes on every host OS
     expect(
-      await zoteroAvailable({ env: { ProgramFiles: 'C:\\PF' }, exists: () => true, port: 1 }),
+      await zoteroAvailable({ env: { ProgramFiles: 'C:/PF' }, exists: () => true, port: 1 }),
     ).toBe(true)
   })
 
