@@ -453,10 +453,12 @@ async function streamLocalVlmOpenAi(
         err instanceof Error ? err.message : String(err),
       )
     ) {
+      // Preserve essential instructions instead of dropping system prompt completely (Issue 6.1)
+      const emergencySystem = slimSystem ? slimSystem.slice(0, 800) : ''
       return await streamOpenAiCompatible(
         local.baseUrl,
         localConfig,
-        '',
+        emergencySystem,
         messages.slice(-2),
         [],
         maxTokens,

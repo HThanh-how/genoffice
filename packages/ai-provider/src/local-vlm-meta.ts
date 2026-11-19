@@ -22,6 +22,15 @@ export const LOCAL_VLM_PINNED_LLAMA_TAG = 'b12445'
 export const LOCAL_VLM_LLAMA_RELEASES_API =
   `https://api.github.com/repos/ggml-org/llama.cpp/releases/tags/${LOCAL_VLM_PINNED_LLAMA_TAG}`
 
+/** Versioned integrity manifest with pinned revisions and checksum references. */
+export const LOCAL_VLM_INTEGRITY_MANIFEST = {
+  version: '1.0.0',
+  commitSha: LOCAL_VLM_HF_COMMIT_SHA,
+  llamaTag: LOCAL_VLM_PINNED_LLAMA_TAG,
+  modelFilename: LOCAL_VLM_MODEL_FILENAME,
+  mmprojFilename: LOCAL_VLM_MMPROJ_FILENAME,
+} as const
+
 export const LOCAL_VLM_DEFAULT_CTX_SIZE = 32768
 export const LOCAL_VLM_MIN_CTX_SIZE = 2048
 export const LOCAL_VLM_MAX_CTX_SIZE = 32768

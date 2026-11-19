@@ -185,13 +185,21 @@ export function LocalVlmFields() {
         </div>
         <div className="set-local-vlm-path-row">
           <input
+            key={`model-${status.settings.modelPath}`}
             id="set-local-vlm-model-path"
             className="set-input"
             type="text"
-            value={status.settings.modelPath}
+            defaultValue={status.settings.modelPath}
             placeholder={status.modelPath}
             spellCheck={false}
-            onChange={(e) => void patchSettings({ modelPath: e.target.value })}
+            onBlur={(e) => {
+              if (e.target.value !== status.settings.modelPath) {
+                void patchSettings({ modelPath: e.target.value })
+              }
+            }}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter') e.currentTarget.blur()
+            }}
           />
           <button
             type="button"
@@ -211,13 +219,21 @@ export function LocalVlmFields() {
         </div>
         <div className="set-local-vlm-path-row">
           <input
+            key={`mmproj-${status.settings.mmprojPath}`}
             id="set-local-vlm-mmproj-path"
             className="set-input"
             type="text"
-            value={status.settings.mmprojPath}
+            defaultValue={status.settings.mmprojPath}
             placeholder={status.mmprojPath}
             spellCheck={false}
-            onChange={(e) => void patchSettings({ mmprojPath: e.target.value })}
+            onBlur={(e) => {
+              if (e.target.value !== status.settings.mmprojPath) {
+                void patchSettings({ mmprojPath: e.target.value })
+              }
+            }}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter') e.currentTarget.blur()
+            }}
           />
           <button
             type="button"
@@ -237,13 +253,21 @@ export function LocalVlmFields() {
         </div>
         <div className="set-local-vlm-path-row">
           <input
+            key={`runtime-${status.settings.runtimePath}`}
             id="set-local-vlm-runtime-path"
             className="set-input"
             type="text"
-            value={status.settings.runtimePath}
+            defaultValue={status.settings.runtimePath}
             placeholder={status.runtimePath ?? 'llama-server'}
             spellCheck={false}
-            onChange={(e) => void patchSettings({ runtimePath: e.target.value })}
+            onBlur={(e) => {
+              if (e.target.value !== status.settings.runtimePath) {
+                void patchSettings({ runtimePath: e.target.value })
+              }
+            }}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter') e.currentTarget.blur()
+            }}
           />
           <button
             type="button"

@@ -1,7 +1,9 @@
 import { execFile, spawn, type ChildProcess } from 'node:child_process'
+import { createHash } from 'node:crypto'
 import {
   chmodSync,
   closeSync,
+  cpSync,
   createWriteStream,
   existsSync,
   mkdirSync,
@@ -160,13 +162,20 @@ export function selectLlamaReleaseAsset(
   assets: readonly LlamaReleaseAsset[],
   platform: NodeJS.Platform = process.platform,
   arch: string = process.arch,
+  preferGpu = false,
 ): LlamaReleaseAsset | null {
   const patterns: RegExp[] = []
   if (platform === 'win32') {
     if (arch === 'arm64') {
       patterns.push(/bin-win-cpu-arm64\.zip$/i, /bin-win-.*arm64\.zip$/i)
     } else {
+      if (preferGpu) {
+        patterns.push(/bin-win-vulkan-x64\.zip$/i, /bin-win-cuda.*x64\.zip$/i)
+      }
       patterns.push(/bin-win-cpu-x64\.zip$/i, /bin-win-avx2-x64\.zip$/i, /bin-win-noavx-x64\.zip$/i)
+      if (!preferGpu) {
+        patterns.push(/bin-win-vulkan-x64\.zip$/i)
+      }
     }
   } else if (platform === 'darwin') {
     if (arch === 'arm64') {
@@ -178,6 +187,9 @@ export function selectLlamaReleaseAsset(
     if (arch === 'arm64') {
       patterns.push(/bin-ubuntu-arm64\.(tar\.gz|zip)$/i, /bin-linux-arm64\.(tar\.gz|zip)$/i)
     } else {
+      if (preferGpu) {
+        patterns.push(/bin-ubuntu-vulkan-x64\.(tar\.gz|zip)$/i)
+      }
       patterns.push(
         /bin-ubuntu-x64\.(tar\.gz|zip)$/i,
         /bin-ubuntu-vulkan-x64\.(tar\.gz|zip)$/i,
@@ -274,6 +286,7 @@ export class LocalVlmManager implements LocalVlmRuntimeBridge {
   private lastError: string | undefined
   private idleTimer: ReturnType<typeof setTimeout> | null = null
   private activeRequests = 0
+  private isServerReady = false
   private disposed = false
 
   constructor(deps: LocalVlmManagerDeps) {
@@ -344,11 +357,12 @@ export class LocalVlmManager implements LocalVlmRuntimeBridge {
         try {
           if (statSync(expanded).isFile()) return expanded
         } catch {
-          return undefined
+          // Custom path is invalid or missing; gracefully fall back to managed runtime below (Issue 8.2)
         }
-        return undefined
+      } else {
+        const found = findExecutableOnPath(expanded, this.env, this.platform)
+        if (found) return found
       }
-      return findExecutableOnPath(expanded, this.env, this.platform) ?? undefined
     }
     const exeName = this.platform === 'win32' ? 'llama-server.exe' : 'llama-server'
     const managed = findInDirectoryRecursive(this.runtimeDir(), exeName)
@@ -439,20 +453,39 @@ export class LocalVlmManager implements LocalVlmRuntimeBridge {
     if (!settings.enabled) {
       throw new Error('Local AI (LFM3-VL-2B) is disabled in Settings')
     }
-    if (this.proc && this.proc.exitCode === null && this.activePort) {
+    // ── Issue 8.1 Fix: Always await pending startup before checking activePort ─
+    // If Request A is currently booting the server, Request B must wait for startInflight
+    // rather than receiving activePort while the model is still loading.
+    if (this.startInflight) {
+      if (!signal) return this.startInflight
+      if (signal.aborted) throw Object.assign(new Error('Aborted'), { name: 'AbortError' })
+      return new Promise((resolve, reject) => {
+        const onAbort = () => reject(Object.assign(new Error('Aborted'), { name: 'AbortError' }))
+        signal.addEventListener('abort', onAbort, { once: true })
+        this.startInflight!.then(
+          (res) => {
+            signal.removeEventListener('abort', onAbort)
+            resolve(res)
+          },
+          (err) => {
+            signal.removeEventListener('abort', onAbort)
+            reject(err)
+          },
+        )
+      })
+    }
+    if (this.proc && this.proc.exitCode === null && this.activePort && this.isServerReady) {
       this.resetIdleTimer()
       return {
         baseUrl: `http://127.0.0.1:${this.activePort}/v1`,
         model: LOCAL_VLM_DEFAULT_MODEL,
       }
     }
-    if (!this.startInflight) {
-      this.startInflight = this.startServer(settings).finally(() => {
-        this.startInflight = null
-        this.emitStatus()
-      })
+    this.startInflight = this.startServer(settings).finally(() => {
+      this.startInflight = null
       this.emitStatus()
-    }
+    })
+    this.emitStatus()
     if (!signal) return this.startInflight
     if (signal.aborted) {
       throw Object.assign(new Error('Aborted'), { name: 'AbortError' })
@@ -487,6 +520,12 @@ export class LocalVlmManager implements LocalVlmRuntimeBridge {
     if (!isValidGgufFile(modelPath).valid || !isValidGgufFile(mmprojPath).valid) {
       throw new Error(
         'LFM3-VL-2B Q4_K_M GGUF or mmproj file is missing. Download it in Settings → AI Model → Local AI (LFM3-VL-2B).',
+      )
+    }
+    const availableRam = this.freeRamMB()
+    if (availableRam < LOCAL_VLM_MIN_RAM_MB) {
+      throw new Error(
+        `Không đủ bộ nhớ RAM khả dụng để khởi chạy Local VLM (yêu cầu tối thiểu ${LOCAL_VLM_MIN_RAM_MB} MB, hiện có: ${availableRam} MB).`,
       )
     }
     const port = await this.allocatePort()
@@ -560,6 +599,7 @@ export class LocalVlmManager implements LocalVlmRuntimeBridge {
       if (this.proc === child) {
         this.proc = null
         this.activePort = undefined
+        this.isServerReady = false
         if (this.idleTimer) {
           clearTimeout(this.idleTimer)
           this.idleTimer = null
@@ -581,6 +621,7 @@ export class LocalVlmManager implements LocalVlmRuntimeBridge {
       try {
         const response = await this.fetchFn(healthUrl, { signal: AbortSignal.timeout(2_000) })
         if (response.ok) {
+          this.isServerReady = true
           this.resetIdleTimer()
           this.emitStatus()
           return { baseUrl: `http://127.0.0.1:${port}/v1`, model: LOCAL_VLM_DEFAULT_MODEL }
@@ -607,6 +648,7 @@ export class LocalVlmManager implements LocalVlmRuntimeBridge {
     const child = this.proc
     this.proc = null
     this.activePort = undefined
+    this.isServerReady = false
     if (child) {
       // Blocker P1 (Issue B): Wait for child process to exit cleanly before resolving
       // to avoid race conditions where start() spawns a new server before the old one
@@ -669,7 +711,8 @@ export class LocalVlmManager implements LocalVlmRuntimeBridge {
     const signal = this.downloadAbort.signal
     this.lastError = undefined
 
-    const run = (async (): Promise<LocalVlmStatus> => {
+    let run: Promise<LocalVlmStatus>
+    this.downloadInflight = run = (async (): Promise<LocalVlmStatus> => {
       try {
         if (includeRuntime && !this.resolveRuntimePath()) {
           await this.downloadLlamaRuntime(signal)
@@ -818,29 +861,38 @@ export class LocalVlmManager implements LocalVlmRuntimeBridge {
     }
     const stableFallback = stableMap[`${this.platform}-${this.arch}`]
 
-    const asset = selectLlamaReleaseAsset(releaseAssets, this.platform, this.arch) ?? stableFallback
+    const preferGpu = this.currentSettings().gpuLayers !== 0
+    const asset =
+      selectLlamaReleaseAsset(releaseAssets, this.platform, this.arch, preferGpu) ?? stableFallback
     if (!asset) {
       throw new Error(`No prebuilt llama.cpp binary found for ${this.platform}/${this.arch}`)
     }
     const runtimeDir = this.runtimeDir()
-    const archivePath = join(runtimeDir, asset.name)
+    // ── Supply Chain Item 5.5: Staging directory for extraction isolation ───
+    const stagingDir = join(this.userDataPath, 'runtimes', `.staging-${Date.now()}`)
+    mkdirSync(stagingDir, { recursive: true })
+    const archivePath = join(stagingDir, asset.name)
     await this.downloadFileAtomic(asset.browser_download_url, archivePath, 'runtime', signal)
     try {
-      await this.extractArchive(archivePath, runtimeDir)
-    } finally {
+      await this.extractArchive(archivePath, stagingDir)
       rmSync(archivePath, { force: true })
-    }
-    const exeName = this.platform === 'win32' ? 'llama-server.exe' : 'llama-server'
-    const exe = findInDirectoryRecursive(runtimeDir, exeName)
-    if (!exe) {
-      throw new Error(`Extracted llama.cpp archive did not contain ${exeName}`)
-    }
-    if (this.platform !== 'win32') {
-      try {
-        chmodSync(exe, 0o755)
-      } catch {
-        // ignore
+      const exeName = this.platform === 'win32' ? 'llama-server.exe' : 'llama-server'
+      const exe = findInDirectoryRecursive(stagingDir, exeName)
+      if (!exe) {
+        throw new Error(`Extracted llama.cpp archive did not contain ${exeName}`)
       }
+      if (this.platform !== 'win32') {
+        try {
+          chmodSync(exe, 0o755)
+        } catch {
+          // ignore
+        }
+      }
+      // Promote verified staging files to the target runtime directory
+      mkdirSync(runtimeDir, { recursive: true })
+      cpSync(stagingDir, runtimeDir, { recursive: true })
+    } finally {
+      rmSync(stagingDir, { recursive: true, force: true })
     }
   }
 
@@ -849,6 +901,7 @@ export class LocalVlmManager implements LocalVlmRuntimeBridge {
     destPath: string,
     stage: LocalVlmDownloadProgress['stage'],
     signal: AbortSignal,
+    expectedSha256?: string,
   ): Promise<void> {
     mkdirSync(dirname(destPath), { recursive: true })
     const partPath = `${destPath}.part`
@@ -866,6 +919,7 @@ export class LocalVlmManager implements LocalVlmRuntimeBridge {
     const totalHeader = response.headers.get('content-length')
     const totalBytes = totalHeader && Number(totalHeader) > 0 ? Number(totalHeader) : undefined
     let receivedBytes = 0
+    const hash = createHash('sha256')
     this.downloadProgress = {
       active: true,
       stage,
@@ -884,6 +938,7 @@ export class LocalVlmManager implements LocalVlmRuntimeBridge {
         if (done) break
         if (value && value.byteLength > 0) {
           receivedBytes += value.byteLength
+          hash.update(value)
           await new Promise<void>((resolve, reject) => {
             if (!writer.write(Buffer.from(value), (err) => (err ? reject(err) : resolve()))) {
               writer.once('drain', resolve)
@@ -911,6 +966,15 @@ export class LocalVlmManager implements LocalVlmRuntimeBridge {
       await new Promise<void>((resolve, reject) => {
         writer.end((err?: Error | null) => (err ? reject(err) : resolve()))
       })
+      if (receivedBytes === 0) {
+        throw new Error(`Downloaded file ${fileLabel} is empty (0 bytes received)`)
+      }
+      const actualDigest = hash.digest('hex')
+      if (expectedSha256 && actualDigest !== expectedSha256) {
+        throw new Error(
+          `SHA-256 integrity check failed for ${fileLabel} (expected: ${expectedSha256}, actual: ${actualDigest})`,
+        )
+      }
       renameSync(partPath, destPath)
     } catch (error) {
       writer.destroy()
