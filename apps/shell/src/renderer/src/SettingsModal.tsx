@@ -67,6 +67,7 @@ import { ClipboardHistorySettings } from './fork/ClipboardHistorySettings'
 import { AgyProviderFields, ProviderNote, testAiSettingsFor } from './fork/AgyProviderFields'
 import { AgyMediaFields } from './fork/AgyMediaFields'
 import { AgyChatModelsSettings } from './fork/AgyChatModelsSettings'
+import { LocalModelSettings } from './fork/LocalModelSettings'
 import { agyMediaTestConfig } from './fork/agy-media-state'
 import { agyString } from './fork/agy-strings'
 import { FoundSkills } from './FoundSkills'
@@ -550,6 +551,8 @@ function AiModelPane({ t }: { t: TFunc }) {
   const isGenspark = provider === 'genspark'
   const isCodex = provider === 'codex'
   const isAgy = provider === 'agy'
+  // on-device llama.cpp: one fixed model, no key and no endpoint (its card manages the model file)
+  const isLocal = provider === 'local'
 
   const touch = () => {
     setDirty(true)
@@ -829,7 +832,7 @@ function AiModelPane({ t }: { t: TFunc }) {
             />
           )}
         </SettingsRow>
-        {!isCodex && !isGenspark && !isAgy && (
+        {!isCodex && !isGenspark && !isAgy && !isLocal && (
           <div className="set-field-desc set-model-discovery" aria-live="polite">
             <span>
               {modelListState === 'loading'
@@ -888,7 +891,7 @@ function AiModelPane({ t }: { t: TFunc }) {
           <>
             <AgyProviderFields config={config} update={updateConfig} setCatalog={setCatalog} />
           </>
-        ) : !isGenspark ? (
+        ) : !isGenspark && !isLocal ? (
           <>
             <SettingsRow className="set-field">
               <div className="set-field-text">
@@ -1162,6 +1165,7 @@ function AiModelPane({ t }: { t: TFunc }) {
         </SettingsRow>
       </SettingsCard>
       {isAgy && <AgyChatModelsSettings />}
+      {isLocal && <LocalModelSettings />}
     </>
   )
 }

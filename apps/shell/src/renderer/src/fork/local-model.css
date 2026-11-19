@@ -1,0 +1,48 @@
+/* Settings → AI Model → Local AI model card (LocalModelSettings.tsx). Theme tokens only. */
+
+.set-localmodel-value {
+  color: var(--text-primary);
+  font-variant-numeric: tabular-nums;
+}
+
+.set-localmodel-progress {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin: 6px 0;
+}
+
+/* same native bar as the scanned-PDF quota (agy-ocr.css) */
+.set-localmodel-progress progress {
+  width: 100%;
+  height: 8px;
+  appearance: none;
+  border: 0;
+  border-radius: 4px;
+  overflow: hidden;
+  accent-color: var(--accent);
+}
+.set-localmodel-progress progress::-webkit-progress-bar {
+  background: var(--border-subtle);
+}
+.set-localmodel-progress progress::-webkit-progress-value {
+  background: var(--accent);
+  border-radius: 4px;
+}
+
+.set-localmodel-path {
+  overflow-wrap: anywhere;
+}
+
+.set-localmodel-error {
+  color: var(--danger);
+  white-space: pre-wrap;
+}
+
+.set-localmodel-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  justify-content: flex-end;
+  margin-top: 8px;
+}
