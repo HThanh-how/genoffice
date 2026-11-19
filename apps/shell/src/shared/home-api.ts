@@ -88,6 +88,7 @@ export type UiLanguage =
   | 'zh-TW'
   | 'vi'
   | 'tr'
+  | 'hu'
 
 /** UI theme preference */
 import type { OpeningApp, OpeningPrefs } from './opening-scenes-meta'

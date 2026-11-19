@@ -490,6 +490,28 @@ export const strings: Record<Lang, typeof en> = {
     releasedHint:
       'Yer açmak için vektör belleği serbest bırakıldı. Ad ve metne göre hâlâ aranabilir; dosyayı açtığınızda yeniden yüklenir.',
   },
+  hu: {
+    title: 'Dokumentumindex',
+    scanning: 'Dokumentumok keresése',
+    indexing: 'Tartalmak indexelése',
+    done: 'Az index elkészült',
+    paused: 'Az index szüneteltetve',
+    stopped: 'A fájlkeresés leállítva',
+    error: 'Néhány fájl figyelmet igényel',
+    downloading: 'Helyi modell letöltése',
+    found: 'Megtalálva',
+    ready: 'Kész',
+    waiting: 'Várakozik',
+    errors: 'Hibák',
+    stop: 'Fájlkeresés leállítása',
+    close: 'Összecsukás',
+    dismiss: 'Elvetés',
+    open: 'Az index előrehaladásának megjelenítése',
+    local: 'Feldolgozás ezen az eszközön',
+    released: 'Felszabadítva',
+    releasedHint:
+      'A vektormemória a hely megtakarítása érdekében felszabadítva. Név és szöveg alapján továbbra is kereshető; a fájl megnyitásakor újratöltődik.',
+  },
 }
 
 export const issueWords: Record<
@@ -1013,6 +1035,29 @@ export const issueWords: Record<
       'too-large': 'Dosya çok büyük',
       changed: 'Dosya değişti',
       other: 'Dizinlenemedi',
+    },
+  },
+  hu: {
+    issues: 'Figyelmet igénylő fájlok',
+    warnings: '{count} figyelmeztetés',
+    retry: 'Újra',
+    showInFolder: 'Megjelenítés a mappában',
+    next: 'Következő',
+    previous: 'Előző',
+    page: '{page}. oldal / {pages}',
+    loading: 'Fájlok betöltése…',
+    noIssues: 'Nincs figyelmet igénylő fájl',
+    actionFailed: 'A művelet sikertelen',
+    gentle: 'Kímélő CPU-mód',
+    reasons: {
+      unavailable: 'A fájl nem érhető el',
+      password: 'Jelszóval védett',
+      unsupported: 'Nem támogatott formátum',
+      timeout: 'Időtúllépés',
+      'no-text': 'Nincs olvasható szöveg; a beolvasott PDF-ekhez OCR szükséges',
+      'too-large': 'A fájl túl nagy',
+      changed: 'A fájl megváltozott',
+      other: 'Nem sikerült indexelni',
     },
   },
 }

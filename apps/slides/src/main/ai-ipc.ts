@@ -45,6 +45,7 @@ import {
   fetchRemoteImage,
   readBodyCapped,
   writeJsonAtomic,
+  restrictFileToOwner,
 } from '@genoffice/electron-utils'
 import { decodeWithElectron } from '@genoffice/electron-utils/image-cutout-electron'
 import {
@@ -138,6 +139,9 @@ export function registerAiIpc(): void {
     const stored = readJson<Partial<AiSettings> & LegacyAiSettings>(AI_SETTINGS_PATH(), {})
     // agy-first defaults: only fills what the user never chose (see agyUsableForDefaults)
     await agyUsableForDefaults(stored.providers?.agy?.cliPath)
+    // heal the file mode of a settings file saved by an older build: BYOK keys
+    // are credentials and must not stay readable by other local accounts
+    restrictFileToOwner(AI_SETTINGS_PATH())
     const settings = resolveAiSettings(stored, defaultAiSettings())
     // a stored BYOK provider is honored when usable; half-filled configs fall back to genspark
     settings.provider = activeProvider(settings)
@@ -171,7 +175,7 @@ export function registerAiIpc(): void {
     const decision = await applySettingsWrite(
       settings,
       () => readJson<AiSettings | null>(AI_SETTINGS_PATH(), null),
-      (next) => writeJsonAtomic(AI_SETTINGS_PATH(), next),
+      (next) => writeJsonAtomic(AI_SETTINGS_PATH(), next, 0o600),
       (cliPath: string | undefined) => listAgyModels(cliPath),
       undefined,
       false,

@@ -75,6 +75,7 @@ import {
   type AiTokenUsageView,
 } from '@genoffice/ui'
 import { GensparkMark } from '../components/icons'
+import { showToast } from '../components/toast-bus'
 import sendEnterOn from '../assets/send-enter-on.png'
 import sendEnterOff from '../assets/send-enter-off.png'
 import sendStop from '../assets/send-stop.png'
@@ -445,6 +446,7 @@ export function AiPanel({
       window.removeEventListener('focus', refresh)
     }
   }, [])
+
   const imagesRef = useRef(images)
   imagesRef.current = images
   const attachedSkillsRef = useRef(attachedSkills)

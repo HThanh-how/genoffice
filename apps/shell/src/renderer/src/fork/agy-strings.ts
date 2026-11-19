@@ -92,11 +92,34 @@ const tr = {
   agyContextHeader: 'Getirilen belgeler (alıntılar)',
 } satisfies Dict
 
+const hu = {
+  agySearchNote:
+    'Webes keresés az Antigravity-fiókodon keresztül, API-kulcs nélkül. A fiókod keretét, valamint az AI-modellek beállításainál megadott útvonalat és modellt használja. A képkeresés továbbra is ingyenes forrásokat használ.',
+  agyNote:
+    'Az Antigravity-fiókodon keresztül fut a Google szerverein. Minden kérés elindítja az Antigravity-ügynököt, ezért lassabb a közvetlen API-hívásnál; dokumentumok és képek olvasására a legalkalmasabb. A GenOffice eszközeivel dokumentumokat olvashat és szerkeszthet. API-kulcs nem szükséges.',
+  agyPathLabel: 'Antigravity futtatható fájl',
+  agyPathHint:
+    'Csak egyéni telepítésnél add meg; az automatikus felismeréshez hagyd üresen ({where}).',
+  agyPathPlaceholder: 'Automatikus felismerés (ajánlott)',
+  agyWhereWin: 'PATH, majd %LOCALAPPDATA%\\agy\\bin\\agy.exe',
+  agyWhereMac:
+    'PATH, ~/.local/bin, ~/.agy/bin, /opt/homebrew/bin, /usr/local/bin, majd a bejelentkezési shell',
+  agyChecking: 'Antigravity ellenőrzése…',
+  agyConnected: 'Csatlakoztatva · {n} modell',
+  agyNotFound: 'Nincs csatlakoztatva: {error}',
+  agyRecheck: 'Újraellenőrzés',
+  agyTestFailed: 'Az Antigravity CLI nem érhető el',
+  agyStarting: 'Antigravity indítása…',
+  agyStartingHint: 'Minden üzenet elindítja az ügynököt; ez néhány másodpercig tart.',
+  agyContextHeader: 'Lekért dokumentumok (kivonatok)',
+} satisfies Dict
+
 const dicts: LangDicts<Dict> = {
   zh,
   en,
   vi,
   tr,
+  hu,
   ja: {
     ...en,
     agySearchNote:

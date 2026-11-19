@@ -124,4 +124,10 @@ export const AI_MODEL_PICKER_STRINGS: Record<Lang, AiModelPickerStrings> = {
     manage: 'Modelleri yönet…',
     unavailable: 'kullanılamıyor',
   },
+  hu: {
+    title: 'Modell',
+    choose: 'Modell kiválasztása',
+    manage: 'Modellek kezelése…',
+    unavailable: 'nem elérhető',
+  },
 }

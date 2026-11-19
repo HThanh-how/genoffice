@@ -447,11 +447,32 @@ const tr = {
   clipActOrganize: 'İletişim bilgilerini düzenle',
 } satisfies Dict
 
+const hu = {
+  clipSetting: 'Műveletek javaslata a másolt tartalomhoz',
+  clipSettingDesc:
+    'Alapértelmezés szerint be van kapcsolva. Bekapcsolva, amikor a GenOffice az előtérben van, ellenőrzi a vágólapon az imént másolt szöveget, és javasol egy AI-műveletet a Kezdőlapon. Mindez az eszközödön történik; amíg nem kattintasz egy javaslatra, semmilyen AI-nak nem küld adatot. A jelszavakat, kulcsokat, kártyaszámokat és a jelszókezelőkből származó tartalmat kihagyja; a vágólap tartalmát soha nem menti.',
+  clipRegion: 'Vágólapjavaslat',
+  clipHeader: 'A vágólapodról',
+  clipDismiss: 'Elvetés',
+  clipTurnOff: 'Javaslatok kikapcsolása',
+  clipTruncated: 'Csak az első 20 000 karakter kerül felhasználásra.',
+  clipActSummarize: 'Összefoglalás',
+  clipActTranslate: 'Fordítás ({lang})',
+  clipActRewrite: 'Átírás',
+  clipActAsk: 'AI megkérdezése',
+  clipActFindRelated: 'Kapcsolódó fájlok keresése',
+  clipActAnalyze: 'Az adatok elemzése',
+  clipActToSheet: 'Átalakítás táblázattá',
+  clipActExplainCode: 'A kód magyarázata',
+  clipActOrganize: 'Elérhetőségek rendezése',
+} satisfies Dict
+
 const dicts: LangDicts<Dict> = {
   zh,
   en,
   vi,
   tr,
+  hu,
   ja,
   ko,
   fr,

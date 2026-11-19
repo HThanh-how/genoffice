@@ -49,7 +49,9 @@ describe('Windows PrintDialog', () => {
       const onClose = vi.fn()
       const setStatus = vi.fn()
       root = createRoot(document.querySelector('#dialog')!)
-      await act(async () => root!.render(createElement(PrintDialog, { onClose, setStatus })))
+      await act(async () =>
+        root!.render(createElement(PrintDialog, { onClose, setStatus, editor: null })),
+      )
       await act(async () => vi.advanceTimersByTime(500))
       const radios = document.querySelectorAll<HTMLInputElement>(
         '.print-options input[type="radio"]',

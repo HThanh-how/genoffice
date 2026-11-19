@@ -47,6 +47,12 @@ const SKIP_DIR = /^(node_modules|out|dist|release|tests|__tests__|target)$/
 const IMPLICIT = ['electron']
 
 /**
+ * Packages whose files are built into committed data rather than imported:
+ * the icon outlines of Docs' Insert > Icons (tools/docs-icon-library).
+ */
+const DATA_SOURCES = ['@fluentui/svg-icons']
+
+/**
  * Packages copied into the installer verbatim by electron-builder rather than
  * bundled — the gsk CLI and its runtime deps are spawned, never imported, so
  * they are invisible to the import scan.
@@ -72,6 +78,8 @@ const NOTE = {
     'MIT License\n\nCopyright (c) Microsoft Corporation\n\nPermission is hereby granted, free of charge, to any person obtaining a copy\nof this software and associated documentation files (the "Software"), to deal\nin the Software without restriction, including without limitation the rights\nto use, copy, modify, merge, publish, distribute, sublicense, and/or sell\ncopies of the Software, and to permit persons to whom the Software is\nfurnished to do so, subject to the following conditions:\n\nThe above copyright notice and this permission notice shall be included in all\ncopies or substantial portions of the Software.\n\nTHE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR\nIMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,\nFITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE\nAUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER\nLIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,\nOUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE\nSOFTWARE.\n',
   '@fluentui/react-icons':
     'Copyright (c) Microsoft Corporation. Licensed under the MIT License.\nhttps://github.com/microsoft/fluentui-system-icons',
+  '@fluentui/svg-icons':
+    'Copyright (c) 2020 Microsoft Corporation. Licensed under the MIT License.\nhttps://github.com/microsoft/fluentui-system-icons',
   '@genspark/cli':
     'Copyright (c) Genspark. Licensed under the MIT License.\nhttps://www.npmjs.com/package/@genspark/cli',
 }
@@ -83,6 +91,8 @@ const NOTE = {
  */
 const EXTRA_NOTICE = {
   '@rhwp/core': 'tools/notices/rhwp-core.txt',
+  // the hyphenation pattern sets Docs loads keep their own licences
+  hyphen: 'tools/notices/hyphen-patterns.txt',
 }
 
 /** SPDX strings that need a word on which side of a dual license we take */
@@ -123,7 +133,7 @@ function bareName(spec) {
 const NPM_NAME = /^(@[a-z0-9-~][a-z0-9-._~]*\/)?[a-z0-9-~][a-z0-9-._~]*$/
 
 function importedNames() {
-  const names = new Set([...IMPLICIT, ...extraResourceSeeds()])
+  const names = new Set([...IMPLICIT, ...DATA_SOURCES, ...extraResourceSeeds()])
   for (const g of SRC_GLOBS) {
     for (const file of walk(join(ROOT, g))) {
       const text = readFileSync(file, 'utf8')
