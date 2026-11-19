@@ -1,7 +1,7 @@
 {
   "name": "@genoffice/shell",
   "productName": "GenOffice",
-  "version": "0.12.51",
+  "version": "0.12.52",
   "license": "Apache-2.0",
   "homepage": "https://github.com/HThanh-how/genoffice",
   "private": true,
@@ -29,6 +29,7 @@
     "@genoffice/electron-utils": "*",
     "@genoffice/file-parse": "*",
     "@genoffice/i18n": "*",
+    "@genoffice/local-llm": "*",
     "@genoffice/pipelines": "*",
     "@genoffice/pptx-engine": "*",
     "@genoffice/pptx-render": "*",
@@ -58,7 +59,7 @@
     "@huggingface/tokenizers": "0.2.0",
     "onnxruntime-node": "1.23.2",
     "tesseract.js": "^7.0.0",
-    "usearch": "2.26.3",
-    "@genoffice/local-llm": "*"
+    "node-llama-cpp": "3.22.3",
+    "usearch": "2.26.3"
   }
 }
