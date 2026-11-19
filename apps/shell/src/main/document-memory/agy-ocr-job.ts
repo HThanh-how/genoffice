@@ -797,7 +797,7 @@ export class AgyOcrJob {
               mtimeMs: rendered.mtimeMs,
               sizeBytes: rendered.sizeBytes,
               totalPages: rendered.totalPages,
-              model: settings.model,
+              model: usingLocal ? 'LFM3-VL-2B-Q4_K_M' : settings.model,
             },
             got,
           )

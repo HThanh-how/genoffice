@@ -113,10 +113,16 @@ export async function recognizeWithLocalVlm(
       )
     }
     const json = (await response.json()) as {
-      choices?: Array<{ message?: { content?: unknown } }>
+      choices?: Array<{ message?: { content?: unknown }; finish_reason?: string | null }>
       usage?: { prompt_tokens?: number; completion_tokens?: number }
     }
-    const rawContent = json.choices?.[0]?.message?.content
+    const choice = json.choices?.[0]
+    if (choice?.finish_reason === 'length') {
+      throw new Error(
+        'Local LFM3-VL-2B OCR output was truncated by max_tokens limit (finish_reason: length).',
+      )
+    }
+    const rawContent = choice?.message?.content
     const rawText =
       typeof rawContent === 'string'
         ? rawContent

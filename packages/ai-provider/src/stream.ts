@@ -139,7 +139,11 @@ function normalizeToolCall(
   if (name === 'read_blocks') {
     const fixedInput = { ...input }
     if (fixedInput.startBlockIndex === undefined) fixedInput.startBlockIndex = 0
-    if (fixedInput.endBlockIndex === undefined) fixedInput.endBlockIndex = 0
+    if (fixedInput.endBlockIndex === undefined) {
+      fixedInput.endBlockIndex = Number(fixedInput.startBlockIndex) || 0
+    } else if (Number(fixedInput.endBlockIndex) < Number(fixedInput.startBlockIndex)) {
+      fixedInput.endBlockIndex = fixedInput.startBlockIndex
+    }
     return { name, input: fixedInput }
   }
 
@@ -347,6 +351,12 @@ function wrapWithToolCallFilter(
         const closeMatch = /<\/tool_call>/i.exec(buffer)
         if (!closeMatch) {
           // Waiting for more chunks to close </tool_call>
+          // ── Issue 6.3: Cap tool call buffer to prevent unbounded RAM growth ──
+          if (buffer.length > 65_536) {
+            cb.onDelta(buffer)
+            buffer = ''
+            inToolCall = false
+          }
           return
         }
 

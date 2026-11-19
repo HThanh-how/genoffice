@@ -12,10 +12,15 @@ export const LOCAL_VLM_HF_REPO = 'LiquidAI/LFM3-VL-2B-GGUF'
 export const LOCAL_VLM_MODEL_FILENAME = 'LFM3-VL-2B-Q4_K_M.gguf'
 export const LOCAL_VLM_MMPROJ_FILENAME = 'mmproj-LFM3-VL-2B-Q8_0.gguf'
 
-export const LOCAL_VLM_MODEL_URL = `https://huggingface.co/${LOCAL_VLM_HF_REPO}/resolve/main/${LOCAL_VLM_MODEL_FILENAME}`
-export const LOCAL_VLM_MMPROJ_URL = `https://huggingface.co/${LOCAL_VLM_HF_REPO}/resolve/main/${LOCAL_VLM_MMPROJ_FILENAME}`
+// ── Pinned Hugging Face revision commit SHA to guarantee reproducibility ───
+export const LOCAL_VLM_HF_COMMIT_SHA = '6c1a84f50bb862dbbe4599a1288c83a54dcfdb83'
+export const LOCAL_VLM_MODEL_URL = `https://huggingface.co/${LOCAL_VLM_HF_REPO}/resolve/${LOCAL_VLM_HF_COMMIT_SHA}/${LOCAL_VLM_MODEL_FILENAME}`
+export const LOCAL_VLM_MMPROJ_URL = `https://huggingface.co/${LOCAL_VLM_HF_REPO}/resolve/${LOCAL_VLM_HF_COMMIT_SHA}/${LOCAL_VLM_MMPROJ_FILENAME}`
+
+// ── Pinned llama.cpp version (b12445 >= b11960 required by LFM3-VL) ─────────
+export const LOCAL_VLM_PINNED_LLAMA_TAG = 'b12445'
 export const LOCAL_VLM_LLAMA_RELEASES_API =
-  'https://api.github.com/repos/ggml-org/llama.cpp/releases/latest'
+  `https://api.github.com/repos/ggml-org/llama.cpp/releases/tags/${LOCAL_VLM_PINNED_LLAMA_TAG}`
 
 export const LOCAL_VLM_DEFAULT_CTX_SIZE = 32768
 export const LOCAL_VLM_MIN_CTX_SIZE = 2048

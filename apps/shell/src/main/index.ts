@@ -9493,10 +9493,10 @@ app.on('will-quit', (event) => {
     {
       name: 'stop-background',
       essential: true,
-      run: () => {
+      run: async () => {
         markSheetsShuttingDown()
         stopSheetsSidecar()
-        void localVlmManager?.dispose()
+        await localVlmManager?.dispose().catch(() => {})
         stopMcpSync()
         disposeDocumentIndexIpc?.()
         disposeDocumentIndexIpc = null

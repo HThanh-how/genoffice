@@ -273,6 +273,7 @@ export class LocalVlmManager implements LocalVlmRuntimeBridge {
   private downloadProgress: LocalVlmDownloadProgress | undefined
   private lastError: string | undefined
   private idleTimer: ReturnType<typeof setTimeout> | null = null
+  private activeRequests = 0
   private disposed = false
 
   constructor(deps: LocalVlmManagerDeps) {
@@ -405,10 +406,28 @@ export class LocalVlmManager implements LocalVlmRuntimeBridge {
     this.onStatusChange?.(this.status())
   }
 
+  trackRequestStart(): () => void {
+    this.activeRequests++
+    this.resetIdleTimer()
+    let ended = false
+    return () => {
+      if (!ended) {
+        ended = true
+        this.activeRequests = Math.max(0, this.activeRequests - 1)
+        this.resetIdleTimer()
+      }
+    }
+  }
+
   private resetIdleTimer(): void {
     if (this.idleTimer) clearTimeout(this.idleTimer)
     if (this.idleUnloadMs <= 0) return
     this.idleTimer = setTimeout(() => {
+      if (this.activeRequests > 0) {
+        // Active inference requests still in progress: do not unload runtime
+        this.resetIdleTimer()
+        return
+      }
       void this.stop()
     }, this.idleUnloadMs)
     this.idleTimer.unref?.()
@@ -589,7 +608,22 @@ export class LocalVlmManager implements LocalVlmRuntimeBridge {
     this.proc = null
     this.activePort = undefined
     if (child) {
-      killServerProcess(child, this.platform)
+      // Blocker P1 (Issue B): Wait for child process to exit cleanly before resolving
+      // to avoid race conditions where start() spawns a new server before the old one
+      // has released the GPU VRAM / port.
+      await new Promise<void>((resolve) => {
+        let timer: NodeJS.Timeout | null = null
+        const onExit = () => {
+          if (timer) clearTimeout(timer)
+          resolve()
+        }
+        child.once('exit', onExit)
+        killServerProcess(child, this.platform)
+        timer = setTimeout(() => {
+          child.removeListener('exit', onExit)
+          resolve()
+        }, 3_000)
+      })
     }
     this.emitStatus()
   }
@@ -732,20 +766,20 @@ export class LocalVlmManager implements LocalVlmRuntimeBridge {
           browser_download_url: `${base}/llama-${tag}-bin-win-cpu-arm64.zip`,
         },
         {
-          name: `llama-${tag}-bin-macos-arm64.zip`,
-          browser_download_url: `${base}/llama-${tag}-bin-macos-arm64.zip`,
+          name: `llama-${tag}-bin-macos-arm64.tar.gz`,
+          browser_download_url: `${base}/llama-${tag}-bin-macos-arm64.tar.gz`,
         },
         {
-          name: `llama-${tag}-bin-macos-x64.zip`,
-          browser_download_url: `${base}/llama-${tag}-bin-macos-x64.zip`,
+          name: `llama-${tag}-bin-macos-x64.tar.gz`,
+          browser_download_url: `${base}/llama-${tag}-bin-macos-x64.tar.gz`,
         },
         {
-          name: `llama-${tag}-bin-ubuntu-x64.zip`,
-          browser_download_url: `${base}/llama-${tag}-bin-ubuntu-x64.zip`,
+          name: `llama-${tag}-bin-ubuntu-x64.tar.gz`,
+          browser_download_url: `${base}/llama-${tag}-bin-ubuntu-x64.tar.gz`,
         },
         {
-          name: `llama-${tag}-bin-ubuntu-arm64.zip`,
-          browser_download_url: `${base}/llama-${tag}-bin-ubuntu-arm64.zip`,
+          name: `llama-${tag}-bin-ubuntu-arm64.tar.gz`,
+          browser_download_url: `${base}/llama-${tag}-bin-ubuntu-arm64.tar.gz`,
         },
       ]
     }
@@ -762,24 +796,24 @@ export class LocalVlmManager implements LocalVlmRuntimeBridge {
           'https://github.com/ggml-org/llama.cpp/releases/download/b12445/llama-b12445-bin-win-cpu-arm64.zip',
       },
       'darwin-arm64': {
-        name: 'llama-b12445-bin-macos-arm64.zip',
+        name: 'llama-b12445-bin-macos-arm64.tar.gz',
         browser_download_url:
-          'https://github.com/ggml-org/llama.cpp/releases/download/b12445/llama-b12445-bin-macos-arm64.zip',
+          'https://github.com/ggml-org/llama.cpp/releases/download/b12445/llama-b12445-bin-macos-arm64.tar.gz',
       },
       'darwin-x64': {
-        name: 'llama-b12445-bin-macos-x64.zip',
+        name: 'llama-b12445-bin-macos-x64.tar.gz',
         browser_download_url:
-          'https://github.com/ggml-org/llama.cpp/releases/download/b12445/llama-b12445-bin-macos-x64.zip',
+          'https://github.com/ggml-org/llama.cpp/releases/download/b12445/llama-b12445-bin-macos-x64.tar.gz',
       },
       'linux-x64': {
-        name: 'llama-b12445-bin-ubuntu-x64.zip',
+        name: 'llama-b12445-bin-ubuntu-x64.tar.gz',
         browser_download_url:
-          'https://github.com/ggml-org/llama.cpp/releases/download/b12445/llama-b12445-bin-ubuntu-x64.zip',
+          'https://github.com/ggml-org/llama.cpp/releases/download/b12445/llama-b12445-bin-ubuntu-x64.tar.gz',
       },
       'linux-arm64': {
-        name: 'llama-b12445-bin-ubuntu-arm64.zip',
+        name: 'llama-b12445-bin-ubuntu-arm64.tar.gz',
         browser_download_url:
-          'https://github.com/ggml-org/llama.cpp/releases/download/b12445/llama-b12445-bin-ubuntu-arm64.zip',
+          'https://github.com/ggml-org/llama.cpp/releases/download/b12445/llama-b12445-bin-ubuntu-arm64.tar.gz',
       },
     }
     const stableFallback = stableMap[`${this.platform}-${this.arch}`]
