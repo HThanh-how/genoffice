@@ -23,7 +23,8 @@
     "./diag-hook": "./src/diag-hook.ts",
     "./local-vlm": "./src/local-vlm-manager.ts",
     "./local-vlm-meta": "./src/local-vlm-meta.ts",
-    "./local-vlm-fallback": "./src/local-vlm-fallback.ts"
+    "./local-vlm-fallback": "./src/local-vlm-fallback.ts",
+    "./local-vlm-native": "./src/local-vlm-native.ts"
   },
   "scripts": {
     "typecheck": "tsc --noEmit",

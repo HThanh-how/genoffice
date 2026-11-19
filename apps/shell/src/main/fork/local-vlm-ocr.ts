@@ -1,5 +1,9 @@
 import { ensureLocalVlmEndpoint } from '@genoffice/ai-provider/local-vlm-fallback'
 import { LOCAL_VLM_SAMPLING_DEFAULTS } from '@genoffice/ai-provider/local-vlm-meta'
+import {
+  getLocalVlmNativeHost,
+  type LocalVlmBinaryInferFn,
+} from '@genoffice/ai-provider/local-vlm-native'
 import { OCR_PAGE_MARKER_PREFIX } from '@genoffice/ai-provider/agy-ocr'
 import type { OcrRecognizeInput } from '../document-memory/agy-ocr-job'
 
@@ -8,6 +12,8 @@ const LOCAL_VLM_OCR_MAX_PAGES_PER_CALL = 2
 export interface LocalVlmOcrDeps {
   ensureEndpoint?: (signal?: AbortSignal) => Promise<{ baseUrl: string; model: string }>
   fetchFn?: typeof fetch
+  /** Optional Native Runtime Host infer function (direct binary Buffer transfer, zero Base64). */
+  nativeInfer?: LocalVlmBinaryInferFn
 }
 
 function buildLocalVlmPagePrompt(pages: readonly number[]): string {
@@ -45,7 +51,14 @@ export async function recognizeWithLocalVlm(
 }> {
   const ensure = deps.ensureEndpoint ?? ensureLocalVlmEndpoint
   const fetchFn = deps.fetchFn ?? fetch
-  const endpoint = await ensure(input.signal)
+  const nativeHost =
+    deps.nativeInfer ??
+    (getLocalVlmNativeHost()?.isAvailable()
+      ? (prompt, images, sig) => getLocalVlmNativeHost()!.infer(prompt, images, sig)
+      : undefined)
+
+  // When native host is not available, we need the HTTP endpoint
+  const endpoint = !nativeHost ? await ensure(input.signal) : { baseUrl: '', model: '' }
   const chunks: string[] = []
   let inputTokens = 0
   let outputTokens = 0
@@ -53,8 +66,29 @@ export async function recognizeWithLocalVlm(
   for (let i = 0; i < input.pages.length; i += LOCAL_VLM_OCR_MAX_PAGES_PER_CALL) {
     const subPages = input.pages.slice(i, i + LOCAL_VLM_OCR_MAX_PAGES_PER_CALL)
     const subImages = input.images.slice(i, i + LOCAL_VLM_OCR_MAX_PAGES_PER_CALL)
+    const pagePrompt = buildLocalVlmPagePrompt(subPages)
+
+    // ── Native Host Path: Direct binary Buffer transfer (no Base64, no HTTP) ──
+    if (nativeHost) {
+      const res = await nativeHost(pagePrompt, subImages, input.signal)
+      const rawText = res.text
+      if (!rawText.trim()) {
+        chunks.push(subPages.map((n) => `${OCR_PAGE_MARKER_PREFIX}${n} ===`).join('\n'))
+      } else if (subPages.length === 1) {
+        chunks.push(normalizeSinglePageFallback(rawText, subPages[0]!))
+      } else {
+        chunks.push(rawText)
+      }
+      if (res.usage) {
+        inputTokens += res.usage.inputTokens ?? 0
+        outputTokens += res.usage.outputTokens ?? 0
+      }
+      continue
+    }
+
+    // ── Legacy HTTP Path: For environments without native host ───────────────
     const content: unknown[] = [
-      { type: 'text', text: buildLocalVlmPagePrompt(subPages) },
+      { type: 'text', text: pagePrompt },
       ...subImages.map((bytes) => ({
         type: 'image_url',
         image_url: { url: `data:image/jpeg;base64,${Buffer.from(bytes).toString('base64')}` },

@@ -182,3 +182,13 @@ export {
   localVlmRequestConfig,
   shouldFallbackFromAgyToLocalVlm,
 } from './local-vlm-fallback'
+export {
+  getLocalVlmNativeHost,
+  registerLocalVlmNativeHost,
+} from './local-vlm-native'
+export type {
+  LocalVlmBinaryInferFn,
+  LocalVlmBinaryInferResult,
+  LocalVlmNativeHostBridge,
+} from './local-vlm-native'
+
