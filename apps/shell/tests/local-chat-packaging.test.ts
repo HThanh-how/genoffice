@@ -58,3 +58,13 @@ it('bundles @genoffice/local-llm into the main process and keeps only the native
   expect(pkg.devDependencies['@genoffice/local-llm']).toBeDefined()
   expect(pkg.dependencies['node-llama-cpp']).toBe('3.22.3')
 })
+
+it('unpacks ESM-only dependencies of node-llama-cpp next to the host (exports maps block require.resolve)', () => {
+  const { nativeRuntimePackages } = require('../../../tools/local-llm-packaging.cjs') as {
+    nativeRuntimePackages: (root: string) => Map<string, string>
+  }
+  const keys = [...nativeRuntimePackages(join(__dirname, '../../..')).keys()]
+  // chalk and nanoid are ESM-only: the host crashed with ERR_MODULE_NOT_FOUND when they were skipped
+  expect(keys.some((key) => key.endsWith('node_modules/chalk'))).toBe(true)
+  expect(keys.some((key) => key.endsWith('node_modules/nanoid'))).toBe(true)
+})

@@ -59,12 +59,23 @@ export function registerLocalChat(
         'app.asar.unpacked$1',
       )
       client = new LocalLlmClient(
-        () =>
-          utilityProcess.fork(hostPath, [], {
+        () => {
+          const child = utilityProcess.fork(hostPath, [], {
             serviceName: 'GenOffice Local Chat',
             stdio: 'pipe',
             env: nativeHostEnvironment(),
-          }) as unknown as HostProcess,
+          })
+          // An unread pipe fills up and blocks the host; keep the tail for the crash log.
+          let tail = ''
+          child.stdout?.resume()
+          child.stderr?.on('data', (chunk: Buffer) => {
+            tail = (tail + chunk.toString('utf8')).slice(-4000)
+          })
+          child.on('exit', (code) => {
+            if (code) console.error(`[local-chat] native host exited (${code}): ${tail.trim()}`)
+          })
+          return child as unknown as HostProcess
+        },
         modelPath,
         options,
       )
