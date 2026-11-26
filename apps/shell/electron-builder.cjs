@@ -35,7 +35,9 @@ const { closeSync, existsSync, openSync, readFileSync, readSync, rmSync } = requ
 const { join, resolve } = require('node:path')
 // An absolute path: the packaging tests evaluate this file in a sandbox whose require resolves
 // relative to the test file, not to this one.
-const { nativeRuntimeUnpack } = require(resolve(__dirname, '../../tools/local-llm-packaging.cjs'))
+const { nativeRuntimeUnpack, copyNativeRuntime } = require(
+  resolve(__dirname, '../../tools/local-llm-packaging.cjs'),
+)
 
 function normalizeHttpsBaseUrl(name, value) {
   if (!value || !value.trim()) return null
@@ -945,6 +947,19 @@ const config = {
   nsis: {
     oneClick: false,
     allowToChangeInstallationDirectory: true,
+  },
+  // electron-builder's dependency collector loses nested packages of the unpacked local-chat host
+  afterPack: async (context) => {
+    const resources =
+      context.electronPlatformName === 'darwin'
+        ? join(
+            context.appOutDir,
+            `${context.packager.appInfo.productFilename}.app`,
+            'Contents',
+            'Resources',
+          )
+        : join(context.appOutDir, 'resources')
+    copyNativeRuntime(join(__dirname, '../..'), resources)
   },
   beforePack: async (context) => {
     ensurePlatformHelpers()

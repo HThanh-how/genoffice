@@ -1,4 +1,4 @@
-const { readFileSync, existsSync } = require('node:fs')
+const { readFileSync, existsSync, cpSync } = require('node:fs')
 const { join, dirname, relative, sep } = require('node:path')
 
 /** An unpacked ESM host must also see its JS dependency closure outside app.asar. */
@@ -29,7 +29,30 @@ function nativeRuntimePackages(root) {
   return found
 }
 
+/**
+ * Put the host's whole dependency closure next to it, exactly as the repository resolves it.
+ * electron-builder's own dependency collector flattens the tree and drops or misplaces nested
+ * versions (the packaged app shipped node-llama-cpp/node_modules with ipull's packages and without
+ * chalk 5 and nanoid), so the unpacked ESM host died with ERR_MODULE_NOT_FOUND at the first chat.
+ * Runs from afterPack, once app.asar.unpacked exists. node-llama-cpp itself and the platform
+ * binaries are already shipped by the `files` rules.
+ */
+function copyNativeRuntime(root, resourcesDir) {
+  let copied = 0
+  for (const [key, dir] of nativeRuntimePackages(root)) {
+    if (key === 'node_modules/node-llama-cpp' || key.startsWith('node_modules/@node-llama-cpp/'))
+      continue
+    cpSync(dir, join(resourcesDir, 'app.asar.unpacked', ...key.split('/')), {
+      recursive: true,
+      force: true,
+    })
+    copied += 1
+  }
+  return copied
+}
+
 module.exports = {
+  copyNativeRuntime,
   nativeRuntimePackages,
   nativeRuntimeUnpack: (root) =>
     [...nativeRuntimePackages(root).keys()].map((path) => `${path}/**`),

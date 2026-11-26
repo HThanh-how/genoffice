@@ -68,3 +68,21 @@ it('unpacks ESM-only dependencies of node-llama-cpp next to the host (exports ma
   expect(keys.some((key) => key.endsWith('node_modules/chalk'))).toBe(true)
   expect(keys.some((key) => key.endsWith('node_modules/nanoid'))).toBe(true)
 })
+
+it('copies the host dependency closure, nested versions included, into app.asar.unpacked', () => {
+  const { mkdtempSync, existsSync, readFileSync } = require('node:fs')
+  const { tmpdir } = require('node:os')
+  const { copyNativeRuntime } = require('../../../tools/local-llm-packaging.cjs') as {
+    copyNativeRuntime: (root: string, resources: string) => number
+  }
+  const resources = mkdtempSync(join(tmpdir(), 'gen-res-'))
+  expect(copyNativeRuntime(join(__dirname, '../../..'), resources)).toBeGreaterThan(50)
+  const unpacked = join(resources, 'app.asar.unpacked', 'node_modules')
+  // chalk 5 and nanoid sit under node-llama-cpp and were the packages the packaged host could not find
+  const chalk = join(unpacked, 'node-llama-cpp', 'node_modules', 'chalk', 'package.json')
+  expect(existsSync(chalk)).toBe(true)
+  expect(JSON.parse(readFileSync(chalk, 'utf8')).version.split('.')[0]).toBe('5')
+  expect(
+    existsSync(join(unpacked, 'node-llama-cpp', 'node_modules', 'nanoid', 'package.json')),
+  ).toBe(true)
+})
