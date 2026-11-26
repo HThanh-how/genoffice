@@ -1,4 +1,4 @@
-import { freemem, totalmem } from 'node:os'
+import { totalmem } from 'node:os'
 import { randomUUID } from 'node:crypto'
 import {
   getLlama,
@@ -13,6 +13,7 @@ import {
 } from 'node-llama-cpp'
 import { contextBudget } from '../budget'
 import { openLlama } from './backend'
+import { availableMemoryBytes } from './memory'
 import { verifyModel } from '../integrity'
 import { LFM_SAMPLING } from '../manifest'
 import {
@@ -51,7 +52,11 @@ export class NativeHost {
           this.loading = (async () => {
             if (this.model) return
             let checkpoint = performance.now()
-            const size = contextBudget(freemem(), totalmem(), message.options.contextSize)
+            const size = contextBudget(
+              availableMemoryBytes(),
+              totalmem(),
+              message.options.contextSize,
+            )
             await verifyModel(message.modelPath)
             const verifyMs = performance.now() - checkpoint
             checkpoint = performance.now()
