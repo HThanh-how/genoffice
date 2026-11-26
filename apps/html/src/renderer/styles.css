@@ -1971,6 +1971,12 @@ html.genoffice-popover-open .ribbon-tabs {
   color: var(--hx-error);
 }
 
+.ai-msg-undelivered.is-notice,
+.ai-msg-undelivered.is-notice .ai-retry-btn {
+  color: var(--text-secondary);
+  border-color: var(--border);
+}
+
 .ai-retry-btn {
   border: 1px solid var(--hx-error-border);
   border-radius: 4px;

@@ -91,6 +91,20 @@ function register(): void {
   })
 }
 
+/**
+ * Someone else's box replaced the native one (a test spy): use it. The app's own box, installed for
+ * the whole process by installThemedDialogs(showAppMessageBox), is not a replacement: calling it from
+ * here would call this function again, forever.
+ */
+function messageBoxReplaced(): boolean {
+  const current: unknown = dialog.showMessageBox
+  return (
+    current !== nativeDialogShowMessageBox &&
+    current !== showAppMessageBox &&
+    current !== showUpdateStatusMessageBox
+  )
+}
+
 export function showAppMessageBox(
   parentOrOptions: BrowserWindow | null | undefined | MessageBoxOptions,
   supplied?: MessageBoxOptions,
@@ -99,7 +113,7 @@ export function showAppMessageBox(
     ? ((parentOrOptions as BrowserWindow | null | undefined) ?? BrowserWindow.getFocusedWindow())
     : BrowserWindow.getFocusedWindow()
   const options = supplied ?? (parentOrOptions as MessageBoxOptions)
-  if (dialog.showMessageBox !== nativeDialogShowMessageBox) {
+  if (messageBoxReplaced()) {
     return parent ? dialog.showMessageBox(parent, options) : dialog.showMessageBox(options)
   }
   const task = queue.then(() => openBox(parent, options))
@@ -120,7 +134,7 @@ export function showUpdateStatusMessageBox(
     ? ((parentOrOptions as BrowserWindow | null | undefined) ?? BrowserWindow.getFocusedWindow())
     : BrowserWindow.getFocusedWindow()
   const options = supplied ?? (parentOrOptions as MessageBoxOptions)
-  if (dialog.showMessageBox !== nativeDialogShowMessageBox) {
+  if (messageBoxReplaced()) {
     return parent ? dialog.showMessageBox(parent, options) : dialog.showMessageBox(options)
   }
   const task = queue.then(() =>

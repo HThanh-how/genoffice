@@ -266,6 +266,7 @@ import {
   removeStarredFiles,
   replaceRecentFile,
   registerAiIpc,
+  setAiProviderChangeGuard,
   registerProjectIpc,
   setStarredGroup,
   toggleStarredFile,
@@ -9150,7 +9151,10 @@ app.on('second-instance', (_event, argv, _cwd, additionalData) => {
 
 installNavigationGuard(app)
 installContextMenu(app, () => contextMenuLabels(currentLang()))
-registerLocalModel(currentLang)
+const localModel = registerLocalModel(currentLang, (channel, payload) => {
+  if (shellWindow && !shellWindow.isDestroyed()) shellWindow.webContents.send(channel, payload)
+})
+setAiProviderChangeGuard(localModel.confirmProviderChange)
 registerAiIpc()
 const openHomeSettings = (section: 'aiModel' | 'skills'): void => {
   const win = shellWindow

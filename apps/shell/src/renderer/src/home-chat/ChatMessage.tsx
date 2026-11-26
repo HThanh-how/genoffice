@@ -1,4 +1,4 @@
-import { Markdown, type MarkdownNav } from '@genoffice/ui'
+import { LiveNotice, Markdown, type MarkdownNav } from '@genoffice/ui'
 import { FileTypeIcon } from './FileTypeIcon'
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type { HomeChatSource } from '../../../shared/fork/home-chat-types'
@@ -12,6 +12,8 @@ export type ChatItem = {
   /** transient line shown beside the typing dots until the first token (e.g. "Starting Antigravity…") */
   status?: string
   error?: string
+  /** `error` is a live status (nothing failed), never saved: the id LiveNotice follows */
+  notice?: string
   /** the files the finished answer cites (or, flagged `related`, the retrieved ones) */
   sources?: HomeChatSource[]
   /** every file the model was given an id for in this turn; lets `[[file:N]]` resolve while it streams */
@@ -149,7 +151,17 @@ function AssistantMessage({
               <Markdown text={linked?.markdown ?? item.text} {...(nav ? { nav } : {})} />
             </div>
           )}
-      {item.error && (
+      {item.error && item.notice && (
+        <div className="hc-status-note">
+          <LiveNotice id={item.notice} text={item.error} />
+          {canRetry && (
+            <button type="button" className="hc-text-button" onClick={onRetry}>
+              {labels.retry}
+            </button>
+          )}
+        </div>
+      )}
+      {item.error && !item.notice && (
         <div className="hc-error" role="alert">
           <svg viewBox="0 0 20 20" fill="none" aria-hidden="true">
             <circle cx="10" cy="10" r="7.25" stroke="currentColor" strokeWidth="1.5" />

@@ -173,7 +173,13 @@ export interface AgentStreamCallbacks {
   /** tokens the provider billed for this turn; transports whose provider does not report usage omit this */
   onUsage?(usage: AgentTokenUsage): void
   onDone(): void
-  onError(error: string): void
+  onError(error: string, info?: AgentErrorInfo): void
+}
+
+export interface AgentErrorInfo {
+  /** nothing failed: the text is a status ("still downloading") and must not look like an error.
+   * The id under which getNotice() keeps it up to date. */
+  notice: string
 }
 
 export interface AgentStreamHandle {

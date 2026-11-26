@@ -7,7 +7,7 @@ import {
 } from '@genoffice/local-llm/protocol'
 import type { AiProviderConfig, AiChatResponse } from './types'
 import type { StreamCallbacks } from './protocols/shared'
-import { localChatText } from './local-copy'
+import { localChatText, localProgressText } from './local-copy'
 
 /** Installed by the owning main/CLI process. No network fallback exists. */
 export type LocalChatTransport = (
@@ -58,6 +58,9 @@ export async function streamLocal(
         case 'toolcall':
           validateLocalToolCall(event.call, tools)
           cb.onToolCall(event.call)
+          break
+        case 'phase':
+          cb.onStatus?.(localProgressText(event))
           break
         case 'usage':
           cb.onUsage?.({

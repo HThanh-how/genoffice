@@ -1,3 +1,5 @@
+import { setNotice } from './notices'
+import { clearStreamStatus, setStreamStatus } from './stream-status'
 import type {
   AgentStreamRequest,
   AgentTokenUsage,
@@ -15,13 +17,16 @@ import type {
 export interface IpcStreamChunk {
   requestId: string
   /** 'ping' = wire-level keepalive; re-arms the silence watchdog and carries no payload;
-   * 'reasoning' = model thinking delta (text carries it) */
-  type: 'delta' | 'reasoning' | 'tool-call' | 'usage' | 'done' | 'error' | 'ping'
+   * 'reasoning' = model thinking delta (text carries it); 'status' = what the provider is doing
+   * while nothing has been written yet (text carries it) */
+  type: 'delta' | 'reasoning' | 'tool-call' | 'usage' | 'done' | 'error' | 'ping' | 'status'
   text?: string
   toolCall?: AgentToolCall
   error?: string
-  /** machine-readable error cause; maps to the localized timeout/credits/network/overloaded/quota/auth/region message */
-  errorCode?: 'timeout' | 'credits' | 'network' | 'overloaded' | 'quota' | 'auth' | 'region'
+  /** machine-readable error cause; maps to the localized timeout/credits/network/overloaded/quota/auth/region message;
+   * 'notice' = nothing failed: `error` is a status and is shown as one */
+  errorCode?:
+    'timeout' | 'credits' | 'network' | 'overloaded' | 'quota' | 'auth' | 'region' | 'notice'
   /** with errorCode 'quota': epoch ms when the exhausted quota is expected back, when known */
   errorResetAt?: number
   /** normalized stop reason on 'done' ('max_tokens' = cut off by the token limit) */
@@ -130,6 +135,22 @@ export function createIpcTransport<S>(options: IpcTransportOptions<S>): AgentTra
     typeof options.sessionId === 'function'
       ? options.sessionId()
       : (options.sessionId ?? crypto.randomUUID())
+  let dropNotice: (() => void) | undefined
+  /** The turn is over, but main keeps reporting on it: keep the one status line of this chat current. */
+  const followNotice = (id: string, text: string) => {
+    dropNotice?.()
+    setNotice(id, text)
+    const off = options.onStream((chunk) => {
+      if (chunk.requestId !== id) return
+      if (chunk.type === 'status' && chunk.text) setNotice(id, chunk.text)
+      else if (chunk.type === 'error') setNotice(id, chunk.error ?? text, true)
+      if (chunk.type === 'error' || chunk.type === 'done') off()
+    })
+    dropNotice = () => {
+      off()
+      options.cancel(id)
+    }
+  }
   return {
     compactionBudget() {
       const settings = options.getSettings() as { provider?: string } | null
@@ -159,6 +180,7 @@ export function createIpcTransport<S>(options: IpcTransportOptions<S>): AgentTra
       let settings = route?.prepare(baseSettings, request) ?? baseSettings
       const settle = () => {
         settled = true
+        clearStreamStatus(requestId)
         clearTimeout(silenceTimer)
         clearTimeout(firstContentTimer)
         unsubscribe()
@@ -169,10 +191,13 @@ export function createIpcTransport<S>(options: IpcTransportOptions<S>): AgentTra
         clearTimeout(retryTimer)
         settle()
       }
-      const fail = (error: string) => {
+      const fail = (error: string, notice = false) => {
         if (finished) return
         finish()
-        cb.onError(error)
+        if (notice) {
+          followNotice(requestId, error)
+          cb.onError(error, { notice: requestId })
+        } else cb.onError(error)
       }
       const errorText = (
         error: string,
@@ -244,7 +269,7 @@ export function createIpcTransport<S>(options: IpcTransportOptions<S>): AgentTra
           attempt()
           return
         }
-        fail(errorText(error, errorCode, errorResetAt))
+        fail(errorText(error, errorCode, errorResetAt), errorCode === 'notice')
       }
       if (route?.maxDurationMs) {
         deadlineTimer = setTimeout(() => {
@@ -284,9 +309,13 @@ export function createIpcTransport<S>(options: IpcTransportOptions<S>): AgentTra
           if (chunk.requestId !== thisRequestId || settled || thisRequestId !== requestId) return
           if (chunk.type === 'ping') {
             armSilence()
+          } else if (chunk.type === 'status') {
+            armSilence()
+            if (chunk.text) setStreamStatus(thisRequestId, chunk.text)
           } else if (chunk.type === 'delta') {
             armSilence()
             if (chunk.text) {
+              clearStreamStatus(thisRequestId)
               emitted = true
               partialText += chunk.text
               clearTimeout(firstContentTimer)

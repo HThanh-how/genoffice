@@ -85,6 +85,9 @@ export type {
   ToolExecutedEvent,
 } from './loop'
 export { createIpcTransport, IPC_STREAM_SILENCE_TIMEOUT_MS } from './electron-transport'
+export { getNotice, subscribeNotices, withoutNotices } from './notices'
+export { getStreamStatus, subscribeStreamStatus } from './stream-status'
+export type { AgentErrorInfo } from './types'
 export { streamText } from './stream-text'
 export type { StreamTextOptions, StreamTextOutcome } from './stream-text'
 export type { IpcStreamChunk, IpcStreamStart, IpcTransportOptions } from './electron-transport'

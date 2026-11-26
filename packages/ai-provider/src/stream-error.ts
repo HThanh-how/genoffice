@@ -4,6 +4,7 @@ import { isAiOverloadedError } from './overload-error'
 import { isAiRegionBlockedError } from './region-error'
 import { AiCreditsError } from './protocols/shared'
 import { AiTimeoutError } from './watchdog'
+import { LocalLlmError } from '@genoffice/local-llm/protocol'
 import type { AiStreamChunk } from './types'
 
 /**
@@ -23,6 +24,9 @@ function findAgyError(err: unknown): AgyError | undefined {
 }
 
 export function classifyAiStreamError(err: unknown): AiStreamErrorFields {
+  // Local AI's own message is what the user sees: the checks below would replace it with the text
+  // for a network or capacity problem of some service.
+  if (err instanceof LocalLlmError) return err.code === 'PREPARING' ? { errorCode: 'notice' } : {}
   const agy = agyErrorKindOf(err) ? findAgyError(err) : undefined
   if (agy) {
     if (agy.kind === 'quota') {

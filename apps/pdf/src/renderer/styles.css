@@ -4711,6 +4711,12 @@ button {
   color: var(--pdf-error);
 }
 
+.ai-msg-undelivered.is-notice,
+.ai-msg-undelivered.is-notice .ai-retry-btn {
+  color: var(--text-secondary);
+  border-color: var(--border);
+}
+
 .ai-retry-btn {
   border: 1px solid var(--pdf-error-border);
   border-radius: 4px;

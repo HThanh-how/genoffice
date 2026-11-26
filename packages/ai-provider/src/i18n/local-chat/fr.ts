@@ -2,7 +2,7 @@ import { copy as zh } from './zh'
 export const copy = {
   title: 'Modèle de chat local',
   missing: 'Non téléchargé',
-  checking: 'Vérification SHA-256…',
+  checking: 'Vérification de l’IA locale…',
   downloading: 'Téléchargement {n}%',
   paused: 'En pause {n}%',
   ready: 'Prêt',
@@ -27,4 +27,25 @@ export const copy = {
   offline: 'Hors ligne. Connectez-vous pour télécharger le modèle local.',
   metered:
     'Réseau limité : téléchargement automatique en pause. Téléchargez manuellement pour continuer.',
+  downloaded: 'L’IA locale est téléchargée',
+  offerTitle: 'Utiliser l’IA locale maintenant ?',
+  offerBody:
+    'Le modèle téléchargé s’exécute sur cet ordinateur. Vous pouvez changer de modèle à tout moment.',
+  offerUse: 'Utiliser maintenant',
+  offerLater: 'Plus tard',
+  verifying: 'Vérification du téléchargement…',
+  chatDownloading: 'Téléchargement de l’IA locale · {n} %',
+  sendAgain: 'Vous pourrez renvoyer votre message quand elle sera prête.',
+  phaseStarting: 'Démarrage de l’IA locale…',
+  phaseLoading: 'Chargement du modèle en mémoire…',
+  phasePreparing: 'Préparation de l’IA locale…',
+  phaseReading: 'Lecture de votre demande…',
+  phaseWriting: 'Rédaction de la réponse…',
+  readyToChat: 'L’IA locale est prête à discuter',
+  startFailed: 'L’IA locale réessaiera quand vous enverrez un message.',
+  hide: 'Masquer',
+  downloadConfirm:
+    'L’IA locale nécessite le téléchargement d’environ 1,1 Go et s’exécutera sur cet appareil.',
+  downloadQuestion: 'Voulez-vous la télécharger maintenant ?',
+  notNow: 'Pas maintenant',
 } satisfies Record<keyof typeof zh, string>

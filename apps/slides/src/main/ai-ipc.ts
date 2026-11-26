@@ -283,6 +283,7 @@ export function registerAiIpc(): void {
           send({ requestId, type: 'tool-call', toolCall })
         },
         onActivity: ping,
+        onStatus: (text) => send({ requestId, type: 'status', text }),
         onStopReason: (reason) => {
           stopReason = reason
           trace?.onStopReason(reason)

@@ -10,6 +10,16 @@ export type LocalErrorCode =
   | 'NOT_READY'
   | 'INVALID_TOOL'
   | 'RUNTIME'
+  /** not a failure: the model is still being downloaded or checked; the message is a status line */
+  | 'PREPARING'
+
+/** What the runtime is really doing; every step is reported as it begins, none is timed or guessed. */
+export type LocalPhase = 'starting' | 'checking' | 'loading' | 'preparing' | 'reading' | 'writing'
+export interface LocalProgress {
+  phase: LocalPhase
+  /** only where the runtime measures it (reading the weights into memory) */
+  percent?: number
+}
 
 export class LocalLlmError extends Error {
   constructor(
@@ -107,6 +117,7 @@ export interface LocalUsage {
 export type HostEvent =
   | { id: string; type: 'text' | 'thought'; text: string }
   | { id: string; type: 'toolcall'; call: LocalToolCall }
+  | ({ id: string; type: 'phase' } & LocalProgress)
   | { id: string; type: 'usage'; usage: LocalUsage }
   | { id: string; type: 'done'; stopReason?: string }
   | {

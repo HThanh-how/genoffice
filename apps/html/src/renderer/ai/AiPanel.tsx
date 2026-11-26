@@ -21,6 +21,7 @@ import {
   composeSkills,
   createDocumentMemorySkill,
   withAttachedSkills,
+  withoutNotices,
 } from '@genoffice/agent-core'
 import type { AgentImage } from '@genoffice/agent-core'
 import type { AiSettings } from '@genoffice/ai-provider'
@@ -33,6 +34,7 @@ import {
   AI_QUEUE_LABELS,
   AiScopeQuote,
   AiTypingIndicator,
+  LiveNotice,
   AiUsageChip,
   addTokenUsage,
   createFileNav,
@@ -206,6 +208,8 @@ interface ChatEntry {
   text: string
   streaming?: boolean
   isError?: boolean
+  /** `text`/`error` is a live status (nothing failed): the id LiveNotice follows */
+  notice?: string
   /** the run failed and this user message was rolled back out of the model context */
   undelivered?: boolean
   /** instruction actually sent when it differs from the bubble text (sid-pinned Ask AI / queue batch); retries resend this */
@@ -828,15 +832,19 @@ export function AiPanel({
           queueRunRef.current = false
           setBusy(false)
         },
-        onError: (error) => {
+        onError: (error, info) => {
           // once a tool ran the message was delivered; a later turn failing is not a send failure
           const undelivered = runToolsRef.current.length === 0
           setChat((prev) => {
-            const next = [...prev]
+            const next = info?.notice ? withoutNotices(prev) : [...prev]
             for (let i = undelivered ? next.length - 1 : -1; i >= 0; i--) {
               const entry = next[i]!
               if (entry.role === 'user') {
-                next[i] = { ...entry, undelivered: true }
+                next[i] = {
+                  ...entry,
+                  undelivered: true,
+                  ...(info?.notice ? { notice: info.notice } : {}),
+                }
                 break
               }
             }
@@ -846,7 +854,7 @@ export function AiPanel({
                 ...last,
                 streaming: false,
                 text: error,
-                isError: true,
+                ...(info?.notice ? { notice: info.notice } : { isError: true }),
                 tools: last.tools?.filter((tl) => !tl.running),
               }
             }
@@ -1354,7 +1362,7 @@ export function AiPanel({
                   ) : null,
                 )}
                 {entry.undelivered && (
-                  <div className="ai-msg-undelivered">
+                  <div className={`ai-msg-undelivered${entry.notice ? ' is-notice' : ''}`}>
                     {t('aiUndelivered')}
                     {!busy && (
                       <button
@@ -1384,7 +1392,8 @@ export function AiPanel({
           // (mid-turn segments have a following assistant entry; the live turn ends when !busy)
           const nextEntry = chat[i + 1]
           const turnEnded = nextEntry ? nextEntry.role === 'user' : !busy
-          const showToolbar = !entry.streaming && turnEnded && !!entry.text && !entry.isError
+          const showToolbar =
+            !entry.streaming && turnEnded && !!entry.text && !entry.isError && !entry.notice
           return (
             <div
               key={i}
@@ -1397,7 +1406,11 @@ export function AiPanel({
               ) : (
                 entry.text && (
                   <div dir="auto">
-                    <Markdown text={entry.text} navs={[docNav, fileNav]} />
+                    {entry.notice ? (
+                      <LiveNotice id={entry.notice} text={entry.text} />
+                    ) : (
+                      <Markdown text={entry.text} navs={[docNav, fileNav]} />
+                    )}
                   </div>
                 )
               )}

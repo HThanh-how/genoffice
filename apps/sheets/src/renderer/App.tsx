@@ -149,6 +149,7 @@ import {
   composeSkills,
   withAttachedSkills,
   type AgentImage,
+  withoutNotices,
 } from '@genoffice/agent-core'
 import { imageGenerationAvailable, type AiSettings } from '@genoffice/ai-provider/browser'
 import { type WorkbookOperation } from '@genoffice/xlsx-gateway/domain/workbook-dsl'
@@ -1796,15 +1797,20 @@ export function App({
           setAiRunScope(undefined)
           void autoSaveCompletedAiRun().finally(() => setAiBusy(false))
         },
-        onError: (error) => {
-          setMessage(error)
+        onError: (error, info) => {
+          // a status line lives in the chat only: a copy in the status bar would go stale
+          if (!info?.notice) setMessage(error)
           setChat((previous) => {
-            const next = [...previous]
+            const next = info?.notice ? withoutNotices(previous) : [...previous]
             // the loop rolled this run's user message out of the model context — surface that
             for (let i = next.length - 1; i >= 0; i--) {
               const entry = next[i]!
               if (entry.role === 'user') {
-                next[i] = { ...entry, undelivered: true }
+                next[i] = {
+                  ...entry,
+                  undelivered: true,
+                  ...(info?.notice ? { notice: info.notice } : {}),
+                }
                 break
               }
             }
@@ -1813,7 +1819,7 @@ export function App({
               next[next.length - 1] = {
                 ...last,
                 text: error,
-                isError: true,
+                ...(info?.notice ? { notice: info.notice } : { isError: true }),
                 streaming: false,
                 tools: last.tools.filter((tl) => !tl.running),
               }

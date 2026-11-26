@@ -18,6 +18,7 @@ import {
   composeSkills,
   createDocumentMemorySkill,
   withAttachedSkills,
+  withoutNotices,
 } from '@genoffice/agent-core'
 import { imageGenerationAvailable, type AiSettings } from '@genoffice/ai-provider/browser'
 import {
@@ -28,6 +29,7 @@ import {
   AiSkillChips,
   AiSkillsMenu,
   AiTypingIndicator,
+  LiveNotice,
   AiUsageChip,
   addTokenUsage,
   useChatRunQueue,
@@ -67,6 +69,8 @@ interface ChatEntry {
   text: string
   streaming?: boolean
   isError?: boolean
+  /** `text`/`error` is a live status (nothing failed): the id LiveNotice follows */
+  notice?: string
   /** the run failed and this user message was rolled back out of the model context */
   undelivered?: boolean
   tools?: ToolActivity[]
@@ -497,20 +501,29 @@ export function AiPanel({
             onRunDoneRef.current?.()
           }
         },
-        onError: (error) => {
+        onError: (error, info) => {
           setChat((prev) => {
-            const next = [...prev]
+            const next = info?.notice ? withoutNotices(prev) : [...prev]
             // the loop rolled this run's user message out of the model context — surface that
             for (let i = next.length - 1; i >= 0; i--) {
               const entry = next[i]!
               if (entry.role === 'user') {
-                next[i] = { ...entry, undelivered: true }
+                next[i] = {
+                  ...entry,
+                  undelivered: true,
+                  ...(info?.notice ? { notice: info.notice } : {}),
+                }
                 break
               }
             }
             const last = next.at(-1)
             if (last?.role === 'assistant') {
-              next[next.length - 1] = { ...last, streaming: false, text: error, isError: true }
+              next[next.length - 1] = {
+                ...last,
+                streaming: false,
+                text: error,
+                ...(info?.notice ? { notice: info.notice } : { isError: true }),
+              }
             }
             return next
           })
@@ -804,7 +817,7 @@ export function AiPanel({
                 {entry.skills && <AiSkillChips lang={lang} names={entry.skills} />}
                 <span dir="auto">{entry.text}</span>
                 {entry.undelivered && (
-                  <div className="ai-msg-undelivered">
+                  <div className={`ai-msg-undelivered${entry.notice ? ' is-notice' : ''}`}>
                     {t('aiUndelivered')}
                     {!busy && (
                       <button
@@ -834,7 +847,11 @@ export function AiPanel({
               )}
               {entry.text && (
                 <div dir="auto">
-                  <Markdown text={entry.text} navs={[pdfNav, fileNav]} />
+                  {entry.notice ? (
+                    <LiveNotice id={entry.notice} text={entry.text} />
+                  ) : (
+                    <Markdown text={entry.text} navs={[pdfNav, fileNav]} />
+                  )}
                 </div>
               )}
             </div>

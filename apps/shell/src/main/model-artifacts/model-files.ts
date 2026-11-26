@@ -10,7 +10,10 @@ export interface PinnedArtifact {
   sha256: string
 }
 
-/** The lock covers verification, transfer, promotion and deletion of invalid bytes. */
+/**
+ * The lock covers verification, transfer, promotion and deletion of invalid bytes.
+ * Resolves true when this call completed a download, false when a valid file was already there.
+ */
 export async function ensureArtifact(
   destination: string,
   file: PinnedArtifact,
@@ -18,7 +21,9 @@ export async function ensureArtifact(
   signal: AbortSignal,
   onBytes: (bytes: number) => void,
   fetchImpl: FetchLike = fetch,
-): Promise<void> {
+  /** every byte is here and the checksum is being computed */
+  onVerifying: () => void = () => {},
+): Promise<boolean> {
   await mkdir(dirname(destination), { recursive: true })
   const release = await acquireDownloadLock(`${destination}.part.lock`, 15_000, signal)
   if (!release)
@@ -27,8 +32,9 @@ export async function ensureArtifact(
     signal.throwIfAborted()
     if (await stat(destination).catch(() => null)) {
       try {
+        onVerifying()
         await verifyModel(destination, signal, file)
-        return
+        return false
       } catch (error) {
         signal.throwIfAborted()
         await rm(destination, { force: true })
@@ -55,12 +61,14 @@ export async function ensureArtifact(
       throw new Error(`Local model download failed: ${failure.failure}`)
     }
     try {
+      onVerifying()
       await verifyModel(`${destination}.part`, signal, file)
     } catch (error) {
       if (!signal.aborted) await rm(`${destination}.part`, { force: true })
       throw error
     }
     await rename(`${destination}.part`, destination)
+    return true
   } finally {
     await release()
   }

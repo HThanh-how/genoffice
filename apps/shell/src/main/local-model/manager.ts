@@ -4,9 +4,13 @@ import { LFM_MANIFEST, modelUrl, verifyModel, LocalLlmError } from '@genoffice/l
 import { ensureArtifact, deleteArtifact } from '../model-artifacts/model-files'
 import type { LocalModelState } from '../../shared/local-model'
 import { localChatText } from '@genoffice/ai-provider/local-copy'
+import type { LocalModelStatusLine } from '@genoffice/electron-utils/local-chat'
+
+const errorText = (error: unknown) => (error instanceof Error ? error.message : String(error))
 
 export class LocalModelManager {
-  state: LocalModelState = { status: 'missing', percent: 0 }
+  private current: LocalModelState = { status: 'missing', percent: 0 }
+  private readonly watchers = new Set<() => void>()
   readonly path: string
   private running?: Promise<void>
   private checking?: Promise<void>
@@ -15,8 +19,30 @@ export class LocalModelManager {
   constructor(
     userData: string,
     private readonly beforeDelete: () => Promise<void>,
+    /** a download just finished; never called for a model that was already on disk */
+    private readonly onDownloaded: () => void = () => {},
   ) {
     this.path = join(userData, 'models', LFM_MANIFEST.id, LFM_MANIFEST.files[0].path)
+  }
+
+  get state(): LocalModelState {
+    return this.current
+  }
+  set state(next: LocalModelState) {
+    const { status, percent, error } = this.current
+    this.current = next
+    if (next.status === status && next.percent === percent && next.error === error) return
+    for (const watch of this.watchers) watch()
+  }
+
+  /** Calls `listener` now and at every visible change; returns the unsubscribe function. */
+  watch(listener: (line: LocalModelStatusLine) => void): () => void {
+    const tell = () => listener(this.statusLine())
+    this.watchers.add(tell)
+    tell()
+    return () => {
+      this.watchers.delete(tell)
+    }
   }
 
   async refresh(): Promise<void> {
@@ -39,7 +65,7 @@ export class LocalModelManager {
         await verifyModel(this.path)
         this.state = { status: 'ready', percent: 100 }
       } catch (error) {
-        let details = error instanceof Error ? error.message : String(error)
+        let details = errorText(error)
         if (
           error instanceof LocalLlmError &&
           (error.code === 'MODEL_CHECKSUM' || error.code === 'MODEL_SIZE')
@@ -69,30 +95,41 @@ export class LocalModelManager {
     this.abort = new AbortController()
     const signal = this.abort.signal
     this.state = { status: 'downloading', percent: this.state.percent }
+    let downloaded = false
     this.running = (async () => {
       try {
         await this.checking
         signal.throwIfAborted()
         this.state = { status: 'downloading', percent: this.state.percent }
-        await ensureArtifact(this.path, LFM_MANIFEST.files[0], modelUrl(), signal, (bytes) => {
-          this.state = {
-            status: 'downloading',
-            percent: Math.min(99, Math.floor((100 * bytes) / LFM_MANIFEST.files[0].bytes)),
-          }
-        })
+        downloaded = await ensureArtifact(
+          this.path,
+          LFM_MANIFEST.files[0],
+          modelUrl(),
+          signal,
+          (bytes) => {
+            this.state = {
+              status: 'downloading',
+              percent: Math.min(99, Math.floor((100 * bytes) / LFM_MANIFEST.files[0].bytes)),
+            }
+          },
+          undefined,
+          () => {
+            this.state = { status: 'verifying', percent: 100 }
+          },
+        )
         this.state = { status: 'ready', percent: 100 }
       } catch (error) {
         this.state = {
           status: signal.aborted ? 'paused' : 'error',
           percent: this.state.percent,
-          ...(!signal.aborted
-            ? { error: error instanceof Error ? error.message : String(error) }
-            : {}),
+          ...(!signal.aborted ? { error: errorText(error) } : {}),
         }
       }
     })().finally(() => {
       this.running = undefined
       this.abort = undefined
+      // Cancel, delete and quit all abort: whoever asked for that is not waiting for the model.
+      if (downloaded && !signal.aborted) this.onDownloaded()
     })
     return this.running
   }
@@ -113,21 +150,43 @@ export class LocalModelManager {
       this.state = {
         status: 'error',
         percent: this.state.percent,
-        error: error instanceof Error ? error.message : String(error),
+        error: errorText(error),
       }
     } finally {
       this.deleting = false
     }
   }
 
+  /** a download is transferring or being checked */
+  get busy(): boolean {
+    return this.running !== undefined
+  }
+
+  /** Where the model stands, in one line that replaces the previous one. */
+  private statusLine(): LocalModelStatusLine {
+    const c = localChatText()
+    const { status, percent, error } = this.state
+    switch (status) {
+      case 'ready':
+        return { text: c.readyToChat, end: 'ready' }
+      case 'error':
+        return { text: error ?? c.error, end: 'failed' }
+      case 'missing':
+        return { text: `${c.missing} — ${c.title}`, end: 'failed' }
+      case 'downloading':
+        return { text: `${c.chatDownloading.replace('{n}', String(percent))}\n\n${c.sendAgain}` }
+      case 'paused':
+        return { text: error ?? c.paused.replace('{n}', String(percent)) }
+      default:
+        return { text: `${c[status]}\n\n${c.sendAgain}` }
+    }
+  }
+
+  /** The model file to load, or why there is none. */
   requireReady(): string {
-    if (this.deleting) throw new Error('Local model is being deleted')
-    if (this.state.status !== 'ready')
-      throw new Error(
-        this.state.status === 'downloading'
-          ? localChatText().downloading.replace('{n}', String(this.state.percent))
-          : (this.state.error ?? `${localChatText().missing} — ${localChatText().title}`),
-      )
-    return this.path
+    if (this.deleting) throw new LocalLlmError('RUNTIME', 'Local model is being deleted')
+    if (this.state.status === 'ready') return this.path
+    const { text, end } = this.statusLine()
+    throw new LocalLlmError(end ? 'RUNTIME' : 'PREPARING', text)
   }
 }

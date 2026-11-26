@@ -2,7 +2,7 @@ import { copy as zh } from './zh'
 export const copy = {
   title: 'ローカルチャットモデル',
   missing: '未ダウンロード',
-  checking: 'SHA-256 を検証中…',
+  checking: 'ローカル AI を確認しています…',
   downloading: 'ダウンロード中 {n}%',
   paused: '一時停止 {n}%',
   ready: '準備完了',
@@ -26,4 +26,24 @@ export const copy = {
   offline: 'オフラインです。ローカルモデルのダウンロードには接続が必要です。',
   metered:
     '従量制ネットワークのため自動ダウンロードを一時停止しました。続行するには手動でダウンロードしてください。',
+  downloaded: 'ローカル AI をダウンロードしました',
+  offerTitle: 'ローカル AI を今すぐ使いますか？',
+  offerBody:
+    'ダウンロードしたモデルはこのコンピューターで動作します。モデルはいつでも切り替えられます。',
+  offerUse: '今すぐ使う',
+  offerLater: '後で',
+  verifying: 'ダウンロードを確認しています…',
+  chatDownloading: 'ローカル AI をダウンロード中 · {n}%',
+  sendAgain: '準備ができたら、もう一度メッセージを送信できます。',
+  phaseStarting: 'ローカル AI を起動しています…',
+  phaseLoading: 'モデルをメモリに読み込んでいます…',
+  phasePreparing: 'ローカル AI を準備しています…',
+  phaseReading: 'リクエストを読んでいます…',
+  phaseWriting: '回答を書いています…',
+  readyToChat: 'ローカル AI とチャットできます',
+  startFailed: 'メッセージを送信すると、ローカル AI がもう一度試します。',
+  hide: '非表示',
+  downloadConfirm: 'ローカル AI には約 1.1 GB のダウンロードが必要で、このデバイス上で動作します。',
+  downloadQuestion: '今すぐダウンロードしますか？',
+  notNow: '今はしない',
 } satisfies Record<keyof typeof zh, string>

@@ -51,6 +51,7 @@ export class NativeHost {
             if (this.model) return
             let checkpoint = performance.now()
             const size = contextBudget(freemem(), totalmem(), message.options.contextSize)
+            this.send({ id, type: 'phase', phase: 'checking' })
             await verifyModel(message.modelPath)
             const verifyMs = performance.now() - checkpoint
             checkpoint = performance.now()
@@ -64,12 +65,21 @@ export class NativeHost {
             })
             const backendMs = performance.now() - checkpoint
             checkpoint = performance.now()
+            this.send({ id, type: 'phase', phase: 'loading', percent: 0 })
+            let reported = 0
             this.model = await this.llama.loadModel({
               modelPath: message.modelPath,
               gpuLayers: message.options.gpu === 'cpu' ? 0 : 'auto',
+              onLoadProgress: (progress) => {
+                const percent = Math.floor(progress * 20) * 5
+                if (percent <= reported) return
+                reported = percent
+                this.send({ id, type: 'phase', phase: 'loading', percent })
+              },
             })
             const modelMs = performance.now() - checkpoint
             checkpoint = performance.now()
+            this.send({ id, type: 'phase', phase: 'preparing' })
             this.context = await this.model.createContext({
               contextSize: size,
               threads: message.options.threads,
@@ -215,6 +225,15 @@ export class NativeHost {
     let thoughtTokens = 0
     const before = chat.sequence.tokenMeter.getState()
     const sampling = { ...LFM_SAMPLING, ...request.sampling }
+    this.send({ id, type: 'phase', phase: 'reading' })
+    // The first text, or the first piece of a tool call, means the prompt has been read. (An empty
+    // chunk arrives before reading starts, so a chunk alone proves nothing.)
+    let writing = false
+    const noteWriting = () => {
+      if (writing) return
+      writing = true
+      this.send({ id, type: 'phase', phase: 'writing' })
+    }
     const result = await chat.generateResponse(history, {
       ...sampling,
       repeatPenalty: { penalty: sampling.repeatPenalty },
@@ -230,7 +249,9 @@ export class NativeHost {
           )
         },
       },
+      onFunctionCallParamsChunk: noteWriting,
       onResponseChunk: (chunk) => {
+        if (chunk.text) noteWriting()
         if (chunk.type === 'segment') {
           if (chunk.segmentType === 'thought') {
             thoughtTokens += chunk.tokens.length

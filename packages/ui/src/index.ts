@@ -92,6 +92,8 @@ export {
   type RibbonDensity,
 } from './ribbon-collapse'
 export { AiTypingIndicator } from './AiTypingIndicator'
+export { LiveNotice } from './LiveNotice'
+export { useStreamStatus } from './use-stream-status'
 export {
   DocumentIndexIndicator,
   IndexProgressRing,

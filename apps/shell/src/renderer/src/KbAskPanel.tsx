@@ -16,6 +16,7 @@ import {
   type CliContext,
   type CreateDocumentFormat,
   type KbFileInfo,
+  withoutNotices,
 } from '@genoffice/agent-core'
 import {
   AiComposer,
@@ -24,6 +25,7 @@ import {
   AiSkillChips,
   AiSkillsMenu,
   AiTypingIndicator,
+  LiveNotice,
   AiUsageChip,
   addTokenUsage,
   createFileNav,
@@ -84,6 +86,8 @@ interface AskMessage {
   artifacts: Artifact[]
   streaming?: boolean
   isError?: boolean
+  /** `text`/`error` is a live status (nothing failed): the id LiveNotice follows */
+  notice?: string
   /** tokens the provider billed for this answer, summed across its turns (absent when unreported) */
   usage?: AiTokenUsageView
   /** skills the user attached to this question from the composer menu */
@@ -474,12 +478,14 @@ export function KbAskPanel({
           setSessionUsage((prev) => addTokenUsage(prev, usage))
           patchLast({ usage: runUsageRef.current })
         },
-        onError: (error) =>
+        onError: (error, info) => {
+          if (info?.notice) setMessages(withoutNotices)
           patchLast((last) => ({
             text: last.text || error,
             streaming: false,
-            isError: !last.text,
-          })),
+            ...(info?.notice ? { notice: info.notice } : { isError: !last.text }),
+          }))
+        },
       },
     })
     return () => loopRef.current?.cancel()
@@ -899,7 +905,9 @@ export function KbAskPanel({
                 ))}
               </div>
             )}
-            {m.text ? (
+            {m.text && m.notice ? (
+              <LiveNotice id={m.notice} text={m.text} />
+            ) : m.text ? (
               m.role === 'assistant' ? (
                 <Markdown text={m.text} navs={[fileNav]} />
               ) : (
@@ -913,7 +921,7 @@ export function KbAskPanel({
                 <AiUsageChip usage={m.usage} lang={lang} />
               </div>
             )}
-            {m.role === 'assistant' && m.text && !m.streaming && !m.isError && (
+            {m.role === 'assistant' && m.text && !m.streaming && !m.isError && !m.notice && (
               <div className="kb-ask-actions">
                 {m.saved && typeof m.saved === 'object' && 'path' in m.saved ? (
                   <button

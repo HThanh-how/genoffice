@@ -262,6 +262,8 @@ export interface StreamCallbacks {
   onUsage?: (usage: AiTokenUsage) => void
   /** bytes arrived on the wire (fires per network chunk, including SSE pings; used for keepalive) */
   onActivity?: () => void
+  /** what the provider is doing while nothing has been written yet, worded for the user */
+  onStatus?: (text: string) => void
   /** Safe provider metadata only; must never include prompts, outputs, or raw errors. */
   onDiagnostic?: (record: {
     provider: 'agy'

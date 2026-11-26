@@ -2,7 +2,7 @@ import { copy as zh } from './zh'
 export const copy = {
   title: 'Helyi csevegőmodell',
   missing: 'Nincs letöltve',
-  checking: 'SHA-256 ellenőrzése…',
+  checking: 'A helyi AI ellenőrzése…',
   downloading: 'Letöltés: {n}%',
   paused: 'Szünetel: {n}%',
   ready: 'Kész',
@@ -27,4 +27,24 @@ export const copy = {
   offline: 'Nincs hálózat. Csatlakozzon a helyi modell letöltéséhez.',
   metered:
     'Forgalomdíjas hálózat: az automatikus letöltés szünetel. Indítsa el kézzel a letöltést.',
+  downloaded: 'A helyi AI letöltve',
+  offerTitle: 'Használja most a helyi AI-t?',
+  offerBody: 'A letöltött modell ezen a számítógépen fut. Bármikor válthat modellt.',
+  offerUse: 'Használat most',
+  offerLater: 'Később',
+  verifying: 'A letöltés ellenőrzése…',
+  chatDownloading: 'A helyi AI letöltése · {n}%',
+  sendAgain: 'Amint kész, újra elküldheti az üzenetét.',
+  phaseStarting: 'A helyi AI indítása…',
+  phaseLoading: 'A modell betöltése a memóriába…',
+  phasePreparing: 'A helyi AI előkészítése…',
+  phaseReading: 'A kérés olvasása…',
+  phaseWriting: 'A válasz írása…',
+  readyToChat: 'A helyi AI készen áll a csevegésre',
+  startFailed: 'A helyi AI újra próbálkozik, amikor üzenetet küld.',
+  hide: 'Elrejtés',
+  downloadConfirm:
+    'A helyi AI-hoz körülbelül 1,1 GB-ot kell letölteni, és ezen az eszközön fut majd.',
+  downloadQuestion: 'Szeretné most letölteni?',
+  notNow: 'Most nem',
 } satisfies Record<keyof typeof zh, string>

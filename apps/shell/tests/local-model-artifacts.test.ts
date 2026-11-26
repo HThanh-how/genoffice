@@ -43,14 +43,22 @@ describe('shared local artifacts', () => {
   it('checks SHA and size, ignores a stale marker and same mtime, and deletes bad bytes', async () => {
     const destination = join(dir, file.path)
     const network = vi.fn<FetchLike>().mockResolvedValue(response('gooddata'))
-    await ensureArtifact(
-      destination,
-      file,
-      'https://huggingface.co/test',
-      new AbortController().signal,
-      () => {},
-      network,
-    )
+    const steps: string[] = []
+    const ensure = () =>
+      ensureArtifact(
+        destination,
+        file,
+        'https://huggingface.co/test',
+        new AbortController().signal,
+        (bytes) => steps.push(String(bytes)),
+        network,
+        () => steps.push('verifying'),
+      )
+    expect(await ensure()).toBe(true)
+    expect(steps).toEqual(['0', '8', 'verifying'])
+    // a valid file that is already there is not a finished download
+    expect(await ensure()).toBe(false)
+    expect(network).toHaveBeenCalledOnce()
     const before = await stat(destination)
     await writeFile(`${destination}.verified`, `${file.sha256}:8`)
     await writeFile(destination, 'evildata')
@@ -190,7 +198,7 @@ describe('shared local artifacts', () => {
     const manager = new LocalModelManager(dir, stop)
     await manager.refresh()
     expect(manager.state.status).toBe('missing')
-    expect(() => manager.requireReady()).toThrow('Not downloaded')
+    expect(() => manager.requireReady()).toThrow('Not downloaded — Local chat model')
     await manager.delete()
     expect(stop).toHaveBeenCalledOnce()
     expect(manager.state.status).toBe('missing')
