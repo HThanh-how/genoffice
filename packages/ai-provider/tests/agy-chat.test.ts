@@ -32,6 +32,57 @@ describe('agyChatModelInfo', () => {
     expect(agyChatModelInfo('gpt-oss-120b-medium').group).toBe('Claude and GPT models')
   })
 
+  it('gives every id of the current `agy models` catalog its own readable label', () => {
+    const catalog = [
+      'gemini-4-neon-high',
+      'gemini-4-neon-xhigh',
+      'gemini-4-neon-medium',
+      'gemini-4-neon-low',
+      'gemini-4-carbon-high',
+      'gemini-4-argon-low',
+      'gemini-4-hydrogen-xhigh',
+      'gemini-pro-orchestrator-neon',
+      'gemini-pro-orchestrator',
+      'gemini-pro-orchestrator-argon',
+      'gemini-3.8-flash-high',
+      'claude-opus-5-5-low',
+      'claude-opus-5-5-high',
+      'claude-sonnet-5-5-medium',
+      'gpt-oss-120b-medium',
+    ]
+    const labels = catalog.map((id) => agyChatModelInfo(id).label)
+    expect(new Set(labels).size).toBe(catalog.length)
+    expect(agyChatModelInfo('gemini-4-neon-xhigh')).toMatchObject({
+      label: 'Gemini 4 Neon XHigh',
+      family: 'gemini',
+      effort: 'xhigh',
+      speed: 'slow',
+      group: 'Gemini Models',
+    })
+    expect(agyChatModelInfo('gemini-4-argon-low').label).toBe('Gemini 4 Argon Low')
+    expect(agyChatModelInfo('gemini-pro-orchestrator-neon').label).toBe(
+      'Gemini Pro Orchestrator Neon',
+    )
+    expect(agyChatModelInfo('claude-opus-5-5-high').label).toBe('Claude Opus 5.5 High')
+    expect(agyChatModelInfo('claude-sonnet-5-5-medium')).toMatchObject({
+      label: 'Claude Sonnet 5.5 Medium',
+      group: 'Claude and GPT models',
+    })
+    expect(agyChatModelInfo('gpt-oss-120b-medium').label).toBe('GPT-OSS 120B Medium')
+  })
+
+  it('switches every Gemini 4 model on for a first run and leaves Claude and GPT off', () => {
+    expect(
+      defaultEnabledChatModels([
+        'gemini-4-neon-high',
+        'gemini-pro-orchestrator',
+        'claude-opus-5-5-high',
+        'gpt-oss-120b-medium',
+        'gemini-3.8-flash-high',
+      ]),
+    ).toEqual(['gemini-4-neon-high', 'gemini-pro-orchestrator', 'gemini-3.8-flash-high'])
+  })
+
   it('still describes a model it does not know', () => {
     expect(agyChatModelInfo('some-future-model')).toMatchObject({
       id: 'some-future-model',
