@@ -52,8 +52,11 @@ export function LocalModelSettings({
   }
   return (
     <SettingsCard title={c.title} subtitle="LFM3-VL-2B · Q4_K_M · 1.10 GB">
-      <div role="status" aria-live="polite">
-        {c[state.status].replace('{n}', String(state.percent))}
+      <div role={state.status === 'error' ? 'alert' : 'status'} aria-live="polite">
+        {/* an error with a message needs no heading saying "Error" */}
+        {state.status === 'error' && state.error
+          ? state.error
+          : c[state.status].replace('{n}', String(state.percent))}
       </div>
       {state.status === 'downloading' && (
         <progress
@@ -62,13 +65,15 @@ export function LocalModelSettings({
           aria-label={c.downloading.replace('{n}', String(state.percent))}
         />
       )}
-      {state.error && (
-        <p className="set-field-desc" role="alert">
+      {/* no value: the check is running and cannot say how far it is */}
+      {state.status === 'verifying' && <progress aria-label={c.verifying} />}
+      {state.error && state.status !== 'error' && (
+        <p className="set-field-desc" role="status">
           {state.error}
         </p>
       )}
       <SettingsRow>
-        {state.status === 'downloading' ? (
+        {state.status === 'downloading' || state.status === 'verifying' ? (
           <button className="set-btn" disabled={pending} onClick={() => void action('cancel')}>
             {c.cancel}
           </button>

@@ -368,13 +368,15 @@ export interface AiStreamChunk {
   requestId: string
   /** 'ping' = wire-level keepalive so the renderer can tell a live stream from a dead one;
    * 'reasoning' = model thinking delta (text carries it), stored for interleaved-thinking echo */
-  type: 'delta' | 'reasoning' | 'tool-call' | 'usage' | 'done' | 'error' | 'ping'
+  type: 'delta' | 'reasoning' | 'tool-call' | 'usage' | 'done' | 'error' | 'ping' | 'status'
+  /** delta / reasoning text; on 'status', what the provider is doing right now */
   text?: string
   /** complete parsed tool call (emitted once its arguments finish streaming) */
   toolCall?: AgentToolCall
   error?: string
-  /** machine-readable error cause ('timeout', exhausted 'credits', 'network' connectivity failure, 'overloaded' capacity/rate limit, 'region' vendor refuses the request origin, Antigravity 'quota' used up / 'auth' signed out); lets the renderer localize the message */
-  errorCode?: 'timeout' | 'credits' | 'network' | 'overloaded' | 'region' | 'quota' | 'auth'
+  /** machine-readable error cause ('timeout', exhausted 'credits', 'network' connectivity failure, 'overloaded' capacity/rate limit, 'region' vendor refuses the request origin, Antigravity 'quota' used up / 'auth' signed out); lets the renderer localize the message. 'notice' = nothing failed: `error` is a status and is shown as one */
+  errorCode?:
+    'timeout' | 'credits' | 'network' | 'overloaded' | 'region' | 'quota' | 'auth' | 'notice'
   /** with errorCode 'quota': epoch ms when the quota is expected back, when the CLI said so */
   errorResetAt?: number
   /** normalized stop reason carried on 'done' ('max_tokens' = output cut off by the token limit) */

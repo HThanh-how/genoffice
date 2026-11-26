@@ -1,6 +1,7 @@
 import { registerLocalChat } from '@genoffice/electron-utils/local-chat'
 import { diagHook } from '@genoffice/ai-provider/diag-hook'
 import { AiRequestLog } from './ai-request-log'
+import { followLocalNotice, stopLocalNotice } from './local-notice'
 import { createHash, randomUUID } from 'node:crypto'
 import { handOffBytes } from './byte-handoff'
 import { appendAiDiagnostic } from './ai-diagnostics'
@@ -7873,6 +7874,11 @@ const TWIPS_PER_INCH = 1440
 const SETTINGS_PATH = () => userDataPath('ai-settings.json')
 
 const activeAiStreams = new Map<string, AbortController>()
+/** Shell only: asked before a write that changes the provider (Local AI confirms its download first). */
+let providerChangeGuard: ((next: string, previous: string) => Promise<boolean>) | undefined
+export function setAiProviderChangeGuard(guard: typeof providerChangeGuard): void {
+  providerChangeGuard = guard
+}
 
 /** every renderer (tabs, home) re-reads ai-settings.json — the composer chip and
  *  the settings page edit the same file from different windows */
@@ -7955,6 +7961,16 @@ export function registerAiIpc(): void {
   })
 
   ipcMain.handle('ai:set-settings', async (_event, settings: AiSettings) => {
+    if (providerChangeGuard && settings && typeof settings === 'object') {
+      const previous =
+        readJson<AiSettings | null>(SETTINGS_PATH(), null)?.provider ?? defaultAiSettings().provider
+      // "Not now": everything else is saved, and the provider stays the one in use
+      if (
+        settings.provider !== previous &&
+        !(await providerChangeGuard(settings.provider, previous))
+      )
+        settings = { ...settings, provider: previous }
+    }
     // SECURITY.md: payloads are schema-checked in the main process. The settings
     // file feeds cliPath into spawn() and baseUrl receives the gsk bearer token,
     // so the renderer's copy is sanitized before it touches disk. Schema shape is
@@ -8101,6 +8117,7 @@ export function registerAiIpc(): void {
           reqLog.wire()
           ping()
         },
+        onStatus: (text) => send({ requestId, type: 'status', text }),
         onDiagnostic: (record) => appendAiDiagnostic(userDataPath('ai-diagnostics.jsonl'), record),
         onStopReason: (reason) => {
           stopReason = reason
@@ -8125,12 +8142,14 @@ export function registerAiIpc(): void {
         reqLog.failed(err)
         // an expired/revoked key drops to signed-out so the inline sign-in button shows
         noteGskCallFailure(gskKey, err)
+        const fields = classifyAiStreamError(err)
         send({
           requestId,
           type: 'error',
           error: err instanceof Error ? err.message : String(err),
-          ...classifyAiStreamError(err),
+          ...fields,
         })
+        if (fields.errorCode === 'notice') followLocalNotice(event.sender, requestId, send)
       }
     } finally {
       reqLog.dispose()
@@ -8140,6 +8159,8 @@ export function registerAiIpc(): void {
   })
 
   ipcMain.handle('ai:stream-cancel', (event, requestId: string) => {
+    // a followed status line belongs to a request that is over: nothing else in the window stops
+    if (stopLocalNotice(requestId)) return
     activeAiStreams.get(requestId)?.abort()
     // Stop also ends an Antigravity web search that is still running for this window
     webSearchAborts.cancel(event.sender.id)

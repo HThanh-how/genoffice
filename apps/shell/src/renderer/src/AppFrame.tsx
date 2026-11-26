@@ -6,6 +6,8 @@ import { StarPromptCard } from './StarPromptCard'
 import { StorageStartupBanner } from './StorageStartupBanner'
 import { TabBar } from './TabBar'
 import { CHAT_PANEL_EVENT, type ChatPanelDetail } from './chat-events'
+import { LocalModelReadyCard } from './fork/LocalModelReadyCard'
+import { useLocalModelOffer } from './fork/useLocalModelOffer'
 
 interface AppFrameProps {
   /** resolved before first paint (main.tsx) so home never flashes under the overlay */
@@ -23,6 +25,7 @@ export function AppFrame({ initialOnboardingSeen }: AppFrameProps) {
   }, [])
   const [showOnboarding, setShowOnboarding] = useState(!initialOnboardingSeen)
   const [starPromptDocOpens, setStarPromptDocOpens] = useState<number | null>(null)
+  const localModelOffer = useLocalModelOffer()
 
   useEffect(() => {
     const applyTabs = (tabs: Awaited<ReturnType<typeof window.aiOfficeTabs.list>>) => {
@@ -71,9 +74,20 @@ export function AppFrame({ initialOnboardingSeen }: AppFrameProps) {
        * renders while the home tab is active — it comes back when home does */}
       {showOnboarding && homeActive && <Onboarding onDone={finishOnboarding} />}
       {homeActive && <StorageStartupBanner />}
-      {starPromptDocOpens !== null && !showOnboarding && homeActive && !chatOpen && (
-        <StarPromptCard docOpens={starPromptDocOpens} onClose={() => setStarPromptDocOpens(null)} />
+      {localModelOffer.visible && !showOnboarding && homeActive && !chatOpen && (
+        <LocalModelReadyCard offer={localModelOffer} />
       )}
+      {/* same corner: the star invitation waits until the local model card is gone */}
+      {starPromptDocOpens !== null &&
+        !localModelOffer.visible &&
+        !showOnboarding &&
+        homeActive &&
+        !chatOpen && (
+          <StarPromptCard
+            docOpens={starPromptDocOpens}
+            onClose={() => setStarPromptDocOpens(null)}
+          />
+        )}
     </div>
   )
 }

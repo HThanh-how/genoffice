@@ -12,6 +12,7 @@ import {
   AI_QUEUE_LABELS,
   AiScopeQuote,
   AiTypingIndicator,
+  LiveNotice,
   AiUsageChip,
   type AiScopeQuoteData,
   type AiTokenUsageView,
@@ -79,6 +80,8 @@ export interface AiChatMessage {
   readonly isError?: boolean | undefined
   /** the run failed and this user message was rolled back out of the model context */
   readonly undelivered?: boolean | undefined
+  /** nothing failed (the model is still being prepared): no error styling; the id LiveNotice follows */
+  readonly notice?: string | undefined
   /** this user message was written to the project-store chat log (Retry re-persists when it wasn't) */
   readonly persisted?: boolean | undefined
   /** Set when this message reflects an auto-applied plan; renders an inline [Undo] button. */
@@ -532,7 +535,7 @@ export function AiChatPanel({
                 {entry.skills && <AiSkillChips lang={lang} names={entry.skills} />}
                 <span dir="auto">{entry.text}</span>
                 {entry.undelivered && (
-                  <div className="ai-msg-undelivered">
+                  <div className={`ai-msg-undelivered${entry.notice ? ' is-notice' : ''}`}>
                     {t('aiUndelivered')}
                     {!aiBusy && (
                       <button
@@ -555,7 +558,11 @@ export function AiChatPanel({
                 )}
                 {entry.text ? (
                   <div dir="auto">
-                    <Markdown text={entry.text} navs={[citationNav, fileNav]} />
+                    {entry.notice ? (
+                      <LiveNotice id={entry.notice} text={entry.text} />
+                    ) : (
+                      <Markdown text={entry.text} navs={[citationNav, fileNav]} />
+                    )}
                   </div>
                 ) : (
                   entry.streaming && (

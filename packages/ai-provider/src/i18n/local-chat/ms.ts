@@ -2,7 +2,7 @@ import { copy as zh } from './zh'
 export const copy = {
   title: 'Model sembang setempat',
   missing: 'Belum dimuat turun',
-  checking: 'Mengesahkan SHA-256…',
+  checking: 'Memeriksa AI setempat…',
   downloading: 'Memuat turun {n}%',
   paused: 'Dijeda {n}%',
   ready: 'Sedia',
@@ -27,4 +27,25 @@ export const copy = {
   offline: 'Luar talian. Sambung untuk memuat turun model setempat.',
   metered:
     'Rangkaian bermeter: muat turun automatik dijeda. Muat turun secara manual untuk meneruskan.',
+  downloaded: 'AI setempat telah dimuat turun',
+  offerTitle: 'Gunakan AI setempat sekarang?',
+  offerBody:
+    'Model yang dimuat turun berjalan pada komputer ini. Anda boleh menukar model pada bila-bila masa.',
+  offerUse: 'Gunakan sekarang',
+  offerLater: 'Kemudian',
+  verifying: 'Memeriksa muat turun…',
+  chatDownloading: 'Memuat turun AI setempat · {n}%',
+  sendAgain: 'Anda boleh menghantar mesej semula apabila sedia.',
+  phaseStarting: 'Memulakan AI setempat…',
+  phaseLoading: 'Memuatkan model ke dalam memori…',
+  phasePreparing: 'Menyediakan AI setempat…',
+  phaseReading: 'Membaca permintaan anda…',
+  phaseWriting: 'Menulis jawapan…',
+  readyToChat: 'AI setempat sedia untuk bersembang',
+  startFailed: 'AI setempat akan mencuba lagi apabila anda menghantar mesej.',
+  hide: 'Sembunyikan',
+  downloadConfirm:
+    'AI setempat memerlukan muat turun kira-kira 1.1 GB dan akan berjalan pada peranti ini.',
+  downloadQuestion: 'Muat turun sekarang?',
+  notNow: 'Bukan sekarang',
 } satisfies Record<keyof typeof zh, string>

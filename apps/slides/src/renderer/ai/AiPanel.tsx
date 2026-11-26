@@ -8,6 +8,8 @@ import {
   AiSkillChips,
   AiSkillsMenu,
   useImeEnterGuard,
+  useStreamStatus,
+  LiveNotice,
 } from '@genoffice/ui'
 import React, { useEffect, useRef, useState, useCallback } from 'react'
 import {
@@ -18,6 +20,7 @@ import {
   IPC_STREAM_SILENCE_TIMEOUT_MS,
   type AgentImage,
   type ToolDisplay,
+  withoutNotices,
 } from '@genoffice/agent-core'
 import type { RenderSlide } from '@genoffice/pptx-render'
 import { imageGenerationAvailable, mediaAnalysisAvailable } from '@genoffice/ai-provider/browser'
@@ -126,6 +129,8 @@ interface ChatEntry {
   role: 'user' | 'assistant'
   text: string
   error?: string
+  /** `text`/`error` is a live status (nothing failed): the id LiveNotice follows */
+  notice?: string
   streaming?: boolean
   tools?: ToolActivity[]
   /** Generation progress card (only one per turn, replaced in real time) */
@@ -207,7 +212,9 @@ function withEllipsis(label: string): string {
 
 /** Two-phase waiting→thinking indicator (mirrors AiTypingIndicator in packages/ui):
  *  grow/shrink blue dots first, then after ~1.2s only the shimmering "Thinking…" text — never both at once. */
-function AiTypingIndicator({ label }: { readonly label: string }) {
+function AiTypingIndicator(props: { readonly label: string }) {
+  const status = useStreamStatus()
+  const label = status ?? props.label
   const [elapsed, setElapsed] = useState(0)
   const [showLabel, setShowLabel] = useState(false)
 
@@ -222,7 +229,7 @@ function AiTypingIndicator({ label }: { readonly label: string }) {
 
   return (
     <span className="ai-typing" role="status" aria-label={label}>
-      {showLabel ? (
+      {showLabel || status ? (
         <span className="ai-typing-label">
           {withEllipsis(label)}
           {elapsed >= 3 && (
@@ -1349,17 +1356,18 @@ export function AiPanel({
           // over half-written output is the case worth keeping (runaway repetition)
           if (cancelled && streamedTextRef.current) logRunFailure('stopped')
         },
-        onError: (error) => {
-          logRunFailure('error', error)
+        onError: (error, info) => {
+          if (!info?.notice) logRunFailure('error', error)
           qcPagesRef.current = []
           setChat((prev) => {
-            const next = [...prev]
+            const next = info?.notice ? withoutNotices(prev) : [...prev]
             const last = next.at(-1)
             if (last?.role === 'assistant') {
               next[next.length - 1] = {
                 ...last,
                 streaming: false,
                 error,
+                ...(info?.notice ? { notice: info.notice } : {}),
                 tools: last.tools?.filter((tl) => !tl.running),
               }
             }
@@ -2160,7 +2168,8 @@ export function AiPanel({
                   <AiUsageChip usage={entry.usage} lang={lang} />
                 </div>
               )}
-              {entry.error && (
+              {entry.error && entry.notice && <LiveNotice id={entry.notice} text={entry.error} />}
+              {entry.error && !entry.notice && (
                 <div className="ai-msg-error">{t('aiMsgError', { error: entry.error })}</div>
               )}
               {entry.deckProgress && <DeckProgressCard progress={entry.deckProgress} />}

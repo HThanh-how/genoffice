@@ -2,7 +2,7 @@ import { copy as zh } from './zh'
 export const copy = {
   title: 'Lokaal chatmodel',
   missing: 'Niet gedownload',
-  checking: 'SHA-256 controleren…',
+  checking: 'Lokale AI controleren…',
   downloading: 'Downloaden {n}%',
   paused: 'Gepauzeerd {n}%',
   ready: 'Gereed',
@@ -27,4 +27,24 @@ export const copy = {
   offline: 'Offline. Maak verbinding om het lokale model te downloaden.',
   metered:
     'Verbinding met datalimiet: automatisch downloaden gepauzeerd. Download handmatig om door te gaan.',
+  downloaded: 'Lokale AI is gedownload',
+  offerTitle: 'Lokale AI nu gebruiken?',
+  offerBody:
+    'Het gedownloade model draait op deze computer. U kunt op elk moment van model wisselen.',
+  offerUse: 'Nu gebruiken',
+  offerLater: 'Later',
+  verifying: 'Download controleren…',
+  chatDownloading: 'Lokale AI downloaden · {n}%',
+  sendAgain: 'U kunt uw bericht opnieuw versturen zodra het klaar is.',
+  phaseStarting: 'Lokale AI starten…',
+  phaseLoading: 'Model in het geheugen laden…',
+  phasePreparing: 'Lokale AI voorbereiden…',
+  phaseReading: 'Uw verzoek lezen…',
+  phaseWriting: 'Antwoord schrijven…',
+  readyToChat: 'Lokale AI is klaar om te chatten',
+  startFailed: 'Lokale AI probeert het opnieuw wanneer u een bericht stuurt.',
+  hide: 'Verbergen',
+  downloadConfirm: 'Lokale AI vereist een download van ongeveer 1,1 GB en draait op dit apparaat.',
+  downloadQuestion: 'Wilt u deze nu downloaden?',
+  notNow: 'Niet nu',
 } satisfies Record<keyof typeof zh, string>

@@ -691,8 +691,14 @@ function AiModelPane({ t }: { t: TFunc }) {
     }
     window.aiOffice
       .setAiSettings?.(toSave)
-      .then(() => {
-        setSettings(toSave)
+      // "Not now" on the Local AI download keeps the previous provider: show what was saved
+      .then(async () =>
+        toSave.provider === 'local'
+          ? ((await window.aiOffice.getAiSettings?.()) ?? toSave)
+          : toSave,
+      )
+      .then((stored) => {
+        setSettings(stored)
         setDirty(false)
         setSaved(true)
       })

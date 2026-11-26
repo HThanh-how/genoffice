@@ -32,6 +32,7 @@ import {
   type AgentImage,
   type KbFileInfo,
   type MindMapTreeNode,
+  withoutNotices,
 } from '@genoffice/agent-core'
 import { redactTextBetween, type RedactableNode } from './redact-view'
 import { imageGenerationAvailable, mediaAnalysisAvailable } from '@genoffice/ai-provider/browser'
@@ -95,7 +96,13 @@ import { parseHandoffFile, splitHandoff } from '@genoffice/project-store/handoff
 import { createElectronTransport } from './transport'
 import { useI18n, t as tModule, aiLangDirective, type StringKey } from '../i18n/locale'
 import { createFileNav, Markdown } from '@genoffice/ui'
-import { AiComposer, AiScopeQuote, AiTypingIndicator, type AiScopeQuoteData } from '@genoffice/ui'
+import {
+  AiComposer,
+  AiScopeQuote,
+  AiTypingIndicator,
+  LiveNotice,
+  type AiScopeQuoteData,
+} from '@genoffice/ui'
 import { GensparkMark } from '../components/icons'
 import sendEnterOn from '../assets/send-enter-on.png'
 import sendEnterOff from '../assets/send-enter-off.png'
@@ -221,6 +228,8 @@ interface ChatEntry {
   role: 'user' | 'assistant'
   text: string
   error?: string
+  /** `text`/`error` is a live status (nothing failed): the id LiveNotice follows */
+  notice?: string
   streaming?: boolean
   turnLimit?: boolean
   /** tool executions performed during this assistant turn */
@@ -1007,15 +1016,16 @@ export function AiPanel({
             persistMessage('assistant', finalText, runToolsRef.current)
           }
         },
-        onError: (error) => {
+        onError: (error, info) => {
           setChat((prev) => {
-            const next = [...prev]
+            const next = info?.notice ? withoutNotices(prev) : [...prev]
             const last = next.at(-1)
             if (last?.role === 'assistant') {
               next[next.length - 1] = {
                 ...last,
                 streaming: false,
                 error,
+                ...(info?.notice ? { notice: info.notice } : {}),
                 tools: last.tools?.filter((tl) => !tl.running),
                 snapshot: runSnapshotRef.current ?? undefined,
               }
@@ -1697,7 +1707,8 @@ export function AiPanel({
                   }}
                 />
               )}
-              {entry.error && (
+              {entry.error && entry.notice && <LiveNotice id={entry.notice} text={entry.error} />}
+              {entry.error && !entry.notice && (
                 <div className="ai-msg-error">{t('aiErrorPrefix', { error: entry.error })}</div>
               )}
               {showToolbar && (

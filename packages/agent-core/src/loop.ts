@@ -1,6 +1,7 @@
 import type { AgentSkill, ExecutedToolCall } from './skill'
 import { addTokenUsage } from './types'
 import type {
+  AgentErrorInfo,
   AgentImage,
   AgentMessage,
   AgentStreamHandle,
@@ -45,7 +46,7 @@ export interface AgentLoopEvents<TSnapshot> {
   /** tokens the provider billed for the turn that just streamed (per model call, compaction summary turns included) */
   onUsage?(usage: AgentTokenUsage): void
   onDone?(result: AgentRunResult): void
-  onError?(error: string): void
+  onError?(error: string, info?: AgentErrorInfo): void
 }
 
 /** Context compaction config (budget tracked in UTF-8 bytes rather than message count) */
@@ -1117,7 +1118,7 @@ export class AgentLoop<TSnapshot = unknown> {
             settled = true
             this.settleTurn()
           },
-          onError: (error) => {
+          onError: (error, info) => {
             if (generation !== this.generation || settled) return
             settled = true
             // The no-partial-output guard keeps the empty-stream retry idempotent (an
@@ -1145,7 +1146,8 @@ export class AgentLoop<TSnapshot = unknown> {
             }
             this.running = false
             this.rollbackFailedRun()
-            this.options.events?.onError?.(error)
+            if (info) this.options.events?.onError?.(error, info)
+            else this.options.events?.onError?.(error)
           },
         },
       )

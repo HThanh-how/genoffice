@@ -1,4 +1,5 @@
 import type { Lang } from '@genoffice/i18n'
+import type { LocalProgress } from '@genoffice/local-llm/protocol'
 import { copy as l0 } from './i18n/local-chat/en'
 import { copy as l1 } from './i18n/local-chat/vi'
 import { copy as l2 } from './i18n/local-chat/zh'
@@ -55,4 +56,20 @@ export function setLocalChatLanguage(get: () => Lang): void {
 }
 export function localChatText() {
   return localChatCopy(language())
+}
+
+/** One step of Local AI's work as a status line; a percentage only where it is measured. */
+export function localProgressText(
+  { phase, percent }: LocalProgress,
+  c: Record<keyof typeof l0, string> = localChatText(),
+): string {
+  const text = {
+    starting: c.phaseStarting,
+    checking: c.checking,
+    loading: c.phaseLoading,
+    preparing: c.phasePreparing,
+    reading: c.phaseReading,
+    writing: c.phaseWriting,
+  }[phase]
+  return percent === undefined ? text : `${text.replace(/…$/u, '')} · ${percent}%`
 }

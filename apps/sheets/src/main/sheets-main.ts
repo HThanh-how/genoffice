@@ -4676,6 +4676,7 @@ export function registerSheetsAiIpc(): void {
         onReasoningDelta: (text) => send({ requestId, type: 'reasoning', text }),
         onToolCall: (toolCall) => send({ requestId, type: 'tool-call', toolCall }),
         onActivity: ping,
+        onStatus: (text) => send({ requestId, type: 'status', text }),
         onStopReason: (reason) => {
           stopReason = reason
         },

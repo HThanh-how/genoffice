@@ -7,6 +7,9 @@ const state = vi.hoisted(() => ({
   download: vi.fn(async () => {}),
   cancel: vi.fn(async () => {}),
   network: vi.fn(async () => 'online'),
+  /** what is on disk at startup: 'paused' = a download that was begun */
+  status: 'paused',
+  ask: vi.fn(async () => ({ response: 0, checkboxChecked: false })),
 }))
 vi.mock('electron', () => ({
   app: {
@@ -34,9 +37,10 @@ vi.mock('@genoffice/electron-utils/local-chat', () => ({
   shutdownLocalChat: vi.fn(),
 }))
 vi.mock('../src/main/local-model/network', () => ({ downloadNetwork: state.network }))
+vi.mock('../src/main/app-message-box', () => ({ showAppMessageBox: state.ask }))
 vi.mock('../src/main/local-model/manager', () => ({
   LocalModelManager: class {
-    state = { status: 'missing', percent: 0 }
+    state = { status: state.status, percent: 0 }
     refresh = async () => {}
     download = state.download
     cancel = state.cancel
@@ -49,9 +53,10 @@ beforeEach(() => {
   state.settings = { provider: 'local', providers: { local: { local: { autoDownload: true } } } }
   state.ready = Promise.resolve()
   state.network.mockResolvedValue('online')
+  state.status = 'paused'
 })
 
-it('downloads for a new local selection only after Electron is ready', async () => {
+it('resumes a download that was begun, only after Electron is ready', async () => {
   let ready!: () => void
   state.ready = new Promise((resolve) => {
     ready = resolve
@@ -61,6 +66,15 @@ it('downloads for a new local selection only after Electron is ready', async () 
   expect(state.download).not.toHaveBeenCalled()
   ready()
   await vi.waitFor(() => expect(state.download).toHaveBeenCalledOnce())
+})
+
+it('never starts a new download at startup, and asks nothing there', async () => {
+  state.status = 'missing'
+  registerLocalModel(() => 'en')
+  await new Promise((resolve) => setTimeout(resolve, 0))
+  expect(state.network).not.toHaveBeenCalled()
+  expect(state.download).not.toHaveBeenCalled()
+  expect(state.ask).not.toHaveBeenCalled()
 })
 
 it('preserves a saved cloud choice and the auto-download opt-out', async () => {

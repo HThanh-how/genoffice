@@ -15,6 +15,7 @@ import {
   type CreateDocumentRewriteRequest,
   type IpcStreamChunk,
   type KbFileInfo,
+  withoutNotices,
 } from '@genoffice/agent-core'
 import { agyErrorText, createGeminiRouter } from '@genoffice/ai-provider/browser'
 import { createPortal } from 'react-dom'
@@ -133,11 +134,12 @@ const writeStore = (key: string, value: string | null) => {
 
 const toMessages = (items: readonly ChatItem[]): HomeChatMessage[] =>
   items
-    .filter((item) => item.text || item.error)
+    // a notice ("still downloading") is only true at the moment it was shown
+    .filter((item) => item.text || (item.error && !item.notice))
     .map((item) => {
       const message: HomeChatMessage = { role: item.role, text: item.text }
       if (item.sources?.length) message.sources = item.sources
-      if (item.error) message.error = item.error
+      if (item.error && !item.notice) message.error = item.error
       return message
     })
 
@@ -981,10 +983,16 @@ export function HomeChat({
           if (unlisted && finalText)
             void resolveUnlistedNames(finalText, itemId, runGenerationRef.current)
         },
-        onError: (error) => {
+        onError: (error, info) => {
           if (!live()) return
           batcherRef.current?.cancel()
-          updateLastAssistant((last) => ({ ...last, error, streaming: false }))
+          if (info?.notice) setItems(withoutNotices)
+          updateLastAssistant((last) => ({
+            ...last,
+            error,
+            streaming: false,
+            ...(info?.notice ? { notice: info.notice } : {}),
+          }))
           clearActiveRequest()
           setBusy(false)
         },
@@ -1997,7 +2005,7 @@ export function HomeChat({
     <>
       <span className="home-chat-sr-only" role="status" aria-live="polite">
         {!busy && lastItem?.role === 'assistant'
-          ? lastItem.error
+          ? lastItem.error && !lastItem.notice
             ? t('homeChatErrorChip')
             : lastItem.text
               ? t('homeChatDone')

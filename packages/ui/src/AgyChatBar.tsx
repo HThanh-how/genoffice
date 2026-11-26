@@ -1,3 +1,4 @@
+import { useStreamStatus } from './use-stream-status'
 import { useCallback, useEffect, useRef, useState } from 'react'
 import './agy-chat-bar.css'
 
@@ -1021,6 +1022,7 @@ export function AgyChatBar({
     }
   }, [menu, open])
 
+  const streamStatus = useStreamStatus()
   const [fallbackElapsed, setFallbackElapsed] = useState(0)
   useEffect(() => {
     if (!busy || (source && state?.active && effectiveRun)) {
@@ -1045,7 +1047,11 @@ export function AgyChatBar({
           <div className="agy-think-head">
             <span className="agy-think-dot" aria-hidden="true" />
             <span className="agy-think-title">
-              {mode === 'home-chat' ? `${d.thinkingHome}${timeStr}` : `${d.thinkingNow}…`}
+              {streamStatus
+                ? `${streamStatus}${timeStr}`
+                : mode === 'home-chat'
+                  ? `${d.thinkingHome}${timeStr}`
+                  : `${d.thinkingNow}…`}
             </span>
           </div>
         </section>

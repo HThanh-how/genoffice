@@ -17,6 +17,7 @@ import {
 import type { AiSettings, CodexModelCatalog } from '@genoffice/ai-provider/browser'
 import type { AiStreamChunk, AiStreamRequest } from '@genoffice/ai-provider'
 import { installDropOpenBridge } from '@genoffice/electron-utils/drop-open'
+import { LOCAL_MODEL_EVENTS, type LocalModelStartup } from '../shared/local-model'
 import type { UpdateUiState } from '../shared/update-api'
 import { normalizeAiPanelPrefs } from '@genoffice/ui/ai-panel-prefs'
 import type {
@@ -178,6 +179,27 @@ const homeApi: HomeApi = {
   localModelLicense: () => ipcRenderer.invoke('local-model:license'),
   localModelStatus: () => ipcRenderer.invoke('local-model:status'),
   localModelAction: (action) => ipcRenderer.invoke('local-model:action', action),
+  onLocalModelDownloaded(handler) {
+    const listener = () => handler()
+    ipcRenderer.on(LOCAL_MODEL_EVENTS.downloaded, listener)
+    return () => ipcRenderer.removeListener(LOCAL_MODEL_EVENTS.downloaded, listener)
+  },
+  async localModelOffer() {
+    return (await ipcRenderer.invoke('local-model:offer')) === true
+  },
+  onLocalModelOfferChanged(handler) {
+    const listener = () => handler()
+    ipcRenderer.on(LOCAL_MODEL_EVENTS.offerChanged, listener)
+    return () => ipcRenderer.removeListener(LOCAL_MODEL_EVENTS.offerChanged, listener)
+  },
+  onLocalModelStartup(handler) {
+    const listener = (_event: IpcRendererEvent, startup: LocalModelStartup) => handler(startup)
+    ipcRenderer.on(LOCAL_MODEL_EVENTS.startup, listener)
+    return () => ipcRenderer.removeListener(LOCAL_MODEL_EVENTS.startup, listener)
+  },
+  async localModelAnswerOffer(answer) {
+    await ipcRenderer.invoke('local-model:answer-offer', answer)
+  },
   ...createHomeChatPreloadApi(ipcRenderer),
   ...createLiveBackgroundPreloadApi(ipcRenderer),
   async recents(query) {

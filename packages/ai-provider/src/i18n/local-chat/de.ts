@@ -2,7 +2,7 @@ import { copy as zh } from './zh'
 export const copy = {
   title: 'Lokales Chatmodell',
   missing: 'Nicht heruntergeladen',
-  checking: 'SHA-256 wird geprüft…',
+  checking: 'Lokale KI wird geprüft…',
   downloading: 'Download {n}%',
   paused: 'Pausiert {n}%',
   ready: 'Bereit',
@@ -27,4 +27,25 @@ export const copy = {
   offline: 'Offline. Zum Herunterladen des lokalen Modells verbinden.',
   metered:
     'Getaktetes Netzwerk: automatischer Modelldownload pausiert. Bitte manuell herunterladen.',
+  downloaded: 'Die lokale KI ist heruntergeladen',
+  offerTitle: 'Lokale KI jetzt verwenden?',
+  offerBody:
+    'Das heruntergeladene Modell läuft auf diesem Computer. Sie können das Modell jederzeit wechseln.',
+  offerUse: 'Jetzt verwenden',
+  offerLater: 'Später',
+  verifying: 'Download wird geprüft…',
+  chatDownloading: 'Lokale KI wird heruntergeladen · {n} %',
+  sendAgain: 'Sie können Ihre Nachricht erneut senden, sobald sie bereit ist.',
+  phaseStarting: 'Lokale KI wird gestartet…',
+  phaseLoading: 'Modell wird in den Speicher geladen…',
+  phasePreparing: 'Lokale KI wird vorbereitet…',
+  phaseReading: 'Ihre Anfrage wird gelesen…',
+  phaseWriting: 'Antwort wird geschrieben…',
+  readyToChat: 'Die lokale KI ist bereit zum Chatten',
+  startFailed: 'Die lokale KI versucht es erneut, wenn Sie eine Nachricht senden.',
+  hide: 'Ausblenden',
+  downloadConfirm:
+    'Die lokale KI erfordert einen Download von etwa 1,1 GB und läuft auf diesem Gerät.',
+  downloadQuestion: 'Möchten Sie sie jetzt herunterladen?',
+  notNow: 'Nicht jetzt',
 } satisfies Record<keyof typeof zh, string>
