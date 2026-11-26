@@ -12,6 +12,7 @@ import {
   type GbnfJsonSchema,
 } from 'node-llama-cpp'
 import { contextBudget } from '../budget'
+import { openLlama } from './backend'
 import { verifyModel } from '../integrity'
 import { LFM_SAMPLING } from '../manifest'
 import {
@@ -55,13 +56,18 @@ export class NativeHost {
             const verifyMs = performance.now() - checkpoint
             checkpoint = performance.now()
             if (this.closing) throw new LocalLlmError('ABORTED', 'Local startup cancelled')
-            this.llama = await getLlama({
-              gpu: message.options.gpu === 'cpu' ? false : message.options.gpu,
-              logLevel: LlamaLogLevel.error,
-              build: 'never',
-              skipDownload: true,
-              maxThreads: message.options.threads,
-            })
+            this.llama = (
+              await openLlama(
+                getLlama,
+                message.options.gpu === 'cpu' ? false : message.options.gpu,
+                {
+                  logLevel: LlamaLogLevel.error,
+                  build: 'never',
+                  skipDownload: true,
+                  maxThreads: message.options.threads,
+                },
+              )
+            ).llama
             const backendMs = performance.now() - checkpoint
             checkpoint = performance.now()
             this.model = await this.llama.loadModel({
