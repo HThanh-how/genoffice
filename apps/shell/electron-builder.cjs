@@ -29,11 +29,13 @@
 
 // Buffer comes from node:buffer, not the global: this file is evaluated
 // inside a vm sandbox (the packaging tests) that has no Buffer global.
-const { nativeRuntimeUnpack } = require('../../tools/local-llm-packaging.cjs')
 const { Buffer } = require('node:buffer')
 const { execFileSync } = require('node:child_process')
 const { closeSync, existsSync, openSync, readFileSync, readSync, rmSync } = require('node:fs')
-const { join } = require('node:path')
+const { join, resolve } = require('node:path')
+// An absolute path: the packaging tests evaluate this file in a sandbox whose require resolves
+// relative to the test file, not to this one.
+const { nativeRuntimeUnpack } = require(resolve(__dirname, '../../tools/local-llm-packaging.cjs'))
 
 function normalizeHttpsBaseUrl(name, value) {
   if (!value || !value.trim()) return null
@@ -915,8 +917,11 @@ const config = {
   // Same "@genoffice/shell" naming problem as deb: spell the artifact name
   // out (${arch} expands to the rpm arch string, x86_64) and pin the rpm
   // Package name so dnf/zypper treat successive releases as upgrades of the
-  // same package. Like deb, rpm installs run no in-app updater — users
-  // upgrade with `dnf install ./<new>.rpm`. Packaging needs rpmbuild on the
+  // same package. Unlike deb, rpm installs run no in-app updater — users
+  // upgrade with `dnf install ./<new>.rpm` (the rpm is a GitHub-Release-only
+  // artifact; the self-updating electron-updater feed carries AppImage + deb,
+  // so the rpm bake carries no publish config or package-type).
+  // Packaging needs rpmbuild on the
   // build host (the `rpm` apt package on Ubuntu; CI installs it).
   //
   // publish: null (explicit) keeps the rpm out of the electron-updater feed

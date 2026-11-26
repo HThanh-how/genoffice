@@ -40,6 +40,7 @@ export type {
   DocumentIndexPerformanceDiagnostics,
   DocumentIndexMigrationDiagnostics,
 } from './fork/document-index-api'
+import type { MeasurementUnit, MeasurementUnitState } from '@genoffice/ui/measurement'
 
 export interface AttachmentAddResult {
   accepted: AttachmentInfo[]
@@ -427,6 +428,8 @@ export interface HomeApi extends ForkHomeApi, FileManagementBridge {
   kbSearch(query: { q: string; limit?: number }): Promise<KbSearchHit[]>
   /** one page of a corpus file's parsed text (path must be in kbList) */
   kbRead(path: string, offset: number): Promise<KbReadPage>
+  /** let this view read a corpus file as an attachment (path must be in kbList) */
+  kbGrantMention(path: string): Promise<boolean>
   /** write the AI's markdown as a new .md / .docx in the save folder; resolves to its path */
   kbCreateDocument(request: {
     title: string
@@ -613,6 +616,10 @@ export interface HomeApi extends ForkHomeApi, FileManagementBridge {
   getDocumentTheme(): Promise<DocTheme>
   /** switch + persist the document page theme; broadcasts 'app:document-theme-changed' to all web contents */
   setDocumentTheme(theme: DocTheme): Promise<void>
+  /** app-wide measurement unit (rulers and length fields in every editor); explicit = picked, not the region default */
+  getMeasurementUnit(): Promise<MeasurementUnitState>
+  /** persist the unit (null = follow the UI language); broadcasts 'app:measurement-unit-changed' to all web contents */
+  setMeasurementUnit(unit: MeasurementUnit | null): Promise<MeasurementUnitState>
   /** AutoSave default applied by every editor window (persisted in userData/app-settings.json) */
   getAutoSaveDefault(): Promise<AutoSaveDefault>
   /** persist the AutoSave default; broadcasts 'app:auto-save-default-changed' to all web contents */
@@ -627,6 +634,11 @@ export interface HomeApi extends ForkHomeApi, FileManagementBridge {
   /** whether the documents open at the last close reopen at launch (default off) */
   getRestoreLastSession(): Promise<boolean>
   setRestoreLastSession(on: boolean): Promise<void>
+  /** folders excluded from recents, search and session restore (genoffice#2844) */
+  getExcludedFolders(): Promise<string[]>
+  setExcludedFolders(paths: string[]): Promise<string[]>
+  /** a directory picker for the exclusion editor; no side effects */
+  pickExcludedFolder(): Promise<string | null>
   /** current local MCP server state (running/enabled/port/url) */
   getMcpStatus(): Promise<McpStatus>
   /** enable/disable the MCP server and/or change its port/background/logging; applies and persists, returns the new state */
@@ -991,6 +1003,9 @@ export const HOME_CHANNELS = {
   setTabSleepEnabled: 'home:set-tab-sleep-enabled',
   getRestoreLastSession: 'home:get-restore-last-session',
   setRestoreLastSession: 'home:set-restore-last-session',
+  getExcludedFolders: 'home:get-excluded-folders',
+  setExcludedFolders: 'home:set-excluded-folders',
+  pickExcludedFolder: 'home:pick-excluded-folder',
   getMcpStatus: 'home:get-mcp-status',
   setMcpSettings: 'home:set-mcp-settings',
   getMcpLogs: 'home:get-mcp-logs',

@@ -85,6 +85,20 @@ import {
   SettingsRow,
 } from './fork/settings-ui/SettingsCard'
 import { groupText, groupHint, settingsCardCopy } from './i18n/strings-settings-card'
+import {
+  MEASUREMENT_UNITS,
+  isMeasurementUnit,
+  type MeasurementUnit,
+  type MeasurementUnitState,
+} from '@genoffice/ui/measurement'
+
+const UNIT_LABEL_KEYS = {
+  in: 'setUnitIn',
+  cm: 'setUnitCm',
+  mm: 'setUnitMm',
+  pt: 'setUnitPt',
+  pi: 'setUnitPi',
+} as const satisfies Record<MeasurementUnit, string>
 import './settings.css'
 
 // ── Settings modal (opened from the account menu) ─────────
@@ -1943,6 +1957,8 @@ export function SettingsModal({
   }, [target])
   const [theme, setTheme] = useState<UiTheme>('system')
   const [docTheme, setDocTheme] = useState<DocTheme>('follow')
+  /** app-wide measurement unit; null until the shell answers */
+  const [unitState, setUnitState] = useState<MeasurementUnitState | null>(null)
   const [csvLimitMb, setCsvLimitMb] = useState(CSV_IMPORT_DEFAULT_LIMIT_MB)
   const [saveDir, setSaveDir] = useState('')
   const [analyticsOn, setAnalyticsOn] = useState(true)
@@ -1950,6 +1966,7 @@ export function SettingsModal({
   const [autoSaveOn, setAutoSaveOn] = useState(false)
   const [tabSleepOn, setTabSleepOn] = useState(true)
   const [restoreSessionOn, setRestoreSessionOn] = useState(true)
+  const [excludedFolders, setExcludedFoldersList] = useState<string[]>([])
   const [autoUpdateCheckOn, setAutoUpdateCheckOn] = useState(true)
   const [silentInstallOn, setSilentInstallOn] = useState(false)
   const [defaultApp, setDefaultApp] = useState<DefaultAppStatus | null>(null)
@@ -1989,6 +2006,12 @@ export function SettingsModal({
     void window.aiOffice.getDocumentTheme?.().then((th) => {
       if (alive) setDocTheme(th)
     })
+    void window.aiOffice
+      .getMeasurementUnit?.()
+      .then((state) => {
+        if (alive) setUnitState(state)
+      })
+      .catch(() => undefined)
     void window.aiOffice.getDefaultSaveDir?.().then((dir) => {
       if (alive && dir) setSaveDir(dir)
     })
@@ -2006,6 +2029,9 @@ export function SettingsModal({
     })
     void window.aiOffice.getRestoreLastSession?.().then((on) => {
       if (alive) setRestoreSessionOn(on)
+    })
+    void window.aiOffice.getExcludedFolders?.().then((list) => {
+      if (alive) setExcludedFoldersList(list ?? [])
     })
     void window.aiOffice.getDefaultAppStatus?.().then((st) => {
       if (alive) setDefaultApp(st)
@@ -2116,11 +2142,30 @@ export function SettingsModal({
       .finally(() => setLegacyRecoveryBusy(null))
   }
 
+  const applyMeasurementUnit = (next: MeasurementUnit | null) => {
+    void window.aiOffice
+      .setMeasurementUnit?.(next)
+      .then(setUnitState)
+      .catch(() => undefined)
+  }
+
   const applyDocumentTheme = (next: DocTheme) => {
     setDocTheme(next)
     void window.aiOffice.setDocumentTheme(next)
   }
 
+  const addExcludedFolder = async (): Promise<void> => {
+    const picked = await window.aiOffice.pickExcludedFolder?.()
+    if (!picked) return
+    const next = await window.aiOffice.setExcludedFolders?.([...excludedFolders, picked])
+    setExcludedFoldersList(next ?? [])
+  }
+  const removeExcludedFolder = async (folder: string): Promise<void> => {
+    const next = await window.aiOffice.setExcludedFolders?.(
+      excludedFolders.filter((p) => p !== folder),
+    )
+    setExcludedFoldersList(next ?? [])
+  }
   const commitAuthorName = () => {
     void window.aiOffice.setAuthorName?.(authorName.value).then(setAuthorName)
   }
@@ -2243,6 +2288,24 @@ export function SettingsModal({
                       ariaLabel={t('language')}
                       options={LANG_OPTIONS.map((opt) => ({ value: opt.value, label: opt.label }))}
                       onPick={(v) => setLang(v as typeof lang)}
+                    />
+                  </SettingsRow>
+                  <SettingsRow className="set-field">
+                    <div className="set-field-text">
+                      <label className="set-field-label">{t('setMeasureUnits')}</label>
+                    </div>
+                    <Dropdown
+                      className="set-dd"
+                      value={unitState?.explicit ? unitState.unit : 'auto'}
+                      ariaLabel={t('setMeasureUnits')}
+                      options={[
+                        { value: 'auto', label: t('setUnitAuto') },
+                        ...MEASUREMENT_UNITS.map((unit) => ({
+                          value: unit,
+                          label: t(UNIT_LABEL_KEYS[unit]),
+                        })),
+                      ]}
+                      onPick={(v) => applyMeasurementUnit(isMeasurementUnit(v) ? v : null)}
                     />
                   </SettingsRow>
                   <SettingsRow className="set-field">
@@ -2523,6 +2586,39 @@ export function SettingsModal({
                     }
                   />
                   <DefaultFolderToggle />
+                  <SettingsRow className="set-field">
+                    <div className="set-field-text">
+                      <div className="set-field-stack">
+                        <div className="set-field-label">{t('setExcludedFolders')}</div>
+                        <div className="set-field-desc">{t('setExcludedFoldersDesc')}</div>
+                      </div>
+                    </div>
+                    <button className="set-btn" onClick={() => void addExcludedFolder()}>
+                      {t('setExcludedFoldersAdd')}
+                    </button>
+                  </SettingsRow>
+                  {excludedFolders.length === 0 ? (
+                    <div className="set-field-desc">{t('setExcludedFoldersEmpty')}</div>
+                  ) : (
+                    excludedFolders.map((folder) => (
+                      <SettingsRow key={folder} className="set-field">
+                        <div className="set-field-text">
+                          <div className="set-field-stack">
+                            <div className="set-field-label" title={folder}>
+                              {folder}
+                            </div>
+                          </div>
+                        </div>
+                        <button
+                          className="set-btn"
+                          aria-label={t('setAiEndpointRemove')}
+                          onClick={() => void removeExcludedFolder(folder)}
+                        >
+                          ✕
+                        </button>
+                      </SettingsRow>
+                    ))
+                  )}
                   <SettingsRow className="set-field">
                     <div className="set-field-text">
                       <div className="set-field-stack">
