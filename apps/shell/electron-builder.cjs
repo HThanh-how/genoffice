@@ -29,11 +29,13 @@
 
 // Buffer comes from node:buffer, not the global: this file is evaluated
 // inside a vm sandbox (the packaging tests) that has no Buffer global.
-const { nativeRuntimeUnpack } = require('../../tools/local-llm-packaging.cjs')
 const { Buffer } = require('node:buffer')
 const { execFileSync } = require('node:child_process')
 const { closeSync, existsSync, openSync, readFileSync, readSync, rmSync } = require('node:fs')
-const { join } = require('node:path')
+const { join, resolve } = require('node:path')
+// An absolute path: the packaging tests evaluate this file in a sandbox whose require resolves
+// relative to the test file, not to this one.
+const { nativeRuntimeUnpack } = require(resolve(__dirname, '../../tools/local-llm-packaging.cjs'))
 
 function normalizeHttpsBaseUrl(name, value) {
   if (!value || !value.trim()) return null
