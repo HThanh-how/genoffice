@@ -58,12 +58,17 @@ describe('Windows PrintDialog', () => {
       )
       act(() => radios[1].click()) // current page only
       act(() => document.querySelector<HTMLButtonElement>('.modal-actions .primary')!.click())
-      expect(print).toHaveBeenCalledWith(1, {
-        deviceName: '',
-        copies: 1,
-        collate: true,
-        duplex: 'simplex',
-      })
+      // the third argument is the preview's paper box (none in this jsdom preview)
+      expect(print).toHaveBeenCalledWith(
+        1,
+        {
+          deviceName: '',
+          copies: 1,
+          collate: true,
+          duplex: 'simplex',
+        },
+        undefined,
+      )
       // Pagination polling must still see exactly two source pages during a job.
       await act(async () => vi.advanceTimersByTime(500))
       expect(document.querySelector('.print-preview-nav span')!.textContent).toContain('2')

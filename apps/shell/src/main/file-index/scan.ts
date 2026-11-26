@@ -1,5 +1,6 @@
 import { readdirSync, statSync } from 'node:fs'
 import { basename, extname, join } from 'node:path'
+import { isUnderExcludedFolder } from '@genoffice/electron-utils'
 import { isHiddenEntry } from '../folder-tree'
 import {
   SUPPORTED_EXTENSIONS,
@@ -48,6 +49,7 @@ interface ScanLimits {
 function walkSupportedFiles(
   root: string,
   limits: ScanLimits,
+  excludedFolders: readonly string[] = [],
 ): { files: ScannedFile[]; truncated: boolean; unreadable: boolean } {
   const maxDepth = limits.maxDepth ?? SCAN_MAX_DEPTH
   const maxFiles = limits.maxFiles ?? SCAN_MAX_FILES
@@ -72,6 +74,8 @@ function walkSupportedFiles(
         return
       }
       const path = join(dir, ent.name)
+      // a folder the user excluded from search is pruned, and none of its files are listed
+      if (excludedFolders.length > 0 && isUnderExcludedFolder(path, excludedFolders)) continue
       if (ent.isDirectory()) {
         if (
           !shouldSkipDirectory(ent.name, path) &&
@@ -95,14 +99,23 @@ function walkSupportedFiles(
   return { files: out, truncated, unreadable }
 }
 
-export function scanFiles(root: string, limits: ScanLimits = {}): ScanResult {
-  const { files, truncated } = walkSupportedFiles(root, limits)
+export function scanFiles(
+  root: string,
+  limits: ScanLimits = {},
+  /** folders the user excluded: the walk prunes them and skips their files (genoffice#2844) */
+  excludedFolders: readonly string[] = [],
+): ScanResult {
+  const { files, truncated } = walkSupportedFiles(root, limits, excludedFolders)
   return { files, truncated }
 }
 
 /** Like scanFiles, but `complete` is false for a budget stop or any unreadable entry. */
-export function scanFileSnapshot(root: string, limits: ScanLimits = {}): FileScanSnapshot {
-  const { files, truncated, unreadable } = walkSupportedFiles(root, limits)
+export function scanFileSnapshot(
+  root: string,
+  limits: ScanLimits = {},
+  excludedFolders: readonly string[] = [],
+): FileScanSnapshot {
+  const { files, truncated, unreadable } = walkSupportedFiles(root, limits, excludedFolders)
   return { files, complete: !truncated && !unreadable }
 }
 

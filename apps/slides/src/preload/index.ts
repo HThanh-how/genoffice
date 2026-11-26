@@ -1,6 +1,7 @@
 import { installRendererDialogs } from '@genoffice/electron-utils/renderer-dialogs'
 import { createAgyChatPreloadApi } from '@genoffice/electron-utils/agy-chat-preload'
 import type { AiPanelPrefs } from '@genoffice/ui'
+import { MEASUREMENT_UNIT_CHANNELS } from '@genoffice/ui/measurement'
 import { contextBridge, ipcRenderer, webUtils } from 'electron'
 import type { IpcRendererEvent } from 'electron'
 import type { ProjectApi } from '@genoffice/project-store'
@@ -122,6 +123,12 @@ const api: SlidesApi = {
     const listener = (_event: IpcRendererEvent, theme: UiTheme) => handler(theme)
     ipcRenderer.on('app:theme-changed', listener)
     return () => ipcRenderer.removeListener('app:theme-changed', listener)
+  },
+  getMeasurementUnit: () => ipcRenderer.invoke(MEASUREMENT_UNIT_CHANNELS.get),
+  onMeasurementUnitChanged: (handler) => {
+    const listener = (_event: IpcRendererEvent, state: unknown) => handler(state)
+    ipcRenderer.on(MEASUREMENT_UNIT_CHANNELS.changed, listener)
+    return () => ipcRenderer.removeListener(MEASUREMENT_UNIT_CHANNELS.changed, listener)
   },
   getAutoSaveDefault: () => ipcRenderer.invoke('app:get-auto-save-default'),
   onAutoSaveDefaultChanged: (handler) => {

@@ -15,6 +15,7 @@ import type { WriterRequest } from './worker-ops'
 import { isSupportedIndexFile } from './scan'
 import type { ScannedFile } from './scan'
 import type { FileIndexStore } from './store'
+import { isUnderExcludedFolder } from '@genoffice/electron-utils'
 import {
   isPathIgnored,
   beginIgnoreRootSnapshot,
@@ -39,6 +40,9 @@ export interface IndexerSources {
   roots: () => readonly string[]
   /** files outside the roots that should still be searchable (recents, starred) */
   extraPaths: () => readonly string[]
+  /** folders the user excluded from search: roots inside them are skipped and
+   *  the walk prunes them from the trees it does enter (genoffice#2844) */
+  excludedFolders?: () => readonly string[]
 }
 
 const RESCAN_DEBOUNCE_MS = 1500
@@ -289,8 +293,11 @@ export class FileIndexer {
       const seen = new Map<string, ScannedFile>()
       const roots = [...this.sources.roots()]
       const completeRoots: string[] = []
+      const excluded = this.sources.excludedFolders?.() ?? []
       for (const root of roots) {
         if (this.stopped) return
+        // a root that sits inside a folder the user excluded is not a tree to walk
+        if (excluded.length > 0 && isUnderExcludedFolder(root, excluded)) continue
         rootAvailability.register(root)
         if (!(await rootAvailability.check(root))) {
           // offline: nothing to walk, and no sync disk check may run against it on the main thread
@@ -303,19 +310,23 @@ export class FileIndexer {
         const absorb = async (files: readonly ScannedFile[]): Promise<void> => {
           for (const f of files) {
             if (this.stopped) return
-            if (!isPathIgnored(f.path, root)) seen.set(f.path, f)
+            if (!isPathIgnored(f.path, root) && !isUnderExcludedFolder(f.path, excluded))
+              seen.set(f.path, f)
             await yieldIfNeeded()
           }
         }
         let partChain: Promise<void> = Promise.resolve()
-        const res = await this.ask({ id: 0, type: 'scan', root }, (files) => {
-          partChain = partChain.then(() =>
-            traceOp('file-index.scan-part', () => absorb(files), {
-              kind: 'indexer',
-              source: 'automatic',
-            }),
-          )
-        })
+        const res = await this.ask(
+          { id: 0, type: 'scan', root, excludedFolders: excluded },
+          (files) => {
+            partChain = partChain.then(() =>
+              traceOp('file-index.scan-part', () => absorb(files), {
+                kind: 'indexer',
+                source: 'automatic',
+              }),
+            )
+          },
+        )
         await partChain
         if (res.type === 'scan') await absorb(res.files)
         if (this.stopped) return
@@ -362,7 +373,12 @@ export class FileIndexer {
     completeRoots: string[],
   ): Promise<void> {
     const yieldIfNeeded = createYielder()
-    const extras = new Set(this.sources.extraPaths())
+    const excluded = this.sources.excludedFolders?.() ?? []
+    const extras = new Set(
+      [...this.sources.extraPaths()].filter(
+        (p) => excluded.length === 0 || !isUnderExcludedFolder(p, excluded),
+      ),
+    )
     for (const p of extras) {
       if (this.stopped) return
       if (seen.has(p) || !isSupportedIndexFile(p) || isPathIgnored(p)) continue

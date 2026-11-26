@@ -22,7 +22,13 @@ import {
 
 export type WorkerRequest =
   | { id: number; type: 'extract'; path: string; ignorePolicy?: IgnorePolicySnapshot }
-  | { id: number; type: 'scan'; root: string; ignorePolicy?: IgnorePolicySnapshot }
+  | {
+      id: number
+      type: 'scan'
+      root: string
+      ignorePolicy?: IgnorePolicySnapshot
+      excludedFolders?: readonly string[]
+    }
   | IgnorePolicyWorkerMessage
 
 export type WorkerResponse =
@@ -78,7 +84,7 @@ parentPort?.on('message', async (req: WorkerRequest | Parameters<typeof isWriter
     const result = await withBackgroundBudget(() => extractText(request.path))
     parentPort?.postMessage({ id: request.id, type: 'extract', result } satisfies WorkerResponse)
   } else if (request.type === 'scan') {
-    const snapshot = scanFileSnapshot(request.root)
+    const snapshot = scanFileSnapshot(request.root, {}, request.excludedFolders ?? [])
     for (let i = 0; i < snapshot.files.length; i += SCAN_PART_SIZE)
       parentPort?.postMessage({
         id: request.id,

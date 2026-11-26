@@ -30,7 +30,7 @@ export default defineConfig({
   },
   preload: {
     // Sandboxed preload scripts cannot require arbitrary npm packages at
-    // runtime, so the drop-open bridge must be bundled, not externalized. The Antigravity chat bridge
+    // runtime, so the drop-open bridge and the measurement-unit channels must be bundled, not externalized. The Antigravity chat bridge
     // in electron-utils imports the channel names from ai-provider: that has to be bundled too, or the
     // preload throws "module not found" at load and the whole tab stays white.
     plugins: [
@@ -40,7 +40,7 @@ export default defineConfig({
           '@genoffice/ai-provider',
           '@genoffice/agent-core',
           '@genoffice/electron-utils',
-          '@genoffice/ai-provider',
+          '@genoffice/ui',
         ],
       }),
     ],
