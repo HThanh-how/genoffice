@@ -184,7 +184,7 @@ export interface AgyChatModelInfo {
   family: 'gemini' | 'claude' | 'gpt' | 'other'
   /** shared quota pool the model draws from */
   group: AgyQuotaGroup | null
-  effort?: 'low' | 'medium' | 'high'
+  effort?: 'low' | 'medium' | 'high' | 'xhigh'
   tier: 'flash' | 'pro' | 'other'
   /** quota use relative to gemini-3.8-flash-low (= 1) for the same work */
   relativeCost: number
@@ -206,6 +206,36 @@ const COSTS: Array<[RegExp, number]> = [
   [/^gpt-/, 6],
 ]
 
+const EFFORT_SUFFIX = /-(low|medium|high|xhigh)$/
+const EFFORT_LABEL: Record<NonNullable<AgyChatModelInfo['effort']>, string> = {
+  low: 'Low',
+  medium: 'Medium',
+  high: 'High',
+  xhigh: 'XHigh',
+}
+
+const titleCase = (word: string): string => word.charAt(0).toUpperCase() + word.slice(1)
+
+/**
+ * A readable name from the id alone (no catalog lookup, so it works offline): version digits that
+ * the id splits with dashes (`5-5`) are joined back (`5.5`), a trailing effort becomes its own word.
+ * Distinct ids always get distinct labels: the picker must never show two identical rows.
+ */
+function labelFromId(id: string, effort: AgyChatModelInfo['effort']): string {
+  const base = effort ? id.replace(EFFORT_SUFFIX, '') : id
+  const words: string[] = []
+  for (const token of base.split('-').filter(Boolean)) {
+    const previous = words[words.length - 1]
+    if (/^\d+$/.test(token) && previous && /^\d+(\.\d+)*$/.test(previous)) {
+      words[words.length - 1] = `${previous}.${token}`
+    } else words.push(token)
+  }
+  const text = words
+    .map((word) => (/^\d/.test(word) ? word.toUpperCase() : titleCase(word)))
+    .join(' ')
+  return effort ? `${text} ${EFFORT_LABEL[effort]}` : text
+}
+
 /** What the chat box shows for a model id; unknown ids still get a usable entry. */
 export function agyChatModelInfo(id: string): AgyChatModelInfo {
   const lower = id.toLowerCase()
@@ -216,24 +246,16 @@ export function agyChatModelInfo(id: string): AgyChatModelInfo {
       : lower.startsWith('gpt-')
         ? 'gpt'
         : 'other'
-  const effort = /-(low|medium|high)$/.exec(lower)?.[1] as AgyChatModelInfo['effort']
+  const effort = EFFORT_SUFFIX.exec(lower)?.[1] as AgyChatModelInfo['effort']
   const tier = /-flash/.test(lower) ? 'flash' : /-pro/.test(lower) ? 'pro' : 'other'
-  const version = /^gemini-(\d+\.\d+)/.exec(lower)?.[1]
-  const effortLabel = effort ? ` ${effort[0]!.toUpperCase()}${effort.slice(1)}` : ''
   const label =
-    family === 'gemini'
-      ? `Gemini ${version ?? ''} ${tier === 'pro' ? 'Pro' : 'Flash'}${effortLabel}`.replace(
-          /\s+/g,
-          ' ',
-        )
-      : family === 'claude'
+    family === 'gpt'
+      ? labelFromId(id, effort)
+          .replace(/^Gpt\b/, 'GPT')
+          .replace(/^(GPT Oss)\b/, 'GPT-OSS')
+      : family === 'other'
         ? id
-            .replace(/^claude-/, 'Claude ')
-            .replace(/-thinking$/, ' (Thinking)')
-            .replace(/-/g, ' ')
-        : family === 'gpt'
-          ? id.replace(/^gpt-/, 'GPT ').replace(/-/g, ' ')
-          : id
+        : labelFromId(id, effort)
   const relativeCost = COSTS.find(([pattern]) => pattern.test(lower))?.[1] ?? 3
   const group: AgyQuotaGroup | null =
     family === 'gemini'
@@ -244,7 +266,7 @@ export function agyChatModelInfo(id: string): AgyChatModelInfo {
   const speed: AgyChatModelInfo['speed'] =
     effort === 'low' && tier === 'flash'
       ? 'fast'
-      : effort === 'high' || family === 'claude'
+      : effort === 'high' || effort === 'xhigh' || family === 'claude'
         ? 'slow'
         : 'balanced'
   return {
