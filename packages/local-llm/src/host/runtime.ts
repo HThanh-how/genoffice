@@ -7,13 +7,14 @@ import {
   type Llama,
   type LlamaModel,
   type LlamaContext,
-  type ChatHistoryItem,
   type ChatModelFunctions,
   type GbnfJsonSchema,
 } from 'node-llama-cpp'
 import { contextBudget } from '../budget'
 import { openLlama } from './backend'
 import { availableMemoryBytes } from './memory'
+import { fitMessages } from './fit'
+import { buildHistory } from './history'
 import { verifyModel } from '../integrity'
 import { LFM_SAMPLING } from '../manifest'
 import {
@@ -22,6 +23,7 @@ import {
   type HostEvent,
   type HostRequest,
   type LocalChatRequest,
+  type LocalMessage,
 } from '../protocol'
 
 export class NativeHost {
@@ -169,51 +171,29 @@ export class NativeHost {
     signal: AbortSignal,
   ): Promise<void> {
     const chat = this.chat!
-    const history: ChatHistoryItem[] = [{ type: 'system', text: request.system }]
-    const results = new Map(
-      request.messages.flatMap((message) =>
-        message.role === 'tool' ? message.results.map((r) => [r.id, r] as const) : [],
-      ),
-    )
-    for (const message of request.messages) {
-      if (message.role === 'user') history.push({ type: 'user', text: message.text })
-      if (message.role === 'assistant') {
-        history.push({
-          type: 'model',
-          response: [
-            ...(message.reasoning
-              ? [
-                  {
-                    type: 'segment' as const,
-                    segmentType: 'thought' as const,
-                    text: message.reasoning,
-                    ended: true,
-                  },
-                ]
-              : []),
-            ...(message.text ? [message.text] : []),
-            ...(message.toolCalls ?? []).map((call) => ({
-              type: 'functionCall' as const,
-              name: call.name,
-              params: call.input,
-              result: results.get(call.id)?.output ?? 'Tool result unavailable',
-            })),
-          ],
-        })
-      }
-    }
-    history.push({ type: 'model', response: [] })
     const functions: ChatModelFunctions = Object.fromEntries(
       request.tools.map((tool) => [
         tool.name,
         { description: tool.description, params: tool.inputSchema as GbnfJsonSchema },
       ]),
     )
-    const prompt = chat.chatWrapper.generateContextState({
-      chatHistory: history,
-      availableFunctions: functions,
-    }).contextText
-    const inputTokens = prompt.tokenize(this.model!.tokenizer).length
+    const promptTokens = (messages: LocalMessage[]): number =>
+      chat.chatWrapper
+        .generateContextState({
+          chatHistory: buildHistory(request.system, messages),
+          availableFunctions: functions,
+        })
+        .contextText.tokenize(this.model!.tokenizer).length
+    // keep room for an answer: an agent prompt that only just fits would be refused or cut off
+    const reserve = Math.min(Math.max(128, Math.floor(request.maxTokens || 2048)), 1024)
+    const fitted = fitMessages(
+      request.messages,
+      promptTokens,
+      this.context!.contextSize - 32 - reserve,
+    )
+    const messages = fitted?.messages ?? request.messages
+    const history = buildHistory(request.system, messages)
+    const inputTokens = promptTokens(messages)
     const room = this.context!.contextSize - inputTokens - 32
     if (room < 128)
       throw new LocalLlmError(
