@@ -33,7 +33,7 @@ export interface LocalOptions {
 export const DEFAULT_LOCAL_OPTIONS: LocalOptions = {
   gpu: 'cpu',
   threads: 6,
-  contextSize: 16384,
+  contextSize: 32768,
   keepHotMinutes: 10,
   thinking: false,
   autoDownload: true,
@@ -47,7 +47,7 @@ export function localOptions(value?: Partial<LocalOptions>): LocalOptions {
   return {
     gpu: value?.gpu === 'auto' || value?.gpu === 'vulkan' ? value.gpu : 'cpu',
     threads: bounded(value?.threads, DEFAULT_LOCAL_OPTIONS.threads, 1, 64),
-    contextSize: bounded(value?.contextSize, 16384, 2048, 32768),
+    contextSize: bounded(value?.contextSize, 32768, 2048, 32768),
     keepHotMinutes: bounded(value?.keepHotMinutes, 10, 0, 120),
     thinking: value?.thinking === true,
     autoDownload: value?.autoDownload !== false,

@@ -120,6 +120,30 @@ export interface IpcTransportOptions<S> {
 }
 
 /**
+ * When the local model's conversation is summarized. The default budget (256 KB, about 80k tokens)
+ * is far beyond the model's window, so the history would never be compacted before the request
+ * outgrew it. The window minus what every request carries anyway (instructions, tool definitions,
+ * document context) and an answer is what the history may use; bytes are counted at about 2.5 per
+ * token because Vietnamese and CJK text is multi-byte. Compaction starts at 80% of that and keeps
+ * the most recent third.
+ */
+export function localCompactionBudget(contextSize: unknown): {
+  maxBytes: number
+  keepRecentBytes: number
+} {
+  const window =
+    typeof contextSize === 'number' && Number.isFinite(contextSize)
+      ? Math.min(32768, Math.max(2048, Math.floor(contextSize)))
+      : 32768
+  const historyTokens = Math.max(1500, window - 5000 - 1500)
+  const bytes = historyTokens * 2.5
+  return {
+    maxBytes: Math.max(6 * 1024, Math.floor(bytes * 0.8)),
+    keepRecentBytes: Math.max(3 * 1024, Math.floor(bytes * 0.35)),
+  }
+}
+
+/**
  * AgentTransport over an Electron IPC bridge: the main process talks to the
  * LLM providers (avoids renderer CORS) and streams chunks back per requestId.
  * Each app wires in its own preload bridge and i18n via the options.
@@ -132,7 +156,12 @@ export function createIpcTransport<S>(options: IpcTransportOptions<S>): AgentTra
       : (options.sessionId ?? crypto.randomUUID())
   return {
     compactionBudget() {
-      const settings = options.getSettings() as { provider?: string } | null
+      const settings = options.getSettings() as {
+        provider?: string
+        providers?: { local?: { local?: { contextSize?: unknown } } }
+      } | null
+      if (settings?.provider === 'local')
+        return localCompactionBudget(settings.providers?.local?.local?.contextSize)
       return settings?.provider === 'gemini'
         ? { maxBytes: 128 * 1024, keepRecentBytes: 48 * 1024 }
         : undefined

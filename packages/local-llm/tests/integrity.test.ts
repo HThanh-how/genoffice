@@ -41,10 +41,11 @@ describe('pinned integrity and policy', () => {
   it('budgets memory and refuses insufficient RAM', () => {
     const gib = 1024 ** 3
     expect(() => contextBudget(gib, 8 * gib)).toThrow()
-    // a long agent prompt needs more than 4096 tokens, so even a tight machine gets 8192
-    expect(contextBudget(2.6 * gib, 8 * gib)).toBe(8192)
-    expect(contextBudget(3 * gib, 8 * gib)).toBe(16384)
-    expect(contextBudget(8 * gib, 16 * gib)).toBe(16384)
+    // the window follows total RAM, not what is free right now
+    expect(contextBudget(2.6 * gib, 8 * gib)).toBe(16384)
+    expect(contextBudget(2.6 * gib, 6 * gib)).toBe(8192)
+    expect(contextBudget(3 * gib, 64 * gib, 32768)).toBe(32768)
+    expect(contextBudget(8 * gib, 16 * gib, 32768)).toBe(32768)
     expect(contextBudget(16 * gib, 32 * gib, 32768)).toBe(32768)
   })
   it('rejects tools outside the grant and deletion without target without changing arguments', () => {

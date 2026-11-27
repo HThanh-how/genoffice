@@ -84,7 +84,11 @@ export type {
   CompactionOptions,
   ToolExecutedEvent,
 } from './loop'
-export { createIpcTransport, IPC_STREAM_SILENCE_TIMEOUT_MS } from './electron-transport'
+export {
+  createIpcTransport,
+  localCompactionBudget,
+  IPC_STREAM_SILENCE_TIMEOUT_MS,
+} from './electron-transport'
 export { streamText } from './stream-text'
 export type { StreamTextOptions, StreamTextOutcome } from './stream-text'
 export type { IpcStreamChunk, IpcStreamStart, IpcTransportOptions } from './electron-transport'

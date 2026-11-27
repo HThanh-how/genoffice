@@ -174,11 +174,14 @@ export function createDocumentMemorySkill(
             const isDegraded = Boolean(hit.stale || hit.missing || hit.unverified)
             let warning: string | undefined
             if (hit.missing) {
-              warning = 'Source file is missing; this snippet may be outdated. Do not quote it as current.'
+              warning =
+                'Source file is missing; this snippet may be outdated. Do not quote it as current.'
             } else if (hit.unverified) {
-              warning = 'Source file cannot be verified; do not quote this snippet. Call read_remembered_document or search again.'
+              warning =
+                'Source file cannot be verified; do not quote this snippet. Call read_remembered_document or search again.'
             } else if (hit.stale) {
-              warning = 'Source file changed since indexing; do not quote this snippet. Call read_remembered_document or search again.'
+              warning =
+                'Source file changed since indexing; do not quote this snippet. Call read_remembered_document or search again.'
             }
             return {
               ...hit,
