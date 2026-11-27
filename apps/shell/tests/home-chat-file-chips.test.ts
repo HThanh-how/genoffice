@@ -65,6 +65,21 @@ afterEach(async () => {
 })
 
 describe('inline file chips', () => {
+  it.each(['', '   ', '[file:0]', '[[file:999]]'])(
+    'shows an error instead of empty answer actions for %j',
+    async (text) => {
+      await show({ text })
+      expect(container.querySelector('[role="alert"]')?.textContent).toContain('No reply')
+      expect(container.querySelector('.hc-msg-actions')).toBeNull()
+    },
+  )
+
+  it('keeps a known file-only citation visible and does not show an empty-answer error', async () => {
+    await show({ text: '[file:1]', sources: table().list() })
+    expect(container.querySelector('[role="alert"]')).toBeNull()
+    expect(container.querySelector('.hc-file-name')?.textContent).toBe(A)
+  })
+
   const sources = table().list()
   const text = `1. ${A} [[file:1]] & \`${B}\` — hợp đồng 289/HĐT\n2. **${C}** [[file:3]] — phụ lục (Chunk 13)`
 

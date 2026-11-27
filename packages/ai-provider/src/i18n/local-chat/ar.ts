@@ -1,5 +1,6 @@
 import { copy as zh } from './zh'
 export const copy = {
+  noReply: 'لم يُرجع النموذج المحلي إجابة بعد إعادة المحاولة. يُرجى المحاولة مجددًا.',
   title: 'نموذج محادثة محلي',
   missing: 'لم يتم التنزيل',
   checking: 'التحقق من SHA-256…',

@@ -1,5 +1,6 @@
 import { copy as zh } from './zh'
 export const copy = {
+  noReply: 'Het lokale model gaf ook na een nieuwe poging geen antwoord. Probeer het opnieuw.',
   title: 'Lokaal chatmodel',
   missing: 'Niet gedownload',
   checking: 'SHA-256 controleren…',

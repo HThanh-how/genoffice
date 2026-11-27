@@ -1,5 +1,6 @@
 import { copy as zh } from './zh'
 export const copy = {
+  noReply: 'โมเดลในเครื่องไม่ตอบหลังจากลองใหม่แล้ว โปรดลองอีกครั้ง',
   title: 'โมเดลแชตในเครื่อง',
   missing: 'ยังไม่ได้ดาวน์โหลด',
   checking: 'กำลังตรวจสอบ SHA-256…',

@@ -1,5 +1,7 @@
 import { copy as zh } from './zh'
 export const copy = {
+  noReply:
+    'Das lokale Modell hat auch nach einem erneuten Versuch nicht geantwortet. Bitte versuchen Sie es noch einmal.',
   title: 'Lokales Chatmodell',
   missing: 'Nicht heruntergeladen',
   checking: 'SHA-256 wird geprüft…',

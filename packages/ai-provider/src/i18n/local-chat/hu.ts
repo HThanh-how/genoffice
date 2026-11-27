@@ -1,5 +1,6 @@
 import { copy as zh } from './zh'
 export const copy = {
+  noReply: 'A helyi modell az újrapróbálkozás után sem válaszolt. Próbálja újra.',
   title: 'Helyi csevegőmodell',
   missing: 'Nincs letöltve',
   checking: 'SHA-256 ellenőrzése…',

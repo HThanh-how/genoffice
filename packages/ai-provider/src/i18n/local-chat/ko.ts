@@ -1,5 +1,6 @@
 import { copy as zh } from './zh'
 export const copy = {
+  noReply: '로컬 모델이 재시도 후에도 응답하지 않았습니다. 다시 시도해 주세요.',
   title: '로컬 채팅 모델',
   missing: '다운로드 안 됨',
   checking: 'SHA-256 검증 중…',
