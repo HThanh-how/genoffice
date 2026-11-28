@@ -1,5 +1,6 @@
 import { copy as zh } from './zh'
 export const copy = {
+  noReply: 'ローカルモデルは再試行後も回答を返しませんでした。もう一度お試しください。',
   title: 'ローカルチャットモデル',
   missing: '未ダウンロード',
   checking: 'SHA-256 を検証中…',

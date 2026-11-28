@@ -23,6 +23,7 @@ export type ChatItem = {
 export type ChatLabels = {
   loading: string
   retry: string
+  noReply: string
   /** BCP-47 tag used to format dates on the file cards */
   locale: string
   filesInAnswer: (count: number) => string
@@ -135,6 +136,7 @@ function AssistantMessage({
     [item.text, item.streaming, files],
   )
   const related = !!item.sources?.length && item.sources.every((source) => source.related)
+  const error = item.error || (!item.streaming && !plain.trim() ? labels.noReply : undefined)
   return (
     <article className="hc-msg assistant" aria-busy={item.streaming ? true : undefined}>
       {showTyping
@@ -149,7 +151,7 @@ function AssistantMessage({
               <Markdown text={linked?.markdown ?? item.text} {...(nav ? { nav } : {})} />
             </div>
           )}
-      {item.error && (
+      {error && (
         <div className="hc-error" role="alert">
           <svg viewBox="0 0 20 20" fill="none" aria-hidden="true">
             <circle cx="10" cy="10" r="7.25" stroke="currentColor" strokeWidth="1.5" />
@@ -160,7 +162,7 @@ function AssistantMessage({
               strokeLinecap="round"
             />
           </svg>
-          <span>{item.error}</span>
+          <span>{error}</span>
           {canRetry && (
             <button type="button" className="hc-error-retry" onClick={onRetry}>
               {labels.retry}
@@ -171,7 +173,7 @@ function AssistantMessage({
       {!item.streaming && item.sources && item.sources.length > 0 && (
         <FilesPanel sources={item.sources} related={related} {...handlers} />
       )}
-      {!item.streaming && item.text && (
+      {!item.streaming && plain.trim() && (
         <div className="hc-msg-actions">
           <CopyButton text={plain || item.text} labels={labels} />
           {onSaveAnswer &&

@@ -7,6 +7,7 @@ const mockedUnlink = vi.hoisted(() => vi.fn())
 const mockedReadFile = vi.hoisted(() => vi.fn())
 const mockedStat = vi.hoisted(() => vi.fn())
 const mockedReaddir = vi.hoisted(() => vi.fn())
+const mockedRename = vi.hoisted(() => vi.fn())
 
 vi.mock('node:fs/promises', async (importOriginal) => {
   const actual = await importOriginal<typeof import('node:fs/promises')>()
@@ -20,12 +21,16 @@ vi.mock('node:fs/promises', async (importOriginal) => {
   mockedReaddir.mockImplementation((...args: Parameters<typeof actual.readdir>) =>
     actual.readdir(...args),
   )
+  mockedRename.mockImplementation((...args: Parameters<typeof actual.rename>) =>
+    actual.rename(...args),
+  )
   return {
     ...actual,
     unlink: mockedUnlink,
     readFile: mockedReadFile,
     stat: mockedStat,
     readdir: mockedReaddir,
+    rename: mockedRename,
   }
 })
 
@@ -53,6 +58,10 @@ beforeEach(async () => {
   mockedStat.mockImplementation((...args: any[]) => (actualFs.stat as any)(...args))
   mockedReaddir.mockReset()
   mockedReaddir.mockImplementation((...args: any[]) => (actualFs.readdir as any)(...args))
+  mockedRename.mockReset()
+  mockedRename.mockImplementation((...args: Parameters<typeof actualFs.rename>) =>
+    actualFs.rename(...args),
+  )
   dir = await mkdtemp(join(tmpdir(), 'home-chat-'))
   store = new HomeChatStore(dir)
 })
@@ -129,6 +138,40 @@ describe('home chat helpers', () => {
 })
 
 describe('HomeChatStore', () => {
+  it('retries a transient Windows rename lock before replacing the index', async () => {
+    const first = await store.save({ messages: convo('first') })
+    let failures = 0
+    mockedRename.mockImplementation(async (...args: Parameters<typeof actualFs.rename>) => {
+      if (String(args[1]).endsWith('index.json') && failures++ < 2)
+        throw Object.assign(new Error('index locked'), { code: 'EPERM' })
+      return actualFs.rename(...args)
+    })
+    await store.save({ id: first!.id, messages: convo('first', 'updated') })
+    expect(failures).toBe(3)
+    const fresh = new HomeChatStore(dir)
+    expect((await fresh.get(first!.id))?.messages).toEqual(convo('first', 'updated'))
+    expect(await fresh.list()).toHaveLength(1)
+  })
+
+  it('falls back to an in-place write under persistent EPERM without losing sessions', async () => {
+    const first = await store.save({ messages: convo('first') })
+    mockedRename.mockClear()
+    mockedRename.mockRejectedValue(
+      Object.assign(new Error('Windows rename locked'), { code: 'EPERM' }),
+    )
+    await expect(
+      store.save({ id: first!.id, messages: convo('first', 'updated') }),
+    ).resolves.toMatchObject({ id: first!.id })
+    const second = await store.save({ messages: convo('second') })
+    const fresh = new HomeChatStore(dir)
+    expect((await fresh.list()).map((s) => s.id).sort()).toEqual([first!.id, second!.id].sort())
+    expect((await fresh.get(first!.id))?.messages).toEqual(convo('first', 'updated'))
+    expect((await fresh.get(second!.id))?.messages).toEqual(convo('second'))
+    expect((await readdir(dir)).filter((n) => n.endsWith('.tmp'))).toEqual([])
+    // Each session/index replacement exhausted all five rename attempts before fallback.
+    expect(mockedRename).toHaveBeenCalledTimes(20)
+  })
+
   it('creates a session with a generated id and an auto title', async () => {
     const saved = await store.save({ messages: convo('Find the budget') })
     expect(saved).not.toBeNull()

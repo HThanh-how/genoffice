@@ -637,6 +637,7 @@ export function HomeChat({
       chat: {
         loading: tr('homeChatLoading'),
         retry: tr('homeChatRetry'),
+        noReply: tr('homeChatNoReply'),
         locale: i18n.dateLocale,
         filesInAnswer: (n) => tr('homeChatFilesInAnswer', { n }),
         relatedFiles: (n) => tr('homeChatRelatedFiles', { n }),

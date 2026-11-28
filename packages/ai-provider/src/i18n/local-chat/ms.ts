@@ -1,5 +1,6 @@
 import { copy as zh } from './zh'
 export const copy = {
+  noReply: 'Model setempat tidak memberikan jawapan selepas percubaan semula. Sila cuba lagi.',
   title: 'Model sembang setempat',
   missing: 'Belum dimuat turun',
   checking: 'Mengesahkan SHA-256…',

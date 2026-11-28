@@ -8,7 +8,7 @@ import {
   type HomeChatSessionSummary,
   type HomeChatSource,
 } from '../../shared/fork/home-chat-types'
-import { atomicWriteFile } from '../atomic-write'
+import { atomicWriteFile } from '@genoffice/electron-utils/atomic-write'
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
 const INDEX_FILE = 'index.json'

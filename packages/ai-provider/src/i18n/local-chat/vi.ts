@@ -1,5 +1,6 @@
 import { copy as zh } from './zh'
 export const copy = {
+  noReply: 'Model cục bộ không trả lời sau khi thử lại. Vui lòng gửi lại câu hỏi.',
   title: 'Model chat cục bộ',
   missing: 'Chưa tải',
   checking: 'Đang kiểm SHA-256…',

@@ -1,5 +1,6 @@
 import { copy as zh } from './zh'
 export const copy = {
+  noReply: 'המודל המקומי לא השיב גם לאחר ניסיון חוזר. יש לנסות שוב.',
   title: 'מודל צ׳אט מקומי',
   missing: 'לא הורד',
   checking: 'אימות SHA-256…',

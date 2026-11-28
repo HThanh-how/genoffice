@@ -1,5 +1,6 @@
 import { copy as zh } from './zh'
 export const copy = {
+  noReply: 'The local model returned no answer after a retry. Please try again.',
   title: 'Local chat model',
   missing: 'Not downloaded',
   checking: 'Verifying SHA-256…',

@@ -1,5 +1,6 @@
 import { copy as zh } from './zh'
 export const copy = {
+  noReply: 'Model lokal tidak memberikan jawaban setelah percobaan ulang. Silakan coba lagi.',
   title: 'Model obrolan lokal',
   missing: 'Belum diunduh',
   checking: 'Memverifikasi SHA-256…',
