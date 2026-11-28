@@ -1,4 +1,5 @@
 export const copy = {
+  noReply: '本地模型重试后仍未返回回答。请再试一次。',
   title: '本地聊天模型',
   missing: '尚未下载',
   checking: '正在验证 SHA-256…',

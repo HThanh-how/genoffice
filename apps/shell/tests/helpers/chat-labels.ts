@@ -5,6 +5,7 @@ import { chatString } from '../../src/renderer/src/home-chat/strings'
 export const chatLabels = (lang: 'vi' | 'en' = 'en'): ChatLabels => ({
   loading: '…',
   retry: 'retry',
+  noReply: 'No reply',
   locale: lang === 'vi' ? 'vi-VN' : 'en-US',
   filesInAnswer: (n) => chatString(lang, 'homeChatFilesInAnswer', { n }),
   relatedFiles: (n) => chatString(lang, 'homeChatRelatedFiles', { n }),

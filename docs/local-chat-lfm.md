@@ -169,6 +169,69 @@ thay mã Rust. Ban đầu Cargo không có trên PATH; đã dùng toolchain/cach
 artifact native hiện hữu cho Vitest Sheets. Không cài toolchain, không sửa build script để
 bỏ qua lỗi, không nâng version.
 
+## Phản hồi Home chat chỉ có marker trích dẫn
+
+Tái hiện trên base `fd3fc8ef9` với GGUF đã xác minh, CPU 6 luồng, context 32768,
+`thinking=false`, `maxTokens=32768`, qua `streamLocal` → `LocalLlmClient` → `NativeHost`.
+Harness ghép **17 tool thật** từ các skill Home (ask-user, app-control, remembered documents,
+knowledge base, create/append document, file management), dùng đường dẫn và kết quả tìm kiếm
+tổng hợp, không đọc nội dung tài liệu cá nhân.
+
+Sau câu “tìm file xuất hóa đơn gần đây”, model gọi search hợp lệ, nhưng lượt đọc kết quả
+có thể chỉ trả **`[file:0]`** rồi `eogToken`. Đầu ra thô của lượt này:
+
+```text
+token IDs: 67, 4796, 34, 24, 69
+text chunks: "[", "file", ":", "0", "]"
+response: "[file:0]"
+inputTokens=4476 outputTokens=7 thoughtTokens=1 stopReason=eogToken
+```
+
+Đây là 5 delta được stream thành công, không phải tool-call rỗng hay parser tool-call
+nuốt chữ. Home loại marker không có trong bảng nguồn; kiểm tra cũ chỉ xét chuỗi gốc
+khác rỗng nên vẫn hiện Copy/Save dưới câu trả lời không nhìn thấy được. Log ứng dụng
+cũng có `request.end` với 5 delta, không chỉ `request.start`. Các request tái hiện dùng
+khoảng 4,4–4,6K prompt token, thấp hơn giới hạn fit 31712 token; không bị cắt lịch sử
+bởi `3a4347036`/`fd3fc8ef9`. Câu chào trong phiên mới vẫn trả chữ trước sửa: lỗi phụ thuộc
+ngữ cảnh và đầu ra model, không tái hiện trên mọi câu chào.
+
+Provider local nay giữ lại prefix trích dẫn cho đến khi có chữ, thử lại **tối đa một lần**
+không kèm tool nếu chỉ nhận whitespace/marker hoặc tool-call không hợp lệ mà chưa phát chữ
+hay tool-call hợp lệ. Giữ system, lịch sử và kết quả tool; thêm yêu cầu trả lời bằng câu,
+không đoán nội dung file. Nếu vẫn không có câu trả lời, báo lỗi có bản dịch đủ **23 ngôn ngữ**.
+Không retry sau khi đã phát chữ/thực thi tool, khi hủy hoặc khi lỗi runtime. Usage cộng cả
+hai lần; diagnostic chỉ ghi loại lỗi và số đếm, không ghi prompt/token thô.
+
+Giữ nguyên 17 tool ở lượt đầu: phép đo chứng minh model vẫn chọn được tool; chưa có bằng
+chứng đủ để thêm bộ phân loại ý định hoặc cắt quyền agent. Các provider khác giữ luồng cũ.
+Home kiểm tra cả văn bản sau khi giải trích dẫn, nên lịch sử cũ chứa marker lạ cũng hiện
+lỗi/thử lại thay vì các nút xuất một câu trả lời rỗng. Citation có nguồn hợp lệ vẫn hiển thị.
+
+Lượt sau sửa ghi nhận raw `[file:1]` (7 token), được retry không tool và trả:
+“Không tìm thấy file xuất hóa đơn gần đây trong hệ thống. Bạn có thể kiểm tra lại tên hoặc
+vị trí file để tôi hỗ trợ thêm.” Retry sinh **32 token**, cả bước mất **16,295 s**; câu chào
+kế tiếp sinh **18 token**, **32,181 s**. Đây là số đo chức năng trên máy đang có tải, không
+phải so sánh tốc độ. Lượt đo đầu tiên chạy nguyên kiểm tra RAM; một số lượt kế tiếp chỉ
+hạ preflight RAM trong bundle harness vì RAM trống dưới 2,5 GiB, giữ nguyên đường sinh token.
+Không thay preflight trong mã ứng dụng.
+
+Kiểm tra app Electron dev thật dùng hồ sơ riêng, bản sao GGUF, thư mục trống và cửa sổ ẩn;
+chỉ bootstrap test tắt show/focus. Không hạ kiểm tra RAM ở smoke này. “chào bạn” trả
+“Chào bạn! Tôi có thể giúp gì cho bạn hôm nay?”, **14 delta**, request **47,624 s**,
+thời gian từ gửi đến UI hoàn tất **48,596 s**. Xác nhận cửa sổ `visible=false`, `focused=false`;
+không cài hay cập nhật bản app của người dùng. Hồ sơ trống không có knowledge base nên
+smoke UI dùng 15 tool; trường hợp đủ 17 tool được đo riêng ở harness phía trên.
+
+Lịch sử Home chuyển sang `electron-utils/atomic-write`: 5 lần thử rename với backoff
+50/100/200/400 ms, sau đó ghi trực tiếp. Helper giữ temp/rescue nếu ghi trực tiếp thất bại.
+Không thay helper atomic của export, nơi có yêu cầu giữ nguyên destination khi thất bại.
+Test lưu hai phiên, cập nhật một phiên dưới EPERM liên tục, mở lại store và kiểm đủ nội dung,
+index, không rơi lịch sử; thêm test khóa tạm thời phục hồi ở lần rename thứ ba.
+
+Chất lượng tìm file theo tên và bảng “Related files” vẫn là việc riêng: fallback yêu cầu
+nói rõ khi kết quả không liên quan, nhưng không thay thuật toán xếp hạng hoặc tự loại nguồn.
+`agyChat:state` vẫn có độ trễ vài giây; không sửa trong nhánh này.
+
 ## Giới hạn, giấy phép và vision sau này
 
 V1 **chỉ chat văn bản**, không vision/mmproj/OCR. Không khuyến nghị coding, hội thoại dài

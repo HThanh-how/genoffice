@@ -1,5 +1,6 @@
 import { copy as zh } from './zh'
 export const copy = {
+  noReply: 'Místní model neodpověděl ani po opakování. Zkuste to znovu.',
   title: 'Místní model chatu',
   missing: 'Nestaženo',
   checking: 'Ověřování SHA-256…',

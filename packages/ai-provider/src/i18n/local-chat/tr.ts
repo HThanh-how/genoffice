@@ -1,5 +1,6 @@
 import { copy as zh } from './zh'
 export const copy = {
+  noReply: 'Yerel model yeniden denemeden sonra da yanıt vermedi. Lütfen tekrar deneyin.',
   title: 'Yerel sohbet modeli',
   missing: 'İndirilmedi',
   checking: 'SHA-256 doğrulanıyor…',
